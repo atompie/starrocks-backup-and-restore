@@ -175,6 +175,107 @@ def test_schedule_run_due_unreachable_api_exits_non_zero(runner, monkeypatch):
     assert "could not reach api server" in result.output.lower()
 
 
+def test_repository_help_lists_add_list_remove(runner):
+    result = runner.invoke(cli.cli, ["api", "repository", "--help"])
+
+    assert result.exit_code == 0
+    for sub in ("add", "list", "remove"):
+        assert sub in result.output
+
+
+def test_repository_add_creates_via_api(runner, monkeypatch):
+    captured = {}
+
+    def handler(request):
+        captured["body"] = request.read()
+        return httpx.Response(
+            201,
+            json={"name": "my_repo", "location": "s3://b/p", "broker": "", "is_read_only": False, "error": None},
+        )
+
+    _install_mock_transport(monkeypatch, handler)
+    monkeypatch.setenv(client_module.API_URL_ENV_VAR, "http://testserver")
+    monkeypatch.setenv(client_module.API_KEY_ENV_VAR, "test-key")
+
+    result = runner.invoke(
+        cli.cli,
+        [
+            "api",
+            "repository",
+            "add",
+            "--cluster",
+            "1",
+            "--name",
+            "my_repo",
+            "--location",
+            "s3://b/p",
+            "--access-key",
+            "AK",
+            "--secret-key",
+            "SK",
+            "--endpoint",
+            "https://s3.amazonaws.com",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "Created repository 'my_repo'" in result.output
+    assert b"my_repo" in captured["body"]
+
+
+def test_repository_list_prints_name_location_and_error_status(runner, monkeypatch):
+    def handler(request):
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "name": "good_repo",
+                    "location": "s3://b/p1",
+                    "broker": "",
+                    "is_read_only": False,
+                    "error": None,
+                },
+                {
+                    "name": "broken_repo",
+                    "location": "s3://b/p2",
+                    "broker": "",
+                    "is_read_only": False,
+                    "error": "auth failed",
+                },
+            ],
+        )
+
+    _install_mock_transport(monkeypatch, handler)
+    monkeypatch.setenv(client_module.API_URL_ENV_VAR, "http://testserver")
+    monkeypatch.setenv(client_module.API_KEY_ENV_VAR, "test-key")
+
+    result = runner.invoke(cli.cli, ["api", "repository", "list", "--cluster", "1"])
+
+    assert result.exit_code == 0
+    assert "good_repo" in result.output
+    assert "s3://b/p1" in result.output
+    assert "broken_repo" in result.output
+    assert "auth failed" in result.output
+
+
+def test_repository_remove_blocked_by_snapshots_exits_non_zero_without_retry(runner, monkeypatch):
+    calls = {"n": 0}
+
+    def handler(request):
+        calls["n"] += 1
+        return httpx.Response(409, json={"detail": "Repository 'my_repo' still holds snapshot data"})
+
+    _install_mock_transport(monkeypatch, handler)
+    monkeypatch.setenv(client_module.API_URL_ENV_VAR, "http://testserver")
+    monkeypatch.setenv(client_module.API_KEY_ENV_VAR, "test-key")
+
+    result = runner.invoke(cli.cli, ["api", "repository", "remove", "--cluster", "1", "my_repo"])
+
+    assert result.exit_code != 0
+    assert "snapshot data" in result.output.lower()
+    assert calls["n"] == 1
+
+
 def test_api_serve_builds_app_and_starts_uvicorn(runner, monkeypatch, api_env):
     calls = {}
 

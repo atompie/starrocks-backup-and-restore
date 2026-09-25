@@ -283,6 +283,52 @@ set only when `status` is `FAILED`.
 ```
 Safe to call repeatedly and concurrently — each due occurrence is only ever triggered once.
 
+### Repositories
+
+Repository operations are a live pass-through to the target cluster — nothing is cached locally,
+and submitted S3 credentials are never stored in the API's own metadata store.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/clusters/{id}/repositories` | List repositories that currently exist on this cluster. |
+| POST | `/clusters/{id}/repositories` | Create a new S3-compatible repository on this cluster. |
+| DELETE | `/clusters/{id}/repositories/{name}` | Delete a repository from this cluster (blocked if it holds any snapshot). |
+
+`GET /clusters/{id}/repositories` response:
+
+```json
+[
+  {
+    "name": "s3_repo",
+    "location": "s3://backups/starrocks",
+    "broker": "",
+    "is_read_only": false,
+    "error": null
+  }
+]
+```
+Returns `503` (rather than an empty list) if the cluster can't currently be reached.
+
+`POST /clusters/{id}/repositories` body:
+
+```json
+{
+  "name": "s3_repo",
+  "location": "s3://backups/starrocks",
+  "access_key": "your-access-key",
+  "secret_key": "your-secret-key",
+  "endpoint": "https://s3.amazonaws.com",
+  "region": "us-west-2"
+}
+```
+`region` is optional. Returns `409` if a repository with that name already exists on the cluster.
+The response body is a `RepositoryRead` object (as above); the submitted `access_key`/`secret_key`
+are forwarded to StarRocks and never written to the API's own metadata store.
+
+`DELETE /clusters/{id}/repositories/{name}` checks StarRocks' own `SHOW SNAPSHOT ON <repo>` first
+and returns `409` if the repository still holds any snapshot, `404` if the cluster or repository
+doesn't exist, or `204` on successful deletion.
+
 ## CLI Reference
 
 `starrocks-br api ...` commands are thin HTTP clients for the endpoints above. They never talk to
@@ -306,6 +352,9 @@ export STARROCKS_BR_API_KEY=<your key>
 | `starrocks-br api schedule list` | `GET /schedules` |
 | `starrocks-br api schedule remove <id>` | `DELETE /schedules/{id}` |
 | `starrocks-br api schedule run-due` | `POST /schedules/run-due` |
+| `starrocks-br api repository add --cluster <id> --name ... --location ... --access-key ... --secret-key ... --endpoint ... [--region ...]` | `POST /clusters/{id}/repositories` |
+| `starrocks-br api repository list --cluster <id>` | `GET /clusters/{id}/repositories` |
+| `starrocks-br api repository remove --cluster <id> <name>` | `DELETE /clusters/{id}/repositories/{name}` |
 
 `job submit --wait` polls `GET /jobs/{id}` until the job reaches `SUCCESS` or `FAILED`, printing
 progress as it goes, and exits non-zero on failure — useful in scripts/CI.
@@ -342,6 +391,14 @@ in `STARROCKS_BR_ENABLED_BACKENDS`).
 
 **`409` deleting a cluster.** It has a job in `PENDING`/`RUNNING` state, or an enabled schedule.
 Wait for the job to finish (or investigate it) and/or disable or delete the schedule first.
+
+**`409` deleting a repository.** StarRocks reports it still holds at least one snapshot
+(`SHOW SNAPSHOT ON <repo>`) — prune or restore-and-confirm the backup data first, or leave the
+repository in place. Note this checks StarRocks' live state, not this tool's own backup history.
+
+**`503` on repository endpoints.** The target cluster couldn't be reached (as opposed to it having
+zero repositories, which is a normal `200`/`[]` response) — check connectivity/credentials for that
+cluster.
 
 **A job stays `RUNNING` far longer than expected.** Poll `GET /jobs/{id}` for `state_detail` —
 it mirrors StarRocks' own `SHOW BACKUP`/`SHOW RESTORE` state (`SNAPSHOTING`, `UPLOADING`,

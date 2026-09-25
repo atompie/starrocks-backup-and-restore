@@ -198,7 +198,7 @@ You must create a repository in StarRocks **before** using this tool:
 
 ```sql
 CREATE REPOSITORY `s3_backup_repo`
-WITH S3
+WITH BROKER
 ON LOCATION "s3://your-backup-bucket/backups/"
 PROPERTIES (
     "aws.s3.access_key" = "your-access-key",

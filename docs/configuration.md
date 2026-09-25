@@ -128,19 +128,29 @@ tls:
 
 Create a backup repository in StarRocks before using the tool.
 
+> If you're running the [API server](api.md), you can also create, list, and delete
+> S3-compatible repositories on a registered cluster through the API/CLI instead of hand-writing
+> the SQL below — see [API Reference: Repositories](api.md#repositories). The manual SQL below is
+> still the only option for HDFS/Azure repositories, or if you're not running the API server.
+
 ### S3-Compatible Storage
 
 ```sql
 CREATE REPOSITORY `s3_backup_repo`
-WITH S3
+WITH BROKER
 ON LOCATION "s3://your-backup-bucket/backups/"
 PROPERTIES (
     "aws.s3.access_key" = "your-access-key",
     "aws.s3.secret_key" = "your-secret-key",
     "aws.s3.endpoint" = "https://s3.amazonaws.com",
-    "aws.s3.region" = "us-west-2"
+    "aws.s3.region" = "us-west-2",
+    "aws.s3.enable_path_style_access" = "true"
 );
 ```
+`WITH BROKER` is StarRocks' only repository clause (there is no separate `WITH S3` clause) —
+S3-compatible storage is selected by the `aws.s3.*` properties. `aws.s3.enable_path_style_access`
+is needed for non-AWS S3-compatible stores (e.g. MinIO, RustFS); omit it for real AWS S3 if you
+prefer virtual-hosted-style addressing.
 
 ### HDFS Storage
 

@@ -14,7 +14,14 @@
 
 import pytest
 
-from starrocks_br.repository import ensure_repository
+from starrocks_br.repository import (
+    RepositoryNotFoundError,
+    build_create_s3_repository_command,
+    drop_repository,
+    ensure_repository,
+    has_snapshots,
+    list_repositories,
+)
 
 
 def test_should_raise_when_repository_not_found(mocker):
@@ -73,3 +80,180 @@ def test_should_raise_when_repository_has_errors(mocker):
 
     assert "auth error" in str(err.value).lower()
     assert "broken_repo" in str(err.value)
+
+
+def test_list_repositories_parses_tuple_rows(mocker):
+    db = mocker.Mock()
+    db.query.return_value = [
+        ("34217", "minio_repo", "2025-10-16 19:00:05", "false", "s3://backups/starrocks/", "", "NULL"),
+        ("34218", "broken_repo", "2025-10-16 19:00:05", "true", "s3://backups/", "broker1", "auth error"),
+    ]
+
+    result = list_repositories(db)
+
+    assert result == [
+        {
+            "name": "minio_repo",
+            "location": "s3://backups/starrocks/",
+            "broker": "",
+            "is_read_only": False,
+            "error": None,
+        },
+        {
+            "name": "broken_repo",
+            "location": "s3://backups/",
+            "broker": "broker1",
+            "is_read_only": True,
+            "error": "auth error",
+        },
+    ]
+
+
+def test_list_repositories_parses_dict_rows(mocker):
+    db = mocker.Mock()
+    db.query.return_value = [
+        {
+            "RepoId": "1",
+            "RepoName": "minio_repo",
+            "CreateTime": "2025-10-16 19:00:05",
+            "IsReadOnly": "false",
+            "Location": "s3://backups/starrocks/",
+            "Broker": "",
+            "ErrMsg": "",
+        }
+    ]
+
+    result = list_repositories(db)
+
+    assert result == [
+        {
+            "name": "minio_repo",
+            "location": "s3://backups/starrocks/",
+            "broker": "",
+            "is_read_only": False,
+            "error": None,
+        }
+    ]
+
+
+def test_build_create_s3_repository_command_generates_expected_sql():
+    command = build_create_s3_repository_command(
+        name="my_repo",
+        location="s3://bucket/path",
+        access_key="AK",
+        secret_key="SK",
+        endpoint="https://s3.amazonaws.com",
+        region="us-west-2",
+    )
+
+    assert command == (
+        "CREATE REPOSITORY `my_repo`\n"
+        "WITH BROKER\n"
+        "ON LOCATION 's3://bucket/path'\n"
+        "PROPERTIES (\n"
+        "    'aws.s3.access_key' = 'AK',\n"
+        "    'aws.s3.secret_key' = 'SK',\n"
+        "    'aws.s3.endpoint' = 'https://s3.amazonaws.com',\n"
+        "    'aws.s3.enable_path_style_access' = 'true',\n"
+        "    'aws.s3.enable_ssl' = 'true',\n"
+        "    'aws.s3.region' = 'us-west-2'\n"
+        ")"
+    )
+
+
+def test_build_create_s3_repository_command_strips_trailing_slash_to_avoid_double_slash():
+    command = build_create_s3_repository_command(
+        name="my_repo",
+        location="s3://bucket/path/",
+        access_key="AK",
+        secret_key="SK",
+        endpoint="https://s3.amazonaws.com",
+    )
+
+    assert "ON LOCATION 's3://bucket/path'\n" in command
+    assert "path//" not in command
+
+
+def test_build_create_s3_repository_command_omits_region_when_not_provided():
+    command = build_create_s3_repository_command(
+        name="my_repo",
+        location="s3://bucket/path",
+        access_key="AK",
+        secret_key="SK",
+        endpoint="https://s3.amazonaws.com",
+    )
+
+    assert "aws.s3.region" not in command
+
+
+def test_build_create_s3_repository_command_derives_ssl_flag_from_endpoint_scheme():
+    https_command = build_create_s3_repository_command(
+        name="my_repo",
+        location="s3://bucket/path",
+        access_key="AK",
+        secret_key="SK",
+        endpoint="https://s3.amazonaws.com",
+    )
+    http_command = build_create_s3_repository_command(
+        name="my_repo",
+        location="s3://bucket/path",
+        access_key="AK",
+        secret_key="SK",
+        endpoint="http://localhost:9000",
+    )
+
+    assert "'aws.s3.enable_ssl' = 'true'" in https_command
+    assert "'aws.s3.enable_ssl' = 'false'" in http_command
+    assert "'aws.s3.enable_path_style_access' = 'true'" in https_command
+    assert "'aws.s3.enable_path_style_access' = 'true'" in http_command
+
+
+def test_has_snapshots_returns_false_when_empty(mocker):
+    db = mocker.Mock()
+    db.query.return_value = []
+
+    assert has_snapshots(db, "my_repo") is False
+
+
+def test_has_snapshots_returns_true_when_non_empty(mocker):
+    db = mocker.Mock()
+    db.query.return_value = [("snap1", "2025-10-16", "OK")]
+
+    assert has_snapshots(db, "my_repo") is True
+
+
+def test_has_snapshots_raises_not_found_distinct_from_zero_snapshots(mocker):
+    db = mocker.Mock()
+    db.query.side_effect = RuntimeError("Unknown repository 'missing_repo'")
+
+    with pytest.raises(RepositoryNotFoundError):
+        has_snapshots(db, "missing_repo")
+
+
+def test_has_snapshots_raises_not_found_for_actual_starrocks_error_wording(mocker):
+    # Verified against a live StarRocks 3.5 cluster during the manual smoke test.
+    db = mocker.Mock()
+    db.query.side_effect = RuntimeError(
+        "Getting analyzing error. Detail message: Repository [missing_repo] does not exist."
+    )
+
+    with pytest.raises(RepositoryNotFoundError):
+        has_snapshots(db, "missing_repo")
+
+
+def test_has_snapshots_reraises_other_errors(mocker):
+    db = mocker.Mock()
+    db.query.side_effect = RuntimeError("connection reset by peer")
+
+    with pytest.raises(RuntimeError) as err:
+        has_snapshots(db, "my_repo")
+
+    assert not isinstance(err.value, RepositoryNotFoundError)
+
+
+def test_drop_repository_executes_exact_sql(mocker):
+    db = mocker.Mock()
+
+    drop_repository(db, "my_repo")
+
+    db.execute.assert_called_once_with("DROP REPOSITORY `my_repo`")
