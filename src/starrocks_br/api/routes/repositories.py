@@ -10,14 +10,30 @@ the cluster reuses the same `_connect`/`decrypt_password` pattern as
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
-from ... import repository
+from ... import repository, s3_verify
 from ..auth import require_api_key
 from ..deps import get_db
-from ..schemas import RepositoryCreate, RepositoryRead
+from ..schemas import (
+    RepositoryCreate,
+    RepositoryRead,
+    RepositoryVerifyRequest,
+    RepositoryVerifyResponse,
+)
 from ._cluster_connect import connect_or_503 as _connect_or_503
 from ._cluster_connect import get_cluster_or_404 as _get_cluster_or_404
 
 router = APIRouter(tags=["repositories"], dependencies=[Depends(require_api_key)])
+
+
+@router.post("/repositories/verify", response_model=RepositoryVerifyResponse)
+def verify_repository(payload: RepositoryVerifyRequest) -> RepositoryVerifyResponse:
+    return s3_verify.verify_s3_connection(
+        location=payload.location,
+        access_key=payload.access_key,
+        secret_key=payload.secret_key,
+        endpoint=payload.endpoint,
+        region=payload.region,
+    )
 
 
 @router.get("/cluster/{cluster_id}/repositories", response_model=list[RepositoryRead])

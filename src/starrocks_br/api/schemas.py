@@ -188,6 +188,19 @@ class RepositoryRead(BaseModel):
     error: str | None
 
 
+class RepositoryVerifyRequest(BaseModel):
+    location: str = Field(min_length=1)
+    access_key: str = Field(min_length=1)
+    secret_key: str = Field(min_length=1)
+    endpoint: str = Field(min_length=1)
+    region: str | None = None
+
+
+class RepositoryVerifyResponse(BaseModel):
+    success: bool
+    message: str
+
+
 class InventoryGroupSummary(BaseModel):
     name: str
     table_count: int
