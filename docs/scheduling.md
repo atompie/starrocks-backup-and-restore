@@ -4,7 +4,61 @@ Guide for automating backups and monitoring their status.
 
 ## Scheduling Backups
 
-### Using Cron (Linux)
+### Recommended: API-managed schedules
+
+If you're running the [API server](commands.md#api-server), define schedules through it instead
+of hand-writing per-group cron entries — schedules are centrally visible and manageable
+(`starrocks-br api schedule list`), and cadence/group/backend changes take effect without editing
+crontab files. Register each schedule once:
+
+```bash
+starrocks-br api schedule add --cluster 1 --type backup_full \
+  --group production_tables --cadence "0 1 * * 0"       # Sundays at 1 AM
+starrocks-br api schedule add --cluster 1 --type backup_incremental \
+  --group production_tables --cadence "0 1 * * 1-6"     # Mon-Sat at 1 AM
+```
+
+Then point a single cron entry (or Kubernetes CronJob) at the schedule runner, on a short,
+fixed interval — it checks what's due and triggers it, doing nothing otherwise:
+
+```bash
+# crontab: check every minute for due schedules
+* * * * * STARROCKS_BR_API_URL=https://api.internal STARROCKS_BR_API_KEY=*** \
+  starrocks-br api schedule run-due
+```
+
+```yaml
+# Kubernetes CronJob, same idea
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: starrocks-br-schedule-runner
+spec:
+  schedule: "* * * * *"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+          - name: run-due
+            image: your-starrocks-br-image
+            command: ["starrocks-br", "api", "schedule", "run-due"]
+            env:
+            - name: STARROCKS_BR_API_URL
+              value: "https://api.internal"
+            - name: STARROCKS_BR_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: starrocks-br-api-credentials
+                  key: api-key
+          restartPolicy: OnFailure
+```
+
+The actual backup work runs inside the long-lived API server process (via its configured job
+execution backend), not inside this short-lived `run-due` invocation, so the cron job itself
+finishes immediately regardless of how long the triggered backup takes.
+
+### Using Cron directly (no API server)
 
 **Example: Full backup on Sundays at 1 AM**
 

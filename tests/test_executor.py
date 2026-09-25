@@ -975,3 +975,54 @@ def test_should_handle_backoff_with_immediate_completion(mocker):
     assert status["state"] == "FINISHED"
     # Should not sleep if already finished
     assert sleep_mock.call_count == 0
+
+
+def test_poll_backup_status_invokes_on_progress_with_parsed_percentage(mocker):
+    """on_progress receives a parsed progress_pct when StarRocks reports one (tuple row)."""
+    db = mocker.Mock()
+    row = ("job1", "test_backup", "test_db", "UPLOADING", "obj", "t1", "t2", "t3", "t4", "tbl1,tbl2", "42%")
+    db.query.side_effect = [
+        [row],
+        [("job1", "test_backup", "test_db", "FINISHED")],
+    ]
+    mocker.patch("time.sleep")
+
+    calls = []
+    executor.poll_backup_status(
+        db, "test_backup", "test_db", max_polls=10, poll_interval=0.001, on_progress=calls.append
+    )
+
+    assert len(calls) == 2
+    assert calls[0]["state"] == "UPLOADING"
+    assert calls[0]["progress_pct"] == 42
+    assert calls[0]["raw"]["unfinished_tasks"] == "tbl1,tbl2"
+
+
+def test_poll_backup_status_on_progress_none_when_progress_missing(mocker):
+    """on_progress still fires but with progress_pct=None when the column is absent."""
+    db = mocker.Mock()
+    db.query.side_effect = [
+        [("job1", "test_backup", "test_db", "PENDING")],
+        [("job1", "test_backup", "test_db", "FINISHED")],
+    ]
+    mocker.patch("time.sleep")
+
+    calls = []
+    executor.poll_backup_status(
+        db, "test_backup", "test_db", max_polls=10, poll_interval=0.001, on_progress=calls.append
+    )
+
+    assert calls[0]["state"] == "PENDING"
+    assert calls[0]["progress_pct"] is None
+    assert calls[0]["raw"]["unfinished_tasks"] is None
+
+
+def test_poll_backup_status_without_on_progress_behaves_as_before(mocker):
+    """Omitting on_progress (the CLI's usage) does not change the returned status."""
+    db = mocker.Mock()
+    db.query.return_value = [("job1", "test_backup", "test_db", "FINISHED")]
+    mocker.patch("time.sleep")
+
+    status = executor.poll_backup_status(db, "test_backup", "test_db", max_polls=10, poll_interval=0.001)
+
+    assert status == {"state": "FINISHED", "label": "test_backup"}

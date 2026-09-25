@@ -353,6 +353,79 @@ SELECT label FROM ops.backup_history WHERE status = 'FINISHED';
 SHOW SNAPSHOT ON your_repository;
 ```
 
+## API Server
+
+Everything the direct CLI commands above do is also available over HTTP through an optional
+FastAPI server, plus cluster registration and scheduling, which the direct CLI does not have.
+See the **[full API Server guide](api.md)** for the complete endpoint/CLI reference, running the
+server, and troubleshooting — this section is a quickstart.
+See [Configuration Reference](configuration.md#api-server-configuration) for the required
+environment variables.
+
+**Install and start:**
+```bash
+pip install "starrocks-br[api]"
+export STARROCKS_BR_API_KEY=$(python -c "import secrets; print(secrets.token_urlsafe(32))")
+export STARROCKS_BR_DB_ENCRYPTION_KEY=$(python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())")
+starrocks-br api serve --host 0.0.0.0 --port 8000
+```
+
+Every request below needs `Authorization: Bearer $STARROCKS_BR_API_KEY`. The CLI's `api`
+subcommands read the same key from `--api-key` or `STARROCKS_BR_API_KEY`, plus a
+`--api-url`/`STARROCKS_BR_API_URL` pointing at the server.
+
+### Register a cluster
+
+```bash
+curl -X POST http://localhost:8000/clusters \
+  -H "Authorization: Bearer $STARROCKS_BR_API_KEY" -H "Content-Type: application/json" \
+  -d '{"name": "prod-eu", "host": "sr.internal", "port": 9030, "user": "root",
+       "password": "secret", "database": "mydb", "repository": "s3_repo"}'
+
+# or via the CLI
+starrocks-br api cluster add --name prod-eu --host sr.internal --port 9030 \
+  --user root --password secret --database mydb --repository s3_repo
+starrocks-br api cluster list
+```
+
+### Submit and poll a job
+
+```bash
+curl -X POST http://localhost:8000/clusters/1/backups/full \
+  -H "Authorization: Bearer $STARROCKS_BR_API_KEY" -H "Content-Type: application/json" \
+  -d '{"group": "production"}'
+# -> 202 {"id": 1, "status": "PENDING", ...}
+
+curl http://localhost:8000/jobs/1 -H "Authorization: Bearer $STARROCKS_BR_API_KEY"
+# -> {"status": "RUNNING", "progress_pct": 42, ...} or {"status": "SUCCESS", ...}
+
+# or via the CLI (--wait polls until the job finishes)
+starrocks-br api job submit --cluster 1 --type backup-full --group production --wait
+```
+
+The same pattern applies to `backups/incremental`, `restores`, and `prunes` (CLI:
+`--type backup-incremental|restore|prune`), matching the direct `backup incremental`,
+`restore`, and `prune` commands' options.
+
+### Manage schedules
+
+```bash
+curl -X POST http://localhost:8000/schedules \
+  -H "Authorization: Bearer $STARROCKS_BR_API_KEY" -H "Content-Type: application/json" \
+  -d '{"cluster_id": 1, "job_type": "backup_full", "group_name": "production", "cadence": "0 1 * * 0"}'
+
+# or via the CLI
+starrocks-br api schedule add --cluster 1 --type backup_full --group production --cadence "0 1 * * 0"
+starrocks-br api schedule list
+```
+
+To actually run due schedules, call `run-due` on a fixed interval (e.g. every minute) from cron
+or a Kubernetes CronJob — see [Scheduling and Monitoring](scheduling.md):
+
+```bash
+starrocks-br api schedule run-due
+```
+
 ## Next Steps
 
 - [Scheduling and Monitoring](scheduling.md)

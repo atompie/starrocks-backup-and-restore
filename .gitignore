@@ -12,3 +12,6 @@ config.yaml
 dist
 build
 tmp/
+*.db
+starrocks_br_api.db
+.run/

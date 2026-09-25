@@ -178,6 +178,32 @@ Then reference it in your config:
 repository: "s3_backup_repo"
 ```
 
+## API Server Configuration
+
+The optional FastAPI server (`pip install "starrocks-br[api]"`, then `starrocks-br api serve`) is
+configured entirely through environment variables — there is no server config YAML file. It does
+not read `config.yaml`; StarRocks clusters are registered dynamically through the API/CLI instead.
+See the **[API Server guide](api.md)** for the full reference.
+
+| Variable | Required | Default | Purpose |
+|----------|----------|---------|---------|
+| `STARROCKS_BR_API_KEY` | Yes | — | Shared bearer token every API request must present. Server refuses to start without it. Generate with `python -c "import secrets; print(secrets.token_urlsafe(32))"`. |
+| `STARROCKS_BR_DB_ENCRYPTION_KEY` | Yes | — | Key used to encrypt registered clusters' StarRocks passwords at rest. Server refuses to start without it. Generate with `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`. |
+| `STARROCKS_BR_DATABASE_URL` | No | `sqlite:///./starrocks_br_api.db` | SQLAlchemy URL for the API's own metadata store (registered clusters, jobs, schedules). Point this at MySQL/Postgres for production; run `alembic upgrade head` (from the repo root, using `alembic.ini`) against it first. |
+| `STARROCKS_BR_ENABLED_BACKENDS` | No | `thread` | Comma-separated list of job execution backends to enable. Only `thread` (in-process) ships today. |
+| `STARROCKS_BR_DEFAULT_BACKEND` | No | `thread` | Backend used when a job submission or schedule doesn't specify one. |
+
+The CLI's own API-client commands (`starrocks-br api ...`) read two more variables so they know
+which server to talk to:
+
+| Variable | Purpose |
+|----------|---------|
+| `STARROCKS_BR_API_URL` | Base URL of the running API server. Can also be passed per-command with `--api-url`. |
+| `STARROCKS_BR_API_KEY` | Same bearer token configured on the server. Can also be passed per-command with `--api-key`. |
+
+This is unrelated to `STARROCKS_PASSWORD`, which remains how the *direct* (non-API) CLI commands
+authenticate to a StarRocks cluster from `config.yaml`.
+
 ## Next Steps
 
 - [Getting Started](getting-started.md)

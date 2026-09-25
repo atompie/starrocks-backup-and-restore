@@ -104,3 +104,51 @@ def mock_repo_exists(mocker):
 def mock_validate_tables_exist(mocker):
     """Mock table validation success (no invalid tables)."""
     return mocker.patch("starrocks_br.planner.validate_tables_exist")
+
+
+# --- API server fixtures -------------------------------------------------
+
+API_TEST_KEY = "test-api-key"
+API_TEST_ENCRYPTION_KEY = "l7z1jY3sVN6oJvA0Z2sBd8kQm4pXrT9uWc5eFgHhIiI="  # test-only Fernet key
+
+
+@pytest.fixture
+def api_env(tmp_path, monkeypatch):
+    """Configure a fresh, isolated API server environment for a single test."""
+    from starrocks_br.jobs.backend import reset_registry
+    from starrocks_br.store import crypto as crypto_module
+    from starrocks_br.store import session as session_module
+
+    db_path = tmp_path / "api_test.db"
+    monkeypatch.setenv("STARROCKS_BR_API_KEY", API_TEST_KEY)
+    monkeypatch.setenv("STARROCKS_BR_DB_ENCRYPTION_KEY", API_TEST_ENCRYPTION_KEY)
+    monkeypatch.setenv("STARROCKS_BR_DATABASE_URL", f"sqlite:///{db_path}")
+    monkeypatch.setenv("STARROCKS_BR_ENABLED_BACKENDS", "thread")
+    monkeypatch.setenv("STARROCKS_BR_DEFAULT_BACKEND", "thread")
+
+    session_module.reset_engine_cache()
+    crypto_module.reset_key_cache()
+    reset_registry()
+
+    yield
+
+    session_module.reset_engine_cache()
+    crypto_module.reset_key_cache()
+    reset_registry()
+
+
+@pytest.fixture
+def api_client(api_env):
+    """A FastAPI TestClient with tables created and the bearer token pre-set."""
+    from fastapi.testclient import TestClient
+
+    from starrocks_br.api.app import create_app
+    from starrocks_br.store.models import Base
+    from starrocks_br.store.session import get_engine
+
+    Base.metadata.create_all(get_engine())
+
+    app = create_app()
+    client = TestClient(app)
+    client.headers.update({"Authorization": f"Bearer {API_TEST_KEY}"})
+    return client

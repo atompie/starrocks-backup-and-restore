@@ -14,6 +14,7 @@
 
 import datetime
 import time
+from collections.abc import Callable
 
 from . import concurrency, exceptions, history, logger, timezone, utils
 
@@ -31,6 +32,35 @@ def _calculate_next_interval(current_interval: float, max_interval: float) -> fl
         Next interval (min of doubled current interval and max_interval)
     """
     return min(current_interval * 2, max_interval)
+
+
+def _parse_progress_pct(raw_value) -> int | None:
+    """Parse a StarRocks 'Progress' column value (e.g. '42%', '42') into an int."""
+    if raw_value is None:
+        return None
+    text = str(raw_value).strip().rstrip("%")
+    if not text:
+        return None
+    try:
+        return int(float(text))
+    except (TypeError, ValueError):
+        return None
+
+
+def _extract_restore_progress(result) -> tuple[int | None, str | None]:
+    """Extract (progress_pct, unfinished_tasks) from a SHOW RESTORE row, if present."""
+    if isinstance(result, dict):
+        progress_raw = result.get("Progress")
+        unfinished = result.get("UnfinishedTasks") or None
+    else:
+        # Tuple format: JobId, Label, Timestamp, DbName, State, AllowLoad,
+        # ReplicationNum, RestoreObjs, CreateTime, MetaPreparedTime,
+        # SnapshotFinishedTime, DownloadFinishedTime, FinishedTime,
+        # UnfinishedTasks, Progress, TaskErrMsg, Status, Timeout
+        progress_raw = result[14] if len(result) > 14 else None
+        unfinished = (result[13] if len(result) > 13 else None) or None
+
+    return _parse_progress_pct(progress_raw), unfinished
 
 
 def get_snapshot_timestamp(db, repo_name: str, snapshot_name: str) -> str:
@@ -118,6 +148,7 @@ def poll_restore_status(
     max_polls: int = MAX_POLLS,
     poll_interval: float = 1.0,
     max_poll_interval: float = 60.0,
+    on_progress: Callable[[dict], None] | None = None,
 ) -> dict[str, str]:
     """Poll restore status until completion or timeout.
 
@@ -134,6 +165,10 @@ def poll_restore_status(
         max_polls: Maximum number of polling attempts
         poll_interval: Initial seconds to wait between polls (exponentially increases)
         max_poll_interval: Maximum interval between polls (default 60 seconds)
+        on_progress: Optional callback invoked on each successful poll with
+            {"state": str, "label": str, "progress_pct": int | None,
+            "raw": {"unfinished_tasks": str | None}}. Defaults to None,
+            which preserves the exact prior behavior.
 
     Returns dictionary with keys: state, label
     Possible states: FINISHED, CANCELLED, TIMEOUT, ERROR, LOST
@@ -179,6 +214,17 @@ def poll_restore_status(
                 logger.progress(f"Restore status: {state} (poll {poll_count}/{max_polls})")
                 last_state = state
 
+            if on_progress is not None:
+                progress_pct, unfinished_tasks = _extract_restore_progress(result)
+                on_progress(
+                    {
+                        "state": state,
+                        "label": label,
+                        "progress_pct": progress_pct,
+                        "raw": {"unfinished_tasks": unfinished_tasks},
+                    }
+                )
+
             if state in ["FINISHED", "CANCELLED", "UNKNOWN"]:
                 return {"state": state, "label": label}
 
@@ -202,6 +248,7 @@ def execute_restore(
     poll_interval: float = 1.0,
     scope: str = "restore",
     ops_database: str = "ops",
+    on_progress: Callable[[dict], None] | None = None,
 ) -> dict:
     """Execute a complete restore workflow: submit command and monitor progress.
 
@@ -216,6 +263,8 @@ def execute_restore(
         poll_interval: Seconds between polls
         scope: Job scope (for concurrency control)
         ops_database: Name of ops database (default: "ops")
+        on_progress: Optional callback forwarded to poll_restore_status.
+            Defaults to None (no behavior change).
 
     Returns dictionary with keys: success, final_status, error_message
     """
@@ -235,7 +284,9 @@ def execute_restore(
     label = backup_label
 
     try:
-        final_status = poll_restore_status(db, label, database, max_polls, poll_interval)
+        final_status = poll_restore_status(
+            db, label, database, max_polls, poll_interval, on_progress=on_progress
+        )
 
         success = final_status["state"] == "FINISHED"
         finished_at = timezone.get_current_time_in_cluster_tz(cluster_tz)
@@ -458,6 +509,7 @@ def execute_restore_flow(
     rename_suffix: str = "_restored",
     skip_confirmation: bool = False,
     ops_database: str = "ops",
+    on_progress: Callable[[dict], None] | None = None,
 ) -> dict:
     """Execute the complete restore flow with safety measures.
 
@@ -469,6 +521,9 @@ def execute_restore_flow(
         rename_suffix: Suffix for temporary tables
         skip_confirmation: If True, skip interactive confirmation prompt
         ops_database: Name of ops database (default: "ops")
+        on_progress: Optional callback forwarded to each underlying
+            execute_restore call (base backup, then incremental if any).
+            Defaults to None (no behavior change).
 
     Returns:
         Dictionary with success status and details
@@ -528,6 +583,7 @@ def execute_restore_flow(
                 database_name,
                 scope="restore",
                 ops_database=ops_database,
+                on_progress=on_progress,
             )
 
             if not base_result["success"]:
@@ -609,6 +665,7 @@ def execute_restore_flow(
                         database_name,
                         scope="restore",
                         ops_database=ops_database,
+                        on_progress=on_progress,
                     )
 
                     if not incremental_result["success"]:

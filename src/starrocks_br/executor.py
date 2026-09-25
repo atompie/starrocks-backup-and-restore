@@ -14,11 +14,30 @@
 
 import re
 import time
+from collections.abc import Callable
 from typing import Literal
 
 from . import concurrency, history, logger, timezone
 
 MAX_POLLS = 86400  # 1 day
+
+
+def _parse_progress_pct(raw_value) -> int | None:
+    """Parse a StarRocks 'Progress' column value (e.g. '42%', '42') into an int.
+
+    Returns None when the value is missing or not a recognizable percentage,
+    so callers can report "no progress available for this phase" instead of
+    failing.
+    """
+    if raw_value is None:
+        return None
+    text = str(raw_value).strip().rstrip("%")
+    if not text:
+        return None
+    try:
+        return int(float(text))
+    except (TypeError, ValueError):
+        return None
 
 
 def _calculate_next_interval(current_interval: float, max_interval: float) -> float:
@@ -92,6 +111,24 @@ def _check_snapshot_exists_error(exception: Exception, error_str: str) -> str | 
     return None
 
 
+def _extract_backup_progress(result) -> tuple[int | None, str | None]:
+    """Extract (progress_pct, unfinished_tasks) from a SHOW BACKUP row, if present.
+
+    StarRocks' SHOW BACKUP output includes a 'Progress' column (percentage,
+    populated mainly during the UPLOADING phase) and an 'UnfinishedTasks'
+    column. Either may be absent or empty depending on StarRocks version and
+    current phase; both are treated as optional and never raise.
+    """
+    if isinstance(result, dict):
+        progress_raw = result.get("Progress")
+        unfinished = result.get("UnfinishedTasks") or None
+    else:
+        progress_raw = result[10] if len(result) > 10 else None
+        unfinished = (result[9] if len(result) > 9 else None) or None
+
+    return _parse_progress_pct(progress_raw), unfinished
+
+
 def poll_backup_status(
     db,
     label: str,
@@ -99,6 +136,7 @@ def poll_backup_status(
     max_polls: int = MAX_POLLS,
     poll_interval: float = 1.0,
     max_poll_interval: float = 60.0,
+    on_progress: Callable[[dict], None] | None = None,
 ) -> dict[str, str]:
     """Poll backup status until completion or timeout.
 
@@ -115,6 +153,12 @@ def poll_backup_status(
         max_polls: Maximum number of polling attempts
         poll_interval: Initial seconds to wait between polls (exponentially increases)
         max_poll_interval: Maximum interval between polls (default 60 seconds)
+        on_progress: Optional callback invoked on each successful poll with
+            {"state": str, "label": str, "progress_pct": int | None,
+            "raw": {"unfinished_tasks": str | None}}. Never called with a
+            LOST/ERROR/TIMEOUT pseudo-state; those are only ever returned.
+            Defaults to None, which preserves the exact prior behavior (CLI
+            callers do not pass it).
 
     Returns dictionary with keys: state, label
     Possible states: FINISHED, CANCELLED, TIMEOUT, ERROR, LOST
@@ -159,6 +203,17 @@ def poll_backup_status(
                 logger.progress(f"Backup status: {state} (poll {poll_count}/{max_polls})")
                 last_state = state
 
+            if on_progress is not None:
+                progress_pct, unfinished_tasks = _extract_backup_progress(result)
+                on_progress(
+                    {
+                        "state": state,
+                        "label": label,
+                        "progress_pct": progress_pct,
+                        "raw": {"unfinished_tasks": unfinished_tasks},
+                    }
+                )
+
             if state in ["FINISHED", "CANCELLED"]:
                 return {"state": state, "label": label}
 
@@ -182,6 +237,7 @@ def execute_backup(
     scope: str = "backup",
     database: str | None = None,
     ops_database: str = "ops",
+    on_progress: Callable[[dict], None] | None = None,
 ) -> dict:
     """Execute a complete backup workflow: submit command and monitor progress.
 
@@ -195,6 +251,8 @@ def execute_backup(
         scope: Job scope (for concurrency control)
         database: Database name (required for SHOW BACKUP)
         ops_database: Name of ops database (default: "ops")
+        on_progress: Optional callback forwarded to poll_backup_status; see
+            its docstring. Defaults to None (no behavior change).
 
     Returns dictionary with keys: success, final_status, error_message
     """
@@ -218,7 +276,9 @@ def execute_backup(
         return result
 
     try:
-        final_status = poll_backup_status(db, label, database, max_polls, poll_interval)
+        final_status = poll_backup_status(
+            db, label, database, max_polls, poll_interval, on_progress=on_progress
+        )
 
         success = final_status["state"] == "FINISHED"
 

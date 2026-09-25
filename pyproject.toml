@@ -15,6 +15,16 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+api = [
+    "fastapi>=0.115.0,<1",
+    "uvicorn>=0.30.0,<1",
+    "sqlalchemy>=2.0.0,<3",
+    "alembic>=1.13.0,<2",
+    "httpx>=0.27.0,<1",
+    "croniter>=2.0.0,<3",
+    "cryptography>=42.0.0,<44",
+    "pydantic>=2.7.0,<3",
+]
 dev = [
     "pytest>=8.3.2,<9",
     "pytest-mock>=3.14.0,<4",
@@ -67,4 +77,5 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401"]  # Allow unused imports in __init__.py files
-"tests/**" = ["ARG001"]   # Allow unused arguments in tests (pytest fixtures)
+"tests/**" = ["ARG001", "ARG005"]   # Allow unused arguments in tests (pytest fixtures, stub handlers)
+"src/starrocks_br/api/**" = ["B008"]  # FastAPI's Depends(...) default-argument idiom

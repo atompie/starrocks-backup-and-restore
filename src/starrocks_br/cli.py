@@ -34,6 +34,11 @@ from . import (
 )
 from . import config as config_module
 
+try:
+    from .cli_api import api_group
+except ImportError:
+    api_group = None
+
 
 def _handle_snapshot_exists_error(
     error_details: dict,
@@ -876,6 +881,10 @@ def prune_command(config, group, keep_last, older_than, snapshot, snapshots, dry
     except Exception as e:
         logger.error(f"Unexpected error: {e}")
         sys.exit(1)
+
+
+if api_group is not None:
+    cli.add_command(api_group)
 
 
 if __name__ == "__main__":

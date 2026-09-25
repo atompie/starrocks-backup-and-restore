@@ -1304,7 +1304,15 @@ def test_should_fail_restore_flow_when_incremental_restore_fails(mocker):
     mocker.patch("starrocks_br.restore.get_partitions_from_backup", return_value=["fact_sales"])
 
     def mock_execute_restore(
-        db, command, backup_label, restore_type, repo, database, scope="restore", ops_database="ops"
+        db,
+        command,
+        backup_label,
+        restore_type,
+        repo,
+        database,
+        scope="restore",
+        ops_database="ops",
+        on_progress=None,
     ):
         if "full" in backup_label:
             return {"success": True}
@@ -1748,3 +1756,56 @@ def test_should_restore_table_in_both_backups_using_partition_level_incremental(
         if "AS " in inc_command
         else True
     ), "Incremental restore for table in base should not use AS clause after table name"
+
+
+def test_poll_restore_status_invokes_on_progress_with_parsed_percentage(mocker):
+    """on_progress receives a parsed progress_pct when StarRocks reports one (tuple row)."""
+    db = mocker.Mock()
+    # JobId, Label, Timestamp, DbName, State, AllowLoad, ReplicationNum, RestoreObjs,
+    # CreateTime, MetaPreparedTime, SnapshotFinishedTime, DownloadFinishedTime,
+    # FinishedTime, UnfinishedTasks, Progress
+    row = (
+        "job1", "test_label", "ts", "test_db", "DOWNLOADING", "true", "1", "obj",
+        "t1", "t2", "t3", "t4", "t5", "tbl1", "37%",
+    )
+    db.query.side_effect = [
+        [row],
+        [("job1", "test_label", "ts", "test_db", "FINISHED")],
+    ]
+    mocker.patch("time.sleep")
+
+    calls = []
+    restore.poll_restore_status(
+        db, "test_label", "test_db", max_polls=10, poll_interval=0.001, on_progress=calls.append
+    )
+
+    assert calls[0]["state"] == "DOWNLOADING"
+    assert calls[0]["progress_pct"] == 37
+    assert calls[0]["raw"]["unfinished_tasks"] == "tbl1"
+
+
+def test_poll_restore_status_on_progress_none_when_progress_missing(mocker):
+    db = mocker.Mock()
+    db.query.side_effect = [
+        [("job1", "test_label", "ts", "test_db", "PENDING")],
+        [("job1", "test_label", "ts", "test_db", "FINISHED")],
+    ]
+    mocker.patch("time.sleep")
+
+    calls = []
+    restore.poll_restore_status(
+        db, "test_label", "test_db", max_polls=10, poll_interval=0.001, on_progress=calls.append
+    )
+
+    assert calls[0]["progress_pct"] is None
+    assert calls[0]["raw"]["unfinished_tasks"] is None
+
+
+def test_poll_restore_status_without_on_progress_behaves_as_before(mocker):
+    db = mocker.Mock()
+    db.query.return_value = [("job1", "test_label", "ts", "test_db", "FINISHED")]
+    mocker.patch("time.sleep")
+
+    status = restore.poll_restore_status(db, "test_label", "test_db", max_polls=10, poll_interval=0.001)
+
+    assert status == {"state": "FINISHED", "label": "test_label"}

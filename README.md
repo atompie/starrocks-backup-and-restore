@@ -18,6 +18,7 @@ Full and incremental backup automation for StarRocks shared-nothing clusters.
 - **[Installation Guide](docs/installation.md)** - All installation methods
 - **[Configuration Reference](docs/configuration.md)** - Config file reference and TLS setup
 - **[Commands Reference](docs/commands.md)** - Detailed command reference
+- **[API Server](docs/api.md)** - Run `starrocks-br` as a service: multi-cluster registry, jobs, and schedules over HTTP
 - **[Scheduling & Monitoring](docs/scheduling.md)** - Automate backups and monitor status
 
 ## Why This Tool?

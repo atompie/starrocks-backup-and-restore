@@ -21,6 +21,19 @@ starrocks-br --help
 
 **Note:** Always activate the virtual environment before using the tool.
 
+### Optional: API server support
+
+The CLI works standalone with no extra dependencies. To also run the FastAPI
+server (register clusters, submit/monitor jobs, manage schedules over HTTP —
+see [Commands Reference](commands.md#api-server)), install the `api` extra:
+
+```bash
+pip install "starrocks-br[api]"
+```
+
+This adds FastAPI, Uvicorn, SQLAlchemy, Alembic, httpx, and croniter. It is
+not required for any of the existing direct-to-StarRocks CLI commands.
+
 ## Option 2: Standalone Executable
 
 **No Python installation required.**
