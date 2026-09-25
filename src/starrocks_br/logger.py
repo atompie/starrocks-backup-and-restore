@@ -13,10 +13,32 @@
 # limitations under the License.
 
 import logging
+import sys
 import threading
 
 _logger = None
 _logger_lock = threading.Lock()
+
+
+class _StderrHandler(logging.StreamHandler):
+    """StreamHandler that resolves sys.stderr at write time.
+
+    Plain StreamHandler() caches whatever sys.stderr was bound to
+    when it was constructed. Since _logger is a module-level singleton,
+    that stale reference outlives any later reassignment of sys.stderr
+    (e.g. pytest's capsys or Click's CliRunner), silently swallowing output.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+
+    @property
+    def stream(self):
+        return sys.stderr
+
+    @stream.setter
+    def stream(self, value) -> None:
+        pass
 
 
 def setup_logging(level: int = logging.INFO) -> None:
@@ -27,7 +49,7 @@ def setup_logging(level: int = logging.INFO) -> None:
     if _logger.handlers:
         _logger.handlers.clear()
 
-    handler = logging.StreamHandler()
+    handler = _StderrHandler()
 
     if level == logging.DEBUG:
         formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(name)s - %(message)s")
