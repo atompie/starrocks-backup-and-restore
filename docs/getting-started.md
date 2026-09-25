@@ -21,7 +21,7 @@ Connect to your StarRocks cluster and run:
 
 ```sql
 CREATE REPOSITORY `my_backup_repo`
-WITH S3
+WITH BROKER
 ON LOCATION "s3://your-backup-bucket/backups/"
 PROPERTIES (
     "aws.s3.access_key" = "your-access-key",

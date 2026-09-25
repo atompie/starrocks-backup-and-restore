@@ -26,7 +26,7 @@ from ..jobs.backend import BackendRegistry, set_registry
 from ..jobs.thread_backend import ThreadBackend
 from ..store.crypto import ENCRYPTION_KEY_ENV_VAR
 from .config import API_KEY_ENV_VAR, get_api_key, get_default_backend, get_enabled_backends
-from .routes import clusters, health, jobs, schedules
+from .routes import clusters, health, jobs, repositories, schedules
 
 _KNOWN_BACKEND_FACTORIES = {
     "thread": ThreadBackend,
@@ -87,4 +87,5 @@ def create_app(*, check_env: bool = True) -> FastAPI:
     app.include_router(clusters.router)
     app.include_router(jobs.router)
     app.include_router(schedules.router)
+    app.include_router(repositories.router)
     return app

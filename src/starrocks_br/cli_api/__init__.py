@@ -21,6 +21,7 @@ import click
 
 from .cluster import cluster_group
 from .job import job_group
+from .repository import repository_group
 from .schedule import schedule_group
 
 
@@ -44,4 +45,5 @@ def api_serve(host, port):
 
 api_group.add_command(cluster_group)
 api_group.add_command(job_group)
+api_group.add_command(repository_group)
 api_group.add_command(schedule_group)

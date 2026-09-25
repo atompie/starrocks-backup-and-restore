@@ -27,7 +27,7 @@ from pydantic import BaseModel, ConfigDict, Field
 class ClusterCreate(BaseModel):
     name: str = Field(min_length=1, max_length=128)
     host: str = Field(min_length=1, max_length=255)
-    port: int = Field(gt=0, le=65535)
+    port: int = Field(default=9030, gt=0, le=65535)
     user: str = Field(min_length=1, max_length=128)
     password: str = Field(default="", description="StarRocks allows an empty password (e.g. local root).")
     database: str = Field(min_length=1, max_length=128)
@@ -130,3 +130,20 @@ class ScheduleRead(BaseModel):
 class RunDueResponse(BaseModel):
     triggered_job_ids: list[int]
     triggered_count: int
+
+
+class RepositoryCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=128)
+    location: str = Field(min_length=1)
+    access_key: str = Field(min_length=1)
+    secret_key: str = Field(min_length=1)
+    endpoint: str = Field(min_length=1)
+    region: str | None = None
+
+
+class RepositoryRead(BaseModel):
+    name: str
+    location: str | None
+    broker: str | None
+    is_read_only: bool
+    error: str | None
