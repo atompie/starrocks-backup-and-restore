@@ -14,58 +14,65 @@
 
 from datetime import datetime
 
+from sqlalchemy import and_, or_, select
+from sqlalchemy.orm import Session
+
 from . import logger
+from .store.models import BackupHistory, BackupPartition, TableInventory
 
 
 def get_successful_backups(
-    db, repository: str, group: str = None, ops_database: str = "ops"
+    session: Session, cluster_id: int, repository: str, group: str = None
 ) -> list[dict]:
     """Get all successful backups from backup_history, optionally filtered by group.
 
     Args:
-        db: Database connection
+        session: SQLite metastore session
+        cluster_id: Cluster this backup history belongs to
         repository: Repository name to filter by
         group: Optional inventory group to filter by
-        ops_database: Name of the ops database (defaults to "ops")
 
     Returns:
         List of backup records as dicts with keys: label, finished_at, inventory_group (if group filtering is used)
     """
-    if group:
-        sql = f"""
-        SELECT DISTINCT
-            bh.label,
-            bh.finished_at,
-            ti.inventory_group
-        FROM {ops_database}.backup_history bh
-        INNER JOIN {ops_database}.backup_partitions bp ON bh.label = bp.label
-        INNER JOIN {ops_database}.table_inventory ti
-            ON bp.database_name = ti.database_name
-            AND (bp.table_name = ti.table_name OR ti.table_name = '*')
-        WHERE bh.repository = '{repository}'
-            AND bh.status = 'FINISHED'
-            AND ti.inventory_group = '{group}'
-        ORDER BY bh.finished_at ASC
-        """
-    else:
-        sql = f"""
-        SELECT
-            label,
-            finished_at
-        FROM {ops_database}.backup_history
-        WHERE repository = '{repository}'
-            AND status = 'FINISHED'
-        ORDER BY finished_at ASC
-        """
-
-    rows = db.query(sql)
     results = []
 
-    for row in rows:
-        if group:
-            results.append({"label": row[0], "finished_at": str(row[1]), "inventory_group": row[2]})
-        else:
-            results.append({"label": row[0], "finished_at": str(row[1])})
+    if group:
+        rows = session.execute(
+            select(BackupHistory.label, BackupHistory.finished_at, TableInventory.inventory_group)
+            .distinct()
+            .join(BackupPartition, BackupPartition.label == BackupHistory.label)
+            .join(
+                TableInventory,
+                and_(
+                    TableInventory.database_name == BackupPartition.database_name,
+                    or_(TableInventory.table_name == BackupPartition.table_name, TableInventory.table_name == "*"),
+                    TableInventory.cluster_id == cluster_id,
+                ),
+            )
+            .where(
+                BackupHistory.cluster_id == cluster_id,
+                BackupPartition.cluster_id == cluster_id,
+                BackupHistory.repository == repository,
+                BackupHistory.status == "FINISHED",
+                TableInventory.inventory_group == group,
+            )
+            .order_by(BackupHistory.finished_at.asc())
+        ).all()
+        for label, finished_at, inventory_group in rows:
+            results.append({"label": label, "finished_at": str(finished_at), "inventory_group": inventory_group})
+    else:
+        rows = session.execute(
+            select(BackupHistory.label, BackupHistory.finished_at)
+            .where(
+                BackupHistory.cluster_id == cluster_id,
+                BackupHistory.repository == repository,
+                BackupHistory.status == "FINISHED",
+            )
+            .order_by(BackupHistory.finished_at.asc())
+        ).all()
+        for label, finished_at in rows:
+            results.append({"label": label, "finished_at": str(finished_at)})
 
     return results
 
@@ -190,17 +197,26 @@ def execute_drop_snapshot(db, repository: str, snapshot_name: str) -> None:
         raise
 
 
-def cleanup_backup_history(db, snapshot_label: str, ops_database: str = "ops") -> None:
+def cleanup_backup_history(session: Session, cluster_id: int, snapshot_label: str) -> None:
     """Remove backup history entry after snapshot deletion.
 
     Args:
-        db: Database connection
+        session: SQLite metastore session
+        cluster_id: Cluster this backup history belongs to
         snapshot_label: Snapshot label to remove from history
-        ops_database: Name of the ops database (defaults to "ops")
     """
     try:
-        db.execute(f"DELETE FROM {ops_database}.backup_partitions WHERE label = '{snapshot_label}'")
-        db.execute(f"DELETE FROM {ops_database}.backup_history WHERE label = '{snapshot_label}'")
+        session.execute(
+            BackupPartition.__table__.delete().where(
+                BackupPartition.cluster_id == cluster_id, BackupPartition.label == snapshot_label
+            )
+        )
+        session.execute(
+            BackupHistory.__table__.delete().where(
+                BackupHistory.cluster_id == cluster_id, BackupHistory.label == snapshot_label
+            )
+        )
+        session.flush()
         logger.debug(f"Cleaned up backup history for: {snapshot_label}")
     except Exception as e:
         logger.warning(f"Failed to cleanup backup history for '{snapshot_label}': {e}")

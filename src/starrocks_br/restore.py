@@ -16,7 +16,11 @@ import datetime
 import time
 from collections.abc import Callable
 
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
 from . import concurrency, exceptions, history, logger, timezone, utils
+from .store.models import BackupHistory, BackupPartition, TableInventory
 
 MAX_POLLS = 86400  # 1 day
 
@@ -239,6 +243,8 @@ def poll_restore_status(
 
 def execute_restore(
     db,
+    session: Session,
+    cluster_id: int,
     restore_command: str,
     backup_label: str,
     restore_type: str,
@@ -247,13 +253,14 @@ def execute_restore(
     max_polls: int = MAX_POLLS,
     poll_interval: float = 1.0,
     scope: str = "restore",
-    ops_database: str = "ops",
     on_progress: Callable[[dict], None] | None = None,
 ) -> dict:
     """Execute a complete restore workflow: submit command and monitor progress.
 
     Args:
         db: Database connection
+        session: SQLite metastore session
+        cluster_id: Cluster this restore belongs to
         restore_command: Restore SQL command to execute
         backup_label: Label of the backup being restored
         restore_type: Type of restore operation
@@ -262,7 +269,6 @@ def execute_restore(
         max_polls: Maximum polling attempts
         poll_interval: Seconds between polls
         scope: Job scope (for concurrency control)
-        ops_database: Name of ops database (default: "ops")
         on_progress: Optional callback forwarded to poll_restore_status.
             Defaults to None (no behavior change).
 
@@ -293,7 +299,8 @@ def execute_restore(
 
         try:
             history.log_restore(
-                db,
+                session,
+                cluster_id,
                 {
                     "job_id": label,
                     "backup_label": backup_label,
@@ -304,18 +311,17 @@ def execute_restore(
                     "finished_at": finished_at,
                     "error_message": None if success else final_status["state"],
                 },
-                ops_database=ops_database,
             )
         except Exception as e:
             logger.error(f"Failed to log restore history: {str(e)}")
 
         try:
             concurrency.complete_job_slot(
-                db,
+                session,
+                cluster_id,
                 scope=scope,
                 label=label,
                 final_state=final_status["state"],
-                ops_database=ops_database,
             )
         except Exception as e:
             logger.error(f"Failed to complete job slot: {str(e)}")
@@ -333,11 +339,12 @@ def execute_restore(
         return {"success": False, "final_status": None, "error_message": str(e)}
 
 
-def find_restore_pair(db, target_label: str, ops_database: str = "ops") -> list[str]:
+def find_restore_pair(session: Session, cluster_id: int, target_label: str) -> list[str]:
     """Find the correct sequence of backups needed for restore.
 
     Args:
-        db: Database connection
+        session: SQLite metastore session
+        cluster_id: Cluster this backup history belongs to
         target_label: The backup label to restore to
 
     Returns:
@@ -347,60 +354,57 @@ def find_restore_pair(db, target_label: str, ops_database: str = "ops") -> list[
     Raises:
         ValueError: If target label not found or incremental has no preceding full backup
     """
-    query = f"""
-    SELECT label, backup_type, finished_at
-    FROM {ops_database}.backup_history
-    WHERE label = {utils.quote_value(target_label)}
-    AND status = 'FINISHED'
-    """
-
-    rows = db.query(query)
-    if not rows:
+    target_row = session.scalars(
+        select(BackupHistory).where(
+            BackupHistory.cluster_id == cluster_id,
+            BackupHistory.label == target_label,
+            BackupHistory.status == "FINISHED",
+        )
+    ).first()
+    if target_row is None:
         raise exceptions.BackupLabelNotFoundError(target_label)
 
-    target_info = {"label": rows[0][0], "backup_type": rows[0][1], "finished_at": rows[0][2]}
-
-    if target_info["backup_type"] == "full":
+    if target_row.backup_type == "full":
         return [target_label]
 
-    if target_info["backup_type"] == "incremental":
+    if target_row.backup_type == "incremental":
         database_name = target_label.split("_")[0]
 
-        full_backup_query = f"""
-        SELECT label, backup_type, finished_at
-        FROM {ops_database}.backup_history
-        WHERE backup_type = 'full'
-        AND status = 'FINISHED'
-        AND label LIKE {utils.quote_value(f"{database_name}_%")}
-        AND finished_at < {utils.quote_value(target_info["finished_at"])}
-        ORDER BY finished_at DESC
-        LIMIT 1
-        """
-
-        full_rows = db.query(full_backup_query)
-        if not full_rows:
+        base_row = session.scalars(
+            select(BackupHistory)
+            .where(
+                BackupHistory.cluster_id == cluster_id,
+                BackupHistory.backup_type == "full",
+                BackupHistory.status == "FINISHED",
+                BackupHistory.label.like(f"{database_name}_%"),
+                BackupHistory.finished_at < target_row.finished_at,
+            )
+            .order_by(BackupHistory.finished_at.desc())
+            .limit(1)
+        ).first()
+        if base_row is None:
             raise exceptions.NoSuccessfulFullBackupFoundError(target_label)
 
-        base_full_backup = full_rows[0][0]
-        return [base_full_backup, target_label]
+        return [base_row.label, target_label]
 
-    raise ValueError(
-        f"Unknown backup type '{target_info['backup_type']}' for label '{target_label}'"
-    )
+    raise ValueError(f"Unknown backup type '{target_row.backup_type}' for label '{target_label}'")
 
 
 def get_tables_from_backup(
     db,
+    session: Session,
+    cluster_id: int,
     label: str,
     group: str | None = None,
     table: str | None = None,
     database: str | None = None,
-    ops_database: str = "ops",
 ) -> list[str]:
     """Get list of tables to restore from backup manifest.
 
     Args:
-        db: Database connection
+        db: Database connection (only used for the group '*'-wildcard SHOW TABLES branch)
+        session: SQLite metastore session
+        cluster_id: Cluster this backup manifest belongs to
         label: Backup label
         group: Optional inventory group to filter tables
         table: Optional table name to filter (single table, database comes from database parameter)
@@ -422,14 +426,12 @@ def get_tables_from_backup(
             table, "database parameter is required when table is specified"
         )
 
-    query = f"""
-    SELECT DISTINCT database_name, table_name
-    FROM {ops_database}.backup_partitions
-    WHERE label = {utils.quote_value(label)}
-    ORDER BY database_name, table_name
-    """
-
-    rows = db.query(query)
+    rows = session.execute(
+        select(BackupPartition.database_name, BackupPartition.table_name)
+        .distinct()
+        .where(BackupPartition.cluster_id == cluster_id, BackupPartition.label == label)
+        .order_by(BackupPartition.database_name, BackupPartition.table_name)
+    ).all()
     if not rows:
         return []
 
@@ -445,19 +447,16 @@ def get_tables_from_backup(
         return filtered_tables
 
     if group:
-        group_query = f"""
-        SELECT database_name, table_name
-        FROM {ops_database}.table_inventory
-        WHERE inventory_group = {utils.quote_value(group)}
-        """
-
-        group_rows = db.query(group_query)
+        group_rows = session.execute(
+            select(TableInventory.database_name, TableInventory.table_name).where(
+                TableInventory.cluster_id == cluster_id, TableInventory.inventory_group == group
+            )
+        ).all()
         if not group_rows:
             return []
 
         group_tables = set()
-        for row in group_rows:
-            database_name, table_name = row[0], row[1]
+        for database_name, table_name in group_rows:
             if table_name == "*":
                 show_tables_query = f"SHOW TABLES FROM {utils.quote_identifier(database_name)}"
                 try:
@@ -474,53 +473,56 @@ def get_tables_from_backup(
     return tables
 
 
-def get_partitions_from_backup(db, label: str, table: str, ops_database: str = "ops") -> list[str]:
+def get_partitions_from_backup(session: Session, cluster_id: int, label: str, table: str) -> list[str]:
     """Get list of partitions for a specific table from backup manifest.
 
     Args:
-        db: Database connection
+        session: SQLite metastore session
+        cluster_id: Cluster this backup manifest belongs to
         label: Backup label
         table: Table name in format 'database.table'
-        ops_database: Operations database name
 
     Returns:
         List of partition names for the table in this backup
     """
     database_name, table_name = table.split(".", 1)
 
-    query = f"""
-    SELECT partition_name
-    FROM {ops_database}.backup_partitions
-    WHERE label = {utils.quote_value(label)}
-      AND database_name = {utils.quote_value(database_name)}
-      AND table_name = {utils.quote_value(table_name)}
-    ORDER BY partition_name
-    """
-
-    rows = db.query(query)
-    return [row[0] for row in rows]
+    return list(
+        session.scalars(
+            select(BackupPartition.partition_name)
+            .where(
+                BackupPartition.cluster_id == cluster_id,
+                BackupPartition.label == label,
+                BackupPartition.database_name == database_name,
+                BackupPartition.table_name == table_name,
+            )
+            .order_by(BackupPartition.partition_name)
+        )
+    )
 
 
 def execute_restore_flow(
     db,
+    session: Session,
+    cluster_id: int,
     repo_name: str,
     restore_pair: list[str],
     tables_to_restore: list[str],
     rename_suffix: str = "_restored",
     skip_confirmation: bool = False,
-    ops_database: str = "ops",
     on_progress: Callable[[dict], None] | None = None,
 ) -> dict:
     """Execute the complete restore flow with safety measures.
 
     Args:
         db: Database connection
+        session: SQLite metastore session
+        cluster_id: Cluster this restore belongs to
         repo_name: Repository name
         restore_pair: List of backup labels in restore order
         tables_to_restore: List of tables to restore (format: database.table)
         rename_suffix: Suffix for temporary tables
         skip_confirmation: If True, skip interactive confirmation prompt
-        ops_database: Name of ops database (default: "ops")
         on_progress: Optional callback forwarded to each underlying
             execute_restore call (base backup, then incremental if any).
             Defaults to None (no behavior change).
@@ -556,7 +558,7 @@ def execute_restore_flow(
 
         base_label = restore_pair[0]
 
-        tables_in_base = get_tables_from_backup(db, base_label, ops_database=ops_database)
+        tables_in_base = get_tables_from_backup(db, session, cluster_id, base_label)
         tables_to_restore_from_base = [t for t in tables_to_restore if t in tables_in_base]
 
         if tables_to_restore_from_base:
@@ -576,13 +578,14 @@ def execute_restore_flow(
 
             base_result = execute_restore(
                 db,
+                session,
+                cluster_id,
                 base_restore_command,
                 base_label,
                 "full",
                 repo_name,
                 database_name,
                 scope="restore",
-                ops_database=ops_database,
                 on_progress=on_progress,
             )
 
@@ -602,9 +605,7 @@ def execute_restore_flow(
         if len(restore_pair) > 1:
             incremental_label = restore_pair[1]
 
-            tables_in_incremental = get_tables_from_backup(
-                db, incremental_label, ops_database=ops_database
-            )
+            tables_in_incremental = get_tables_from_backup(db, session, cluster_id, incremental_label)
             tables_to_restore_from_incremental = [
                 t for t in tables_to_restore if t in tables_in_incremental
             ]
@@ -621,9 +622,7 @@ def execute_restore_flow(
                 incremental_timestamp = get_snapshot_timestamp(db, repo_name, incremental_label)
 
                 for table in tables_to_restore_from_incremental:
-                    partitions = get_partitions_from_backup(
-                        db, incremental_label, table, ops_database=ops_database
-                    )
+                    partitions = get_partitions_from_backup(session, cluster_id, incremental_label, table)
 
                     if not partitions:
                         logger.warning(
@@ -658,13 +657,14 @@ def execute_restore_flow(
 
                     incremental_result = execute_restore(
                         db,
+                        session,
+                        cluster_id,
                         incremental_restore_command,
                         incremental_label,
                         "incremental",
                         repo_name,
                         database_name,
                         scope="restore",
-                        ops_database=ops_database,
                         on_progress=on_progress,
                     )
 

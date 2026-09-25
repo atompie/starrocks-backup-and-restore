@@ -1,8 +1,9 @@
 """Inventory group routes, scoped to a registered cluster.
 
 Per specs/api-inventory-groups, inventory group listing/creation/membership
-management are live pass-throughs to the target StarRocks cluster - no
-local state is introduced, matching `repositories.py`'s pattern.
+management read and write this tool's own SQLite metastore (table_inventory,
+scoped by cluster_id) - no StarRocks connection is needed for these routes at
+all since the move-ops-tables-to-sqlite change.
 """
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -18,7 +19,7 @@ from ..schemas import (
     InventoryMembershipCreate,
     InventoryMembershipRead,
 )
-from ._cluster_connect import connect_or_503, get_cluster_or_404
+from ._cluster_connect import get_cluster_or_404
 
 router = APIRouter(tags=["inventory-groups"], dependencies=[Depends(require_api_key)])
 
@@ -28,13 +29,8 @@ router = APIRouter(tags=["inventory-groups"], dependencies=[Depends(require_api_
     response_model=list[InventoryGroupSummary],
 )
 def list_inventory_groups(cluster_id: int, db: Session = Depends(get_db)) -> list[dict]:
-    cluster = get_cluster_or_404(db, cluster_id)
-
-    database = connect_or_503(cluster)
-    try:
-        return inventory_groups.list_groups(database, cluster.ops_database)
-    finally:
-        database.close()
+    get_cluster_or_404(db, cluster_id)
+    return inventory_groups.list_groups(db, cluster_id)
 
 
 @router.post(
@@ -47,23 +43,19 @@ def create_inventory_group(
 ) -> dict:
     cluster = get_cluster_or_404(db, cluster_id)
 
-    database = connect_or_503(cluster)
-    try:
-        if inventory_groups.group_exists(database, payload.name, cluster.ops_database):
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=f"Inventory group '{payload.name}' already exists on cluster '{cluster.name}'",
-            )
+    if inventory_groups.group_exists(db, cluster_id, payload.name):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Inventory group '{payload.name}' already exists on cluster '{cluster.name}'",
+        )
 
-        entries = [(table.database, table.table) for table in payload.tables]
-        inventory_groups.add_memberships_bulk(database, payload.name, entries, cluster.ops_database)
+    entries = [(table.database, table.table) for table in payload.tables]
+    inventory_groups.add_memberships_bulk(db, cluster_id, payload.name, entries)
 
-        return {
-            "name": payload.name,
-            "tables": inventory_groups.get_group(database, payload.name, cluster.ops_database),
-        }
-    finally:
-        database.close()
+    return {
+        "name": payload.name,
+        "tables": inventory_groups.get_group(db, cluster_id, payload.name),
+    }
 
 
 @router.get(
@@ -73,17 +65,13 @@ def create_inventory_group(
 def get_inventory_group(cluster_id: int, group_name: str, db: Session = Depends(get_db)) -> dict:
     cluster = get_cluster_or_404(db, cluster_id)
 
-    database = connect_or_503(cluster)
-    try:
-        tables = inventory_groups.get_group(database, group_name, cluster.ops_database)
-        if not tables:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Inventory group '{group_name}' not found on cluster '{cluster.name}'",
-            )
-        return {"name": group_name, "tables": tables}
-    finally:
-        database.close()
+    tables = inventory_groups.get_group(db, cluster_id, group_name)
+    if not tables:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Inventory group '{group_name}' not found on cluster '{cluster.name}'",
+        )
+    return {"name": group_name, "tables": tables}
 
 
 @router.post(
@@ -97,29 +85,23 @@ def add_inventory_group_table(
     payload: InventoryMembershipCreate,
     db: Session = Depends(get_db),
 ) -> dict:
-    cluster = get_cluster_or_404(db, cluster_id)
+    get_cluster_or_404(db, cluster_id)
 
-    database = connect_or_503(cluster)
     try:
-        try:
-            inventory_groups.add_membership(
-                database, group_name, payload.database, payload.table, cluster.ops_database
-            )
-        except inventory_groups.InventoryMembershipConflictError as e:
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e)) from e
+        inventory_groups.add_membership(db, cluster_id, group_name, payload.database, payload.table)
+    except inventory_groups.InventoryMembershipConflictError as e:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e)) from e
 
-        for membership in inventory_groups.get_group(database, group_name, cluster.ops_database):
-            if membership["database"] == payload.database and membership["table"] == payload.table:
-                return membership
-        # Defensive fallback - should be unreachable since add_membership just succeeded.
-        return {
-            "database": payload.database,
-            "table": payload.table,
-            "created_at": "",
-            "updated_at": "",
-        }
-    finally:
-        database.close()
+    for membership in inventory_groups.get_group(db, cluster_id, group_name):
+        if membership["database"] == payload.database and membership["table"] == payload.table:
+            return membership
+    # Defensive fallback - should be unreachable since add_membership just succeeded.
+    return {
+        "database": payload.database,
+        "table": payload.table,
+        "created_at": "",
+        "updated_at": "",
+    }
 
 
 @router.delete(
@@ -133,18 +115,12 @@ def remove_inventory_group_table(
     table_name: str,
     db: Session = Depends(get_db),
 ) -> None:
-    cluster = get_cluster_or_404(db, cluster_id)
+    get_cluster_or_404(db, cluster_id)
 
-    database = connect_or_503(cluster)
     try:
-        try:
-            inventory_groups.remove_membership(
-                database, group_name, database_name, table_name, cluster.ops_database
-            )
-        except inventory_groups.InventoryMembershipNotFoundError as e:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e)) from e
-    finally:
-        database.close()
+        inventory_groups.remove_membership(db, cluster_id, group_name, database_name, table_name)
+    except inventory_groups.InventoryMembershipNotFoundError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e)) from e
 
 
 @router.delete(
@@ -152,13 +128,9 @@ def remove_inventory_group_table(
     status_code=status.HTTP_204_NO_CONTENT,
 )
 def delete_inventory_group(cluster_id: int, group_name: str, db: Session = Depends(get_db)) -> None:
-    cluster = get_cluster_or_404(db, cluster_id)
+    get_cluster_or_404(db, cluster_id)
 
-    database = connect_or_503(cluster)
     try:
-        try:
-            inventory_groups.delete_group(database, group_name, cluster.ops_database)
-        except inventory_groups.InventoryGroupNotFoundError as e:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e)) from e
-    finally:
-        database.close()
+        inventory_groups.delete_group(db, cluster_id, group_name)
+    except inventory_groups.InventoryGroupNotFoundError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e)) from e

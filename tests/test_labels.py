@@ -12,149 +12,142 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import datetime as dt
 from datetime import datetime
 
 from starrocks_br import labels
+from starrocks_br.store.models import BackupHistory
 
 
-def test_should_generate_auto_label_with_no_conflicts(mocker):
-    """Test auto-generated date-based labels with no existing conflicts."""
-    db = mocker.Mock()
-    db.query.return_value = []
+def _add_history(session, cluster_id, label):
+    session.add(
+        BackupHistory(
+            cluster_id=cluster_id,
+            label=label,
+            backup_type="full",
+            status="FINISHED",
+            repository="repo",
+            started_at=dt.datetime(2025, 1, 1),
+            finished_at=dt.datetime(2025, 1, 1, 1),
+        )
+    )
+    session.commit()
 
-    result = labels.determine_backup_label(db, "incremental", "mydb")
+
+def test_should_generate_auto_label_with_no_conflicts(sqlite_session, make_cluster):
+    cluster = make_cluster()
+
+    result = labels.determine_backup_label(sqlite_session, cluster.id, "incremental", "mydb")
 
     today = datetime.now().strftime("%Y%m%d")
-    expected = f"mydb_{today}_incremental"
-    assert result == expected
+    assert result == f"mydb_{today}_incremental"
 
 
-def test_should_generate_auto_label_with_conflicts(mocker):
-    """Test auto-generated labels when conflicts exist."""
+def test_should_generate_auto_label_with_conflicts(sqlite_session, make_cluster):
+    cluster = make_cluster()
     today = datetime.now().strftime("%Y%m%d")
     base_label = f"mydb_{today}_incremental"
+    _add_history(sqlite_session, cluster.id, base_label)
 
-    db = mocker.Mock()
-    db.query.return_value = [(base_label,)]
+    result = labels.determine_backup_label(sqlite_session, cluster.id, "incremental", "mydb")
 
-    result = labels.determine_backup_label(db, "incremental", "mydb")
-
-    expected = f"{base_label}_r1"
-    assert result == expected
+    assert result == f"{base_label}_r1"
 
 
-def test_should_generate_auto_label_with_multiple_conflicts(mocker):
-    """Test auto-generated labels with multiple existing conflicts."""
+def test_should_generate_auto_label_with_multiple_conflicts(sqlite_session, make_cluster):
+    cluster = make_cluster()
     today = datetime.now().strftime("%Y%m%d")
     base_label = f"mydb_{today}_full"
+    for candidate in (base_label, f"{base_label}_r1", f"{base_label}_r2"):
+        _add_history(sqlite_session, cluster.id, candidate)
 
-    db = mocker.Mock()
-    db.query.return_value = [(base_label,), (f"{base_label}_r1",), (f"{base_label}_r2",)]
+    result = labels.determine_backup_label(sqlite_session, cluster.id, "full", "mydb")
 
-    result = labels.determine_backup_label(db, "full", "mydb")
-
-    expected = f"{base_label}_r3"
-    assert result == expected
+    assert result == f"{base_label}_r3"
 
 
-def test_should_handle_custom_label_with_no_conflicts(mocker):
-    """Test custom named labels with no existing conflicts."""
-    db = mocker.Mock()
-    db.query.return_value = []
+def test_should_handle_custom_label_with_no_conflicts(sqlite_session, make_cluster):
+    cluster = make_cluster()
 
-    result = labels.determine_backup_label(db, "incremental", "mydb", "my-custom-backup")
+    result = labels.determine_backup_label(sqlite_session, cluster.id, "incremental", "mydb", "my-custom-backup")
 
     assert result == "my-custom-backup"
 
 
-def test_should_handle_custom_label_with_conflicts(mocker):
-    """Test custom named labels when conflicts exist."""
-    db = mocker.Mock()
-    db.query.return_value = [("my-custom-backup",)]
+def test_should_handle_custom_label_with_conflicts(sqlite_session, make_cluster):
+    cluster = make_cluster()
+    _add_history(sqlite_session, cluster.id, "my-custom-backup")
 
-    result = labels.determine_backup_label(db, "incremental", "mydb", "my-custom-backup")
+    result = labels.determine_backup_label(sqlite_session, cluster.id, "incremental", "mydb", "my-custom-backup")
 
     assert result == "my-custom-backup_r1"
 
 
-def test_should_handle_custom_label_with_multiple_conflicts(mocker):
-    """Test custom named labels with multiple existing conflicts."""
-    db = mocker.Mock()
-    db.query.return_value = [("release-backup",), ("release-backup_r1",), ("release-backup_r2",)]
+def test_should_handle_custom_label_with_multiple_conflicts(sqlite_session, make_cluster):
+    cluster = make_cluster()
+    for candidate in ("release-backup", "release-backup_r1", "release-backup_r2"):
+        _add_history(sqlite_session, cluster.id, candidate)
 
-    result = labels.determine_backup_label(db, "full", "mydb", "release-backup")
+    result = labels.determine_backup_label(sqlite_session, cluster.id, "full", "mydb", "release-backup")
 
     assert result == "release-backup_r3"
 
 
-def test_should_handle_different_backup_types(mocker):
-    """Test that different backup types generate different labels."""
-    db = mocker.Mock()
-    db.query.return_value = []
+def test_should_handle_different_backup_types(sqlite_session, make_cluster):
+    cluster = make_cluster()
 
-    inc_result = labels.determine_backup_label(db, "incremental", "mydb")
-    full_result = labels.determine_backup_label(db, "full", "mydb")
+    inc_result = labels.determine_backup_label(sqlite_session, cluster.id, "incremental", "mydb")
+    full_result = labels.determine_backup_label(sqlite_session, cluster.id, "full", "mydb")
 
     today = datetime.now().strftime("%Y%m%d")
     assert inc_result == f"mydb_{today}_incremental"
     assert full_result == f"mydb_{today}_full"
 
 
-def test_should_handle_different_database_names(mocker):
-    """Test that different database names generate different labels."""
-    db = mocker.Mock()
-    db.query.return_value = []
+def test_should_handle_different_database_names(sqlite_session, make_cluster):
+    cluster = make_cluster()
 
-    result1 = labels.determine_backup_label(db, "incremental", "db1")
-    result2 = labels.determine_backup_label(db, "incremental", "db2")
+    result1 = labels.determine_backup_label(sqlite_session, cluster.id, "incremental", "db1")
+    result2 = labels.determine_backup_label(sqlite_session, cluster.id, "incremental", "db2")
 
     today = datetime.now().strftime("%Y%m%d")
     assert result1 == f"db1_{today}_incremental"
     assert result2 == f"db2_{today}_incremental"
 
 
-def test_should_handle_none_custom_name(mocker):
-    """Test that None custom_name generates auto label."""
-    db = mocker.Mock()
-    db.query.return_value = []
+def test_should_handle_none_custom_name(sqlite_session, make_cluster):
+    cluster = make_cluster()
 
-    result = labels.determine_backup_label(db, "full", "mydb", None)
+    result = labels.determine_backup_label(sqlite_session, cluster.id, "full", "mydb", None)
 
     today = datetime.now().strftime("%Y%m%d")
-    expected = f"mydb_{today}_full"
-    assert result == expected
+    assert result == f"mydb_{today}_full"
 
 
-def test_should_handle_empty_custom_name(mocker):
-    """Test that empty string custom_name generates auto label."""
-    db = mocker.Mock()
-    db.query.return_value = []
+def test_should_handle_empty_custom_name(sqlite_session, make_cluster):
+    cluster = make_cluster()
 
-    result = labels.determine_backup_label(db, "full", "mydb", "")
+    result = labels.determine_backup_label(sqlite_session, cluster.id, "full", "mydb", "")
 
     today = datetime.now().strftime("%Y%m%d")
-    expected = f"mydb_{today}_full"
-    assert result == expected
+    assert result == f"mydb_{today}_full"
 
 
-def test_should_handle_database_query_error(mocker):
-    """Test behavior when database query fails."""
-    db = mocker.Mock()
-    db.query.side_effect = Exception("Database connection failed")
+def test_should_handle_database_query_error(sqlite_session, make_cluster, mocker):
+    cluster = make_cluster()
+    mocker.patch.object(sqlite_session, "scalars", side_effect=Exception("Database connection failed"))
 
-    result = labels.determine_backup_label(db, "incremental", "mydb", "my-backup")
+    result = labels.determine_backup_label(sqlite_session, cluster.id, "incremental", "mydb", "my-backup")
 
     assert result == "my-backup"
 
 
-def test_should_verify_database_query_parameters(mocker):
-    """Test that the correct database query is made with proper parameters."""
-    db = mocker.Mock()
-    db.query.return_value = []
+def test_labels_scoped_by_cluster(sqlite_session, make_cluster):
+    cluster_a = make_cluster("cluster-a")
+    cluster_b = make_cluster("cluster-b")
+    _add_history(sqlite_session, cluster_a.id, "shared-label")
 
-    labels.determine_backup_label(db, "full", "sales_db", "my-backup")
+    # cluster_b has no conflicting history row, so it gets the base label unchanged.
+    result = labels.determine_backup_label(sqlite_session, cluster_b.id, "full", "mydb", "shared-label")
 
-    db.query.assert_called_once()
-    call_args = db.query.call_args
-    assert "ops.backup_history" in call_args[0][0]
-    assert call_args[0][1] == ("my-backup%",)
+    assert result == "shared-label"

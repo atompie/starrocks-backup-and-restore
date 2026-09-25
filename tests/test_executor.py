@@ -134,9 +134,10 @@ def test_should_not_detect_snapshot_exists_for_other_errors(mocker):
     assert "Connection timeout" in error_msg
 
 
-def test_should_handle_snapshot_exists_error_in_execute_backup(mocker, db_with_timezone):
+def test_should_handle_snapshot_exists_error_in_execute_backup(mocker, db_with_timezone, sqlite_session, make_cluster):
     """Test that execute_backup properly handles snapshot_exists error."""
     db = db_with_timezone
+    cluster = make_cluster()
     error = Exception(
         "ProgrammingError: 5064 (42000): Snapshot with name 'test_backup' already exist in repository"
     )
@@ -145,7 +146,7 @@ def test_should_handle_snapshot_exists_error_in_execute_backup(mocker, db_with_t
     backup_command = "BACKUP DATABASE test_db SNAPSHOT test_backup TO repo"
 
     result = executor.execute_backup(
-        db, backup_command, repository="repo", backup_type="full", database="test_db"
+        db, sqlite_session, cluster.id, backup_command, repository="repo", backup_type="full", database="test_db"
     )
 
     assert result["success"] is False
@@ -232,8 +233,9 @@ def test_should_handle_dict_format_backup_status(mocker):
     assert status["state"] == "FINISHED"
 
 
-def test_should_execute_full_backup_workflow(mocker, db_with_timezone):
+def test_should_execute_full_backup_workflow(mocker, db_with_timezone, sqlite_session, make_cluster):
     db = db_with_timezone
+    cluster = make_cluster()
     db.execute.return_value = None
     db.query.side_effect = [
         [("job1", "test_backup", "test_db", "PENDING")],
@@ -244,6 +246,8 @@ def test_should_execute_full_backup_workflow(mocker, db_with_timezone):
 
     result = executor.execute_backup(
         db,
+        sqlite_session,
+        cluster.id,
         backup_command,
         max_polls=5,
         poll_interval=0.001,
@@ -255,19 +259,28 @@ def test_should_execute_full_backup_workflow(mocker, db_with_timezone):
 
     assert result["success"] is True
     assert result["final_status"]["state"] == "FINISHED"
-    # execute called: 1) submit backup, 2) log history, 3) complete job slot
-    assert db.execute.call_count == 3
+    # db.execute called only once now: submitting the backup command (history/job-slot go through session)
+    assert db.execute.call_count == 1
     assert db.query.call_count == 2
 
+    from starrocks_br.store.models import BackupHistory, RunStatus
 
-def test_should_handle_backup_execution_failure_in_workflow(mocker, db_with_timezone):
+    history_row = sqlite_session.query(BackupHistory).filter_by(cluster_id=cluster.id).one()
+    assert history_row.label == "test_backup"
+    assert history_row.status == "FINISHED"
+
+
+def test_should_handle_backup_execution_failure_in_workflow(mocker, db_with_timezone, sqlite_session, make_cluster):
     db = db_with_timezone
+    cluster = make_cluster()
     db.execute.side_effect = Exception("Database connection failed")
 
     backup_command = "BACKUP DATABASE test_db SNAPSHOT test_backup TO repo"
 
     result = executor.execute_backup(
         db,
+        sqlite_session,
+        cluster.id,
         backup_command,
         max_polls=5,
         poll_interval=0.001,
@@ -283,8 +296,9 @@ def test_should_handle_backup_execution_failure_in_workflow(mocker, db_with_time
     assert "Database connection failed" in result["error_message"]
 
 
-def test_should_handle_backup_polling_failure_in_workflow(mocker, db_with_timezone):
+def test_should_handle_backup_polling_failure_in_workflow(mocker, db_with_timezone, sqlite_session, make_cluster):
     db = db_with_timezone
+    cluster = make_cluster()
     db.execute.return_value = None
     db.query.side_effect = Exception("Query failed")
 
@@ -292,6 +306,8 @@ def test_should_handle_backup_polling_failure_in_workflow(mocker, db_with_timezo
 
     result = executor.execute_backup(
         db,
+        sqlite_session,
+        cluster.id,
         backup_command,
         max_polls=5,
         poll_interval=0.001,
@@ -307,22 +323,25 @@ def test_should_handle_backup_polling_failure_in_workflow(mocker, db_with_timezo
     assert "test_backup" in result["error_message"]
 
 
-def test_should_handle_lost_backup_in_workflow(mocker, db_with_timezone):
+def test_should_handle_lost_backup_in_workflow(mocker, db_with_timezone, sqlite_session, make_cluster):
     """Test that execute_backup handles LOST state correctly (race condition detected)."""
     db = db_with_timezone
+    cluster = make_cluster()
     db.execute.return_value = None
     db.query.side_effect = [
         [("job1", "other_backup", "test_db", "FINISHED")],  # Wrong backup on first poll
         [("job1", "other_backup", "test_db", "FINISHED")],  # Still wrong - LOST!
     ]
 
-    log_backup = mocker.patch("starrocks_br.history.log_backup")
-    complete_slot = mocker.patch("starrocks_br.concurrency.complete_job_slot")
+    log_backup = mocker.patch("starrocks_br.executor.history.log_backup")
+    complete_slot = mocker.patch("starrocks_br.executor.concurrency.complete_job_slot")
 
     backup_command = "BACKUP DATABASE test_db SNAPSHOT test_backup TO repo"
 
     result = executor.execute_backup(
         db,
+        sqlite_session,
+        cluster.id,
         backup_command,
         max_polls=3,
         poll_interval=0.001,
@@ -339,29 +358,37 @@ def test_should_handle_lost_backup_in_workflow(mocker, db_with_timezone):
     assert "concurrency issue" in result["error_message"]
 
     assert log_backup.call_count == 1
-    entry = log_backup.call_args[0][1]
+    args, _ = log_backup.call_args
+    assert args[0] is sqlite_session
+    assert args[1] == cluster.id
+    entry = args[2]
     assert entry["status"] == "LOST"
 
     complete_slot.assert_called_once()
-    _, kwargs = complete_slot.call_args
+    args, kwargs = complete_slot.call_args
+    assert args[0] is sqlite_session
+    assert args[1] == cluster.id
     assert kwargs.get("final_state") == "LOST"
 
 
-def test_should_log_history_and_finalize_on_success(mocker, db_with_timezone):
+def test_should_log_history_and_finalize_on_success(mocker, db_with_timezone, sqlite_session, make_cluster):
     db = db_with_timezone
+    cluster = make_cluster()
     db.execute.return_value = None
     db.query.side_effect = [
         [("job1", "test_backup", "test_db", "UPLOADING")],
         [("job1", "test_backup", "test_db", "FINISHED")],
     ]
 
-    log_backup = mocker.patch("starrocks_br.history.log_backup")
-    complete_slot = mocker.patch("starrocks_br.concurrency.complete_job_slot")
+    log_backup = mocker.patch("starrocks_br.executor.history.log_backup")
+    complete_slot = mocker.patch("starrocks_br.executor.concurrency.complete_job_slot")
 
     backup_command = "BACKUP DATABASE test_db SNAPSHOT test_backup TO repo"
 
     result = executor.execute_backup(
         db,
+        sqlite_session,
+        cluster.id,
         backup_command,
         max_polls=3,
         poll_interval=0.001,
@@ -372,7 +399,10 @@ def test_should_log_history_and_finalize_on_success(mocker, db_with_timezone):
 
     assert result["success"] is True
     assert log_backup.call_count == 1
-    entry = log_backup.call_args[0][1]
+    args, _ = log_backup.call_args
+    assert args[0] is sqlite_session
+    assert args[1] == cluster.id
+    entry = args[2]
     assert entry["label"] == "test_backup"
     assert entry["status"] == "FINISHED"
     assert entry["repository"] == "repo"
@@ -380,27 +410,31 @@ def test_should_log_history_and_finalize_on_success(mocker, db_with_timezone):
 
     complete_slot.assert_called_once()
     args, kwargs = complete_slot.call_args
-    assert args[0] is db
+    assert args[0] is sqlite_session
+    assert args[1] == cluster.id
     assert kwargs.get("scope") == "backup"
     assert kwargs.get("label") == "test_backup"
     assert kwargs.get("final_state") == "FINISHED"
 
 
-def test_should_log_history_and_finalize_on_failure(mocker, db_with_timezone):
+def test_should_log_history_and_finalize_on_failure(mocker, db_with_timezone, sqlite_session, make_cluster):
     db = db_with_timezone
+    cluster = make_cluster()
     db.execute.return_value = None
     db.query.side_effect = [
         [("job1", "test_backup", "test_db", "UPLOADING")],
         [("job1", "test_backup", "test_db", "CANCELLED")],
     ]
 
-    log_backup = mocker.patch("starrocks_br.history.log_backup")
-    complete_slot = mocker.patch("starrocks_br.concurrency.complete_job_slot")
+    log_backup = mocker.patch("starrocks_br.executor.history.log_backup")
+    complete_slot = mocker.patch("starrocks_br.executor.concurrency.complete_job_slot")
 
     backup_command = "BACKUP DATABASE test_db SNAPSHOT test_backup TO repo"
 
     result = executor.execute_backup(
         db,
+        sqlite_session,
+        cluster.id,
         backup_command,
         max_polls=3,
         poll_interval=0.001,
@@ -411,7 +445,8 @@ def test_should_log_history_and_finalize_on_failure(mocker, db_with_timezone):
 
     assert result["success"] is False
     assert log_backup.call_count == 1
-    entry = log_backup.call_args[0][1]
+    args, _ = log_backup.call_args
+    entry = args[2]
     assert entry["label"] == "test_backup"
     assert entry["status"] == "CANCELLED"
     assert entry["repository"] == "repo"
@@ -498,9 +533,10 @@ def test_should_handle_backup_status_polling_with_malformed_tuple():
     assert status["label"] == "test_backup"
 
 
-def test_should_execute_backup_with_history_logging_exception(db_with_timezone):
+def test_should_execute_backup_with_history_logging_exception(db_with_timezone, sqlite_session, make_cluster):
     """Test backup execution when history logging raises an exception."""
     db = db_with_timezone
+    cluster = make_cluster()
     db.execute.return_value = None
     db.query.side_effect = [
         [("job1", "test_backup", "test_db", "UPLOADING")],
@@ -514,6 +550,8 @@ def test_should_execute_backup_with_history_logging_exception(db_with_timezone):
         with patch("starrocks_br.executor.concurrency.complete_job_slot", complete_slot):
             result = executor.execute_backup(
                 db,
+                sqlite_session,
+                cluster.id,
                 "BACKUP DATABASE test_db SNAPSHOT test_backup TO repo",
                 max_polls=3,
                 poll_interval=0.001,
@@ -529,9 +567,10 @@ def test_should_execute_backup_with_history_logging_exception(db_with_timezone):
     assert complete_slot.call_count == 1
 
 
-def test_should_execute_backup_with_job_slot_completion_exception(db_with_timezone):
+def test_should_execute_backup_with_job_slot_completion_exception(db_with_timezone, sqlite_session, make_cluster):
     """Test backup execution when job slot completion raises an exception."""
     db = db_with_timezone
+    cluster = make_cluster()
     db.execute.return_value = None
     db.query.side_effect = [
         [("job1", "test_backup", "test_db", "UPLOADING")],
@@ -545,6 +584,8 @@ def test_should_execute_backup_with_job_slot_completion_exception(db_with_timezo
         with patch("starrocks_br.executor.concurrency.complete_job_slot", complete_slot):
             result = executor.execute_backup(
                 db,
+                sqlite_session,
+                cluster.id,
                 "BACKUP DATABASE test_db SNAPSHOT test_backup TO repo",
                 max_polls=3,
                 poll_interval=0.001,
@@ -622,14 +663,17 @@ def test_should_extract_label_from_command_case_insensitive():
     assert label == "unknown_backup"  # lowercase commands not supported by parser
 
 
-def test_should_handle_backup_execution_with_zero_poll_interval(db_with_timezone):
+def test_should_handle_backup_execution_with_zero_poll_interval(db_with_timezone, sqlite_session, make_cluster):
     """Test backup execution with zero poll interval."""
     db = db_with_timezone
+    cluster = make_cluster()
     db.execute.return_value = None
     db.query.return_value = [("job1", "test_backup", "test_db", "FINISHED")]
 
     result = executor.execute_backup(
         db,
+        sqlite_session,
+        cluster.id,
         "BACKUP DATABASE test_db SNAPSHOT test_backup TO repo",
         max_polls=1,
         poll_interval=0.0,
@@ -643,14 +687,17 @@ def test_should_handle_backup_execution_with_zero_poll_interval(db_with_timezone
     assert result["final_status"]["state"] == "FINISHED"
 
 
-def test_should_handle_backup_execution_with_very_small_poll_interval(db_with_timezone):
+def test_should_handle_backup_execution_with_very_small_poll_interval(db_with_timezone, sqlite_session, make_cluster):
     """Test backup execution with very small poll interval."""
     db = db_with_timezone
+    cluster = make_cluster()
     db.execute.return_value = None
     db.query.return_value = [("job1", "test_backup", "test_db", "FINISHED")]
 
     result = executor.execute_backup(
         db,
+        sqlite_session,
+        cluster.id,
         "BACKUP DATABASE test_db SNAPSHOT test_backup TO repo",
         max_polls=1,
         poll_interval=0.001,
@@ -664,14 +711,17 @@ def test_should_handle_backup_execution_with_very_small_poll_interval(db_with_ti
     assert result["final_status"]["state"] == "FINISHED"
 
 
-def test_should_handle_backup_execution_with_large_max_polls(db_with_timezone):
+def test_should_handle_backup_execution_with_large_max_polls(db_with_timezone, sqlite_session, make_cluster):
     """Test backup execution with large max polls value."""
     db = db_with_timezone
+    cluster = make_cluster()
     db.execute.return_value = None
     db.query.return_value = [("job1", "test_backup", "test_db", "FINISHED")]
 
     result = executor.execute_backup(
         db,
+        sqlite_session,
+        cluster.id,
         "BACKUP DATABASE test_db SNAPSHOT test_backup TO repo",
         max_polls=100000,
         poll_interval=0.001,
@@ -685,13 +735,16 @@ def test_should_handle_backup_execution_with_large_max_polls(db_with_timezone):
     assert result["final_status"]["state"] == "FINISHED"
 
 
-def test_should_handle_backup_execution_with_negative_max_polls(db_with_timezone):
+def test_should_handle_backup_execution_with_negative_max_polls(db_with_timezone, sqlite_session, make_cluster):
     """Test backup execution with negative max polls."""
     db = db_with_timezone
+    cluster = make_cluster()
     db.execute.return_value = None
 
     result = executor.execute_backup(
         db,
+        sqlite_session,
+        cluster.id,
         "BACKUP DATABASE test_db SNAPSHOT test_backup TO repo",
         max_polls=-1,
         poll_interval=0.001,
@@ -786,15 +839,18 @@ def test_should_return_detailed_error_on_submit_failure(mocker):
     assert "Failed to submit backup command" in error
 
 
-def test_should_propagate_submit_error_to_execute_backup(mocker, db_with_timezone):
+def test_should_propagate_submit_error_to_execute_backup(mocker, db_with_timezone, sqlite_session, make_cluster):
     """Test that execute_backup includes detailed submit error in result."""
     db = db_with_timezone
+    cluster = make_cluster()
     db.execute.side_effect = ValueError("Invalid backup repository name")
 
     backup_command = "BACKUP DATABASE test_db SNAPSHOT test_backup TO invalid_repo"
 
     result = executor.execute_backup(
         db,
+        sqlite_session,
+        cluster.id,
         backup_command,
         max_polls=5,
         poll_interval=0.001,

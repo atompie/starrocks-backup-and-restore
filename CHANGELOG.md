@@ -5,6 +5,40 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- **BREAKING: Ops bookkeeping moved off StarRocks, into this tool's own SQLite metastore.**
+  `table_inventory`, `backup_history`, `restore_history`, `run_status`, and
+  `backup_partitions` no longer live in a per-cluster StarRocks database
+  (previously named via `ops_database`, default `"ops"`) - they live in the
+  same metadata store the API server already uses for `clusters`/`jobs`/
+  `schedules`, scoped by `cluster_id`. This fixes bookkeeping being
+  unreachable exactly when a StarRocks cluster is down or corrupted (the
+  situation where you most need to know what backups exist), and removes an
+  internal implementation detail from the user-facing surface.
+- **BREAKING: `ops_database` removed entirely** from `POST /cluster`,
+  `PATCH /cluster/{id}`, `ClusterRead` responses, the `cli_api cluster add
+  --ops-database` flag, and the standalone CLI's YAML config. A request body
+  still containing it is silently ignored, not rejected.
+- **BREAKING: `alembic upgrade head` (against `STARROCKS_BR_DATABASE_URL`) and
+  `STARROCKS_BR_DB_ENCRYPTION_KEY` are now required for the standalone CLI
+  too**, not just the API server - `starrocks-br init` registers the config's
+  cluster in that metastore and bootstraps its table inventory; every other
+  CLI command requires `init` to have been run first for that config and
+  fails clearly (rather than silently registering a cluster) if not.
+- Incidentally fixes a pre-existing SQL-injection-shaped bug in `prune.py`'s
+  `get_successful_backups`/`cleanup_backup_history` (unquoted string
+  interpolation) as a side effect of the ORM conversion; the same pattern in
+  `verify_snapshot_exists`/`execute_drop_snapshot` (StarRocks-only, unrelated
+  to ops bookkeeping) is unchanged and remains a known issue.
+
+### Migration notes
+- No production data migration is provided or needed for this change (no ops
+  data existed in supported deployments yet). Run `alembic upgrade head`
+  against your metastore, then re-run `starrocks-br init` for each
+  standalone-CLI-managed cluster before its next backup/restore/prune.
+
 ## [0.7.0a1] - 2026-02-04 (Alpha)
 
 > **Note**: This is an alpha release. The `prune` command requires StarRocks with `DROP SNAPSHOT` support, which is not yet available upstream.

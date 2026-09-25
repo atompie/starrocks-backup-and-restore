@@ -32,10 +32,9 @@ def cluster_group():
 @click.option("--password", required=True, help="StarRocks user password (stored encrypted).")
 @click.option("--database", required=True, help="Default database on this cluster.")
 @click.option("--repository", required=True, help="StarRocks backup repository name.")
-@click.option("--ops-database", default="ops", help="Ops schema database name (default: ops).")
 @click.option("--default-backend", default="thread", help="Default job execution backend.")
 def cluster_add(
-    api_url, api_key, name, host, port, user, password, database, repository, ops_database, default_backend
+    api_url, api_key, name, host, port, user, password, database, repository, default_backend
 ):
     """Register a new StarRocks cluster with the API server."""
     with make_client(api_url, api_key) as client:
@@ -51,7 +50,6 @@ def cluster_add(
                 "password": password,
                 "database": database,
                 "repository": repository,
-                "ops_database": ops_database,
                 "default_backend": default_backend,
             },
         )

@@ -20,7 +20,7 @@ from starrocks_br import cli
 def test_backup_incremental_success(
     config_file,
     mock_db,
-    mock_initialized_schema,
+    mock_resolved_cluster,
     mock_healthy_cluster,
     mock_repo_exists,
     setup_password_env,
@@ -71,7 +71,7 @@ def test_backup_incremental_success(
 def test_backup_incremental_with_specific_baseline(
     config_file,
     mock_db,
-    mock_initialized_schema,
+    mock_resolved_cluster,
     mock_healthy_cluster,
     mock_repo_exists,
     setup_password_env,
@@ -122,7 +122,7 @@ def test_backup_incremental_with_specific_baseline(
 def test_backup_full_success(
     config_file,
     mock_db,
-    mock_initialized_schema,
+    mock_resolved_cluster,
     mock_healthy_cluster,
     mock_repo_exists,
     mock_validate_tables_exist,
@@ -164,7 +164,7 @@ def test_backup_full_success(
 def test_backup_reserves_slot_before_recording_partitions(
     config_file,
     mock_db,
-    mock_initialized_schema,
+    mock_resolved_cluster,
     mock_healthy_cluster,
     mock_repo_exists,
     setup_password_env,

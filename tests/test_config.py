@@ -189,20 +189,20 @@ def test_validate_config_with_valid_tls_should_pass(tls_config):
     config.validate_config(cfg)
 
 
-def test_should_accept_config_with_custom_ops_database():
+def test_should_accept_config_with_optional_name_field():
     cfg = {
         "host": "127.0.0.1",
         "port": 9030,
         "user": "root",
         "database": "test_db",
         "repository": "test_repo",
-        "ops_database": "custom_ops",
+        "name": "my-cluster",
     }
 
     config.validate_config(cfg)
 
 
-def test_should_accept_config_without_ops_database():
+def test_should_accept_config_without_name_field():
     cfg = {
         "host": "127.0.0.1",
         "port": 9030,
@@ -214,24 +214,25 @@ def test_should_accept_config_without_ops_database():
     config.validate_config(cfg)
 
 
-def test_should_load_ops_database_field_when_present():
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
-        f.write("""
-        host: "127.0.0.1"
-        port: 9030
-        user: "root"
-        database: "test_db"
-        repository: "test_repo"
-        ops_database: "custom_ops"
-        """)
-        f.flush()
-        config_path = f.name
+def test_get_cluster_identity_uses_name_when_present():
+    cfg = {
+        "host": "127.0.0.1",
+        "port": 9030,
+        "database": "test_db",
+        "name": "my-cluster",
+    }
 
-    try:
-        cfg = config.load_config(config_path)
-        assert cfg["ops_database"] == "custom_ops"
-    finally:
-        os.unlink(config_path)
+    assert config.get_cluster_identity(cfg) == "my-cluster"
+
+
+def test_get_cluster_identity_derives_from_connection_fields_when_name_absent():
+    cfg = {
+        "host": "127.0.0.1",
+        "port": 9030,
+        "database": "test_db",
+    }
+
+    assert config.get_cluster_identity(cfg) == "127.0.0.1:9030/test_db"
 
 
 def test_should_accept_config_with_table_inventory():

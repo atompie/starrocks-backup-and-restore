@@ -53,7 +53,7 @@ class TestBackupIncrementalExceptionHandling:
         self,
         config_file,
         mock_db,  # noqa: ARG002
-        mock_initialized_schema,  # noqa: ARG002
+        mock_resolved_cluster,  # noqa: ARG002
         mock_healthy_cluster,  # noqa: ARG002
         mock_repo_exists,  # noqa: ARG002
         mocker,
@@ -80,7 +80,7 @@ class TestBackupIncrementalExceptionHandling:
         self,
         config_file,
         mock_db,  # noqa: ARG002
-        mock_initialized_schema,  # noqa: ARG002
+        mock_resolved_cluster,  # noqa: ARG002
         mock_healthy_cluster,  # noqa: ARG002
         mock_repo_exists,  # noqa: ARG002
         mocker,
@@ -111,7 +111,7 @@ class TestBackupIncrementalExceptionHandling:
         self,
         config_file,
         mock_db,  # noqa: ARG002
-        mock_initialized_schema,  # noqa: ARG002
+        mock_resolved_cluster,  # noqa: ARG002
         mock_healthy_cluster,  # noqa: ARG002
         mock_repo_exists,  # noqa: ARG002
         mocker,
@@ -158,7 +158,7 @@ class TestBackupIncrementalExceptionHandling:
         self,
         config_file,
         mock_db,  # noqa: ARG002
-        mock_initialized_schema,  # noqa: ARG002
+        mock_resolved_cluster,  # noqa: ARG002
         mock_healthy_cluster,  # noqa: ARG002
         mock_repo_exists,  # noqa: ARG002
         setup_password_env,  # noqa: ARG002
@@ -210,11 +210,13 @@ class TestBackupIncrementalExceptionHandling:
         assert "--name test_backup_20251020_retry" in result.output
         assert "SHOW SNAPSHOT ON test_repo" in result.output
 
-    def test_exits_if_schema_is_auto_created(
+    def test_exits_if_cluster_not_initialized(
         self,
         config_file,
         mock_db,  # noqa: ARG002
-        mock_uninitialized_schema,  # noqa: ARG002
+        mock_healthy_cluster,  # noqa: ARG002
+        mock_repo_exists,  # noqa: ARG002
+        mock_cluster_not_initialized,  # noqa: ARG002
         setup_password_env,  # noqa: ARG002
     ):
         runner = CliRunner()
@@ -224,15 +226,14 @@ class TestBackupIncrementalExceptionHandling:
         )
 
         assert result.exit_code == 1
-        assert "ops schema was auto-created" in result.output
+        assert "No cluster registered" in result.output
         assert "starrocks-br init" in result.output
-        assert "table_inventory table" in result.output
 
     def test_handles_lost_state(
         self,
         config_file,
         mock_db,  # noqa: ARG002
-        mock_initialized_schema,  # noqa: ARG002
+        mock_resolved_cluster,  # noqa: ARG002
         mock_healthy_cluster,  # noqa: ARG002
         mock_repo_exists,  # noqa: ARG002
         setup_password_env,  # noqa: ARG002
@@ -283,7 +284,7 @@ class TestBackupIncrementalExceptionHandling:
         self,
         config_file,
         mock_db,  # noqa: ARG002
-        mock_initialized_schema,  # noqa: ARG002
+        mock_resolved_cluster,  # noqa: ARG002
         mock_healthy_cluster,  # noqa: ARG002
         mock_repo_exists,  # noqa: ARG002
         setup_password_env,  # noqa: ARG002
@@ -321,7 +322,7 @@ class TestBackupIncrementalExceptionHandling:
         self,
         config_file,
         mock_db,  # noqa: ARG002
-        mock_initialized_schema,  # noqa: ARG002
+        mock_resolved_cluster,  # noqa: ARG002
         mock_unhealthy_cluster,  # noqa: ARG002
         setup_password_env,  # noqa: ARG002
     ):
@@ -338,7 +339,7 @@ class TestBackupIncrementalExceptionHandling:
         self,
         config_file,
         mock_db,  # noqa: ARG002
-        mock_initialized_schema,  # noqa: ARG002
+        mock_resolved_cluster,  # noqa: ARG002
         mock_healthy_cluster,  # noqa: ARG002
         mock_repo_exists,  # noqa: ARG002
         setup_password_env,  # noqa: ARG002
@@ -381,7 +382,7 @@ class TestBackupIncrementalExceptionHandling:
         self,
         config_file,
         mock_db,  # noqa: ARG002
-        mock_initialized_schema,  # noqa: ARG002
+        mock_resolved_cluster,  # noqa: ARG002
         mock_healthy_cluster,  # noqa: ARG002
         mock_repo_exists,  # noqa: ARG002
         setup_password_env,  # noqa: ARG002
@@ -425,7 +426,7 @@ class TestBackupIncrementalExceptionHandling:
         self,
         config_file,
         mock_db,  # noqa: ARG002
-        mock_initialized_schema,  # noqa: ARG002
+        mock_resolved_cluster,  # noqa: ARG002
         mock_healthy_cluster,  # noqa: ARG002
         mock_repo_exists,  # noqa: ARG002
         setup_password_env,  # noqa: ARG002
@@ -504,7 +505,7 @@ class TestBackupFullExceptionHandling:
         self,
         config_file,
         mock_db,  # noqa: ARG002
-        mock_initialized_schema,  # noqa: ARG002
+        mock_resolved_cluster,  # noqa: ARG002
         mock_healthy_cluster,  # noqa: ARG002
         mock_repo_exists,  # noqa: ARG002
         mock_validate_tables_exist,  # noqa: ARG002
@@ -536,7 +537,7 @@ class TestBackupFullExceptionHandling:
         self,
         config_file,
         mock_db,  # noqa: ARG002
-        mock_initialized_schema,  # noqa: ARG002
+        mock_resolved_cluster,  # noqa: ARG002
         mock_healthy_cluster,  # noqa: ARG002
         mock_repo_exists,  # noqa: ARG002
         mock_validate_tables_exist,  # noqa: ARG002
@@ -579,11 +580,13 @@ class TestBackupFullExceptionHandling:
         assert "--name test_backup_20251020_retry" in result.output
         assert "SHOW SNAPSHOT ON test_repo" in result.output
 
-    def test_exits_if_schema_is_auto_created(
+    def test_exits_if_cluster_not_initialized(
         self,
         config_file,
         mock_db,  # noqa: ARG002
-        mock_uninitialized_schema,  # noqa: ARG002
+        mock_healthy_cluster,  # noqa: ARG002
+        mock_repo_exists,  # noqa: ARG002
+        mock_cluster_not_initialized,  # noqa: ARG002
         setup_password_env,  # noqa: ARG002
     ):
         runner = CliRunner()
@@ -593,15 +596,14 @@ class TestBackupFullExceptionHandling:
         )
 
         assert result.exit_code == 1
-        assert "ops schema was auto-created" in result.output
+        assert "No cluster registered" in result.output
         assert "starrocks-br init" in result.output
-        assert "table_inventory table" in result.output
 
     def test_handles_lost_state(
         self,
         config_file,
         mock_db,  # noqa: ARG002
-        mock_initialized_schema,  # noqa: ARG002
+        mock_resolved_cluster,  # noqa: ARG002
         mock_healthy_cluster,  # noqa: ARG002
         mock_repo_exists,  # noqa: ARG002
         mock_validate_tables_exist,  # noqa: ARG002
@@ -644,7 +646,7 @@ class TestBackupFullExceptionHandling:
         self,
         config_file,
         mock_db,  # noqa: ARG002
-        mock_initialized_schema,  # noqa: ARG002
+        mock_resolved_cluster,  # noqa: ARG002
         mock_healthy_cluster,  # noqa: ARG002
         mock_repo_exists,  # noqa: ARG002
         mock_validate_tables_exist,  # noqa: ARG002
@@ -676,7 +678,7 @@ class TestBackupFullExceptionHandling:
         self,
         config_file,
         mock_db,  # noqa: ARG002
-        mock_initialized_schema,  # noqa: ARG002
+        mock_resolved_cluster,  # noqa: ARG002
         mock_unhealthy_cluster,  # noqa: ARG002
         setup_password_env,  # noqa: ARG002
     ):
@@ -691,7 +693,7 @@ class TestBackupFullExceptionHandling:
         self,
         config_file,
         mock_db,  # noqa: ARG002
-        mock_initialized_schema,  # noqa: ARG002
+        mock_resolved_cluster,  # noqa: ARG002
         mock_healthy_cluster,  # noqa: ARG002
         mock_repo_exists,  # noqa: ARG002
         mock_validate_tables_exist,  # noqa: ARG002
@@ -785,11 +787,13 @@ class TestRestoreExceptionHandling:
         assert result.exit_code == 1
         assert "CONFIGURATION ERROR" in result.output
 
-    def test_exits_if_schema_is_auto_created(
+    def test_exits_if_cluster_not_initialized(
         self,
         config_file,
         mock_db,  # noqa: ARG002
-        mock_uninitialized_schema,  # noqa: ARG002
+        mock_healthy_cluster,  # noqa: ARG002
+        mock_repo_exists,  # noqa: ARG002
+        mock_cluster_not_initialized,  # noqa: ARG002
         setup_password_env,  # noqa: ARG002
     ):
         runner = CliRunner()
@@ -799,9 +803,8 @@ class TestRestoreExceptionHandling:
         )
 
         assert result.exit_code == 1
-        assert "ops schema was auto-created" in result.output
+        assert "No cluster registered" in result.output
         assert "starrocks-br init" in result.output
-        assert "table_inventory table" in result.output
 
     @pytest.mark.parametrize(
         "scenario,mock_behavior,expected_msg",
@@ -827,7 +830,7 @@ class TestRestoreExceptionHandling:
         self,
         config_file,
         mock_db,  # noqa: ARG002
-        mock_initialized_schema,  # noqa: ARG002
+        mock_resolved_cluster,  # noqa: ARG002
         mock_healthy_cluster,  # noqa: ARG002
         mock_repo_exists,  # noqa: ARG002
         setup_password_env,  # noqa: ARG002
@@ -876,7 +879,7 @@ class TestRestoreExceptionHandling:
         self,
         config_file,
         mock_db,  # noqa: ARG002
-        mock_initialized_schema,  # noqa: ARG002
+        mock_resolved_cluster,  # noqa: ARG002
         setup_password_env,  # noqa: ARG002
         table_value,
         expected_msg,
@@ -903,7 +906,7 @@ class TestRestoreExceptionHandling:
         self,
         config_file,
         mock_db,  # noqa: ARG002
-        mock_initialized_schema,  # noqa: ARG002
+        mock_resolved_cluster,  # noqa: ARG002
         setup_password_env,  # noqa: ARG002
     ):
         runner = CliRunner()
@@ -930,7 +933,7 @@ class TestRestoreExceptionHandling:
         self,
         config_file,
         mock_db,  # noqa: ARG002
-        mock_initialized_schema,  # noqa: ARG002
+        mock_resolved_cluster,  # noqa: ARG002
         mock_unhealthy_cluster,  # noqa: ARG002
         setup_password_env,  # noqa: ARG002
     ):
@@ -947,7 +950,7 @@ class TestRestoreExceptionHandling:
         self,
         config_file,
         mock_db,  # noqa: ARG002
-        mock_initialized_schema,  # noqa: ARG002
+        mock_resolved_cluster,  # noqa: ARG002
         mock_healthy_cluster,  # noqa: ARG002
         mock_repo_exists,  # noqa: ARG002
         setup_password_env,  # noqa: ARG002
@@ -994,7 +997,7 @@ class TestRestoreExceptionHandling:
         self,
         config_file,
         mock_db,  # noqa: ARG002
-        mock_initialized_schema,  # noqa: ARG002
+        mock_resolved_cluster,  # noqa: ARG002
         mock_healthy_cluster,  # noqa: ARG002
         mock_repo_exists,  # noqa: ARG002
         setup_password_env,  # noqa: ARG002
@@ -1042,7 +1045,7 @@ class TestRestoreExceptionHandling:
         self,
         config_file,
         mock_db,  # noqa: ARG002
-        mock_initialized_schema,  # noqa: ARG002
+        mock_resolved_cluster,  # noqa: ARG002
         mock_healthy_cluster,  # noqa: ARG002
         mock_repo_exists,  # noqa: ARG002
         setup_password_env,  # noqa: ARG002
@@ -1070,7 +1073,7 @@ class TestRestoreExceptionHandling:
         self,
         config_file,
         mock_db,  # noqa: ARG002
-        mock_initialized_schema,  # noqa: ARG002
+        mock_resolved_cluster,  # noqa: ARG002
         setup_password_env,  # noqa: ARG002
     ):
         runner = CliRunner()
@@ -1098,7 +1101,7 @@ class TestRestoreExceptionHandling:
         self,
         config_file,
         mock_db,  # noqa: ARG002
-        mock_initialized_schema,  # noqa: ARG002
+        mock_resolved_cluster,  # noqa: ARG002
         mock_healthy_cluster,  # noqa: ARG002
         mock_repo_exists,  # noqa: ARG002
         setup_password_env,  # noqa: ARG002

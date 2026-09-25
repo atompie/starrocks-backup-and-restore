@@ -18,7 +18,6 @@ class ClusterCreate(BaseModel):
     password: str = Field(default="", description="StarRocks allows an empty password (e.g. local root).")
     database: str = Field(min_length=1, max_length=128)
     repository: str = Field(min_length=1, max_length=128)
-    ops_database: str = Field(default="ops", max_length=128)
     default_backend: str = Field(default="thread", max_length=64)
 
 
@@ -42,7 +41,6 @@ class ClusterUpdate(BaseModel):
     password: str | None = None
     database: str | None = Field(default=None, min_length=1, max_length=128)
     repository: str | None = Field(default=None, min_length=1, max_length=128)
-    ops_database: str | None = Field(default=None, max_length=128)
     default_backend: str | None = Field(default=None, max_length=64)
 
 
@@ -56,7 +54,6 @@ class ClusterRead(BaseModel):
     user: str
     database: str
     repository: str
-    ops_database: str
     default_backend: str
     created_at: datetime.datetime
     updated_at: datetime.datetime

@@ -17,26 +17,58 @@ from click.testing import CliRunner
 from starrocks_br import cli
 
 
-def test_init_command_success(config_file, mock_db, setup_password_env, mocker):
+def test_init_command_success(config_file, mock_db, mock_resolved_cluster, setup_password_env, mocker):
     """Test successful init command."""
     runner = CliRunner()
 
-    mocker.patch("starrocks_br.schema.initialize_ops_schema")
     mocker.patch("starrocks_br.repository.ensure_repository")
 
     result = runner.invoke(cli.init, ["--config", config_file])
 
     assert result.exit_code == 0
+    assert "Cluster registered" in result.output
     assert "Next steps:" in result.output
-    assert "INSERT INTO ops.table_inventory" in result.output
+    assert "Populate your table inventory" in result.output
 
 
-def test_init_validates_repository_exists(config_file, mock_db, setup_password_env, mocker):
-    """Init command should validate that repository exists before creating schema."""
+def test_init_bootstraps_table_inventory_when_configured(
+    mock_db, mock_resolved_cluster, setup_password_env, mocker, tmp_path
+):
+    """Init command should bootstrap table_inventory rows from the config's YAML section."""
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """
+        host: "127.0.0.1"
+        port: 9030
+        user: "root"
+        database: "test_db"
+        repository: "test_repo"
+        table_inventory:
+          - group: "daily_incremental"
+            tables:
+              - database: "test_db"
+                table: "fact_table"
+        """
+    )
+    mocker.patch("starrocks_br.repository.ensure_repository")
+    bootstrap = mocker.patch("starrocks_br.inventory_groups.bootstrap_table_inventory")
+
+    runner = CliRunner()
+    result = runner.invoke(cli.init, ["--config", str(config_path)])
+
+    assert result.exit_code == 0
+    bootstrap.assert_called_once()
+    args = bootstrap.call_args[0]
+    assert args[1] == mock_resolved_cluster.id
+    assert args[2] == [("daily_incremental", "test_db", "fact_table")]
+    assert "Table inventory bootstrapped from config with 1 entries" in result.output
+
+
+def test_init_validates_repository_exists(config_file, mock_db, mock_resolved_cluster, setup_password_env, mocker):
+    """Init command should validate that repository exists before registering the cluster."""
     runner = CliRunner()
 
     mock_ensure_repo = mocker.patch("starrocks_br.repository.ensure_repository")
-    mocker.patch("starrocks_br.schema.initialize_ops_schema")
 
     result = runner.invoke(cli.init, ["--config", config_file])
 

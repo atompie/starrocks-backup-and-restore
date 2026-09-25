@@ -15,27 +15,32 @@
 from datetime import datetime
 from typing import Literal
 
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from .store.models import BackupHistory
+
 
 def determine_backup_label(
-    db,
+    session: Session,
+    cluster_id: int,
     backup_type: Literal["incremental", "full"],
     database_name: str,
     custom_name: str | None = None,
-    ops_database: str = "ops",
 ) -> str:
     """Determine a unique backup label for the given parameters.
 
     This is the single entry point for all backup label generation. It handles both
     custom names and auto-generated date-based labels, ensuring uniqueness by checking
-    the backup_history table in the configured ops database.
+    the backup_history table for this cluster.
 
     Args:
-        db: Database connection
+        session: SQLite metastore session
+        cluster_id: Cluster this backup belongs to
         backup_type: Type of backup (incremental, full)
         database_name: Name of the database being backed up
         custom_name: Optional custom name for the backup. If provided, this becomes
                     the base label. If None, generates a date-based label.
-        ops_database: Name of the database containing operational tables. Defaults to "ops".
 
     Returns:
         Unique label string that doesn't conflict with existing backups
@@ -46,18 +51,13 @@ def determine_backup_label(
         today = datetime.now().strftime("%Y%m%d")
         base_label = f"{database_name}_{today}_{backup_type}"
 
-    query = f"""
-    SELECT label
-    FROM {ops_database}.backup_history
-    WHERE label LIKE %s
-    ORDER BY label
-    """
-
-    pattern = f"{base_label}%"
-
     try:
-        rows = db.query(query, (pattern,))
-        existing_labels = [row[0] for row in rows] if rows else []
+        rows = session.scalars(
+            select(BackupHistory.label)
+            .where(BackupHistory.cluster_id == cluster_id, BackupHistory.label.like(f"{base_label}%"))
+            .order_by(BackupHistory.label)
+        )
+        existing_labels = list(rows)
     except Exception:
         existing_labels = []
 

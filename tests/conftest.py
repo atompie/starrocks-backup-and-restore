@@ -59,6 +59,50 @@ def setup_password_env(monkeypatch):
 
 
 @pytest.fixture
+def sqlite_session():
+    """An in-memory SQLite Session with all store tables created.
+
+    Used by unit tests for ops-table modules (history, labels, concurrency,
+    inventory_groups, planner, prune, restore, executor) that were converted
+    from raw StarRocks SQL to SQLAlchemy ORM access in the
+    move-ops-tables-to-sqlite change.
+    """
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    from starrocks_br.store.models import Base
+
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine)
+    session = factory()
+    yield session
+    session.close()
+
+
+@pytest.fixture
+def make_cluster(sqlite_session):
+    """Factory fixture: persist a minimal Cluster row and return it."""
+    from starrocks_br.store.models import Cluster
+
+    def _make(name: str = "test-cluster") -> Cluster:
+        cluster = Cluster(
+            name=name,
+            host="sr.internal",
+            port=9030,
+            user="backup_svc",
+            password_encrypted="token",
+            database="mydb",
+            repository="s3_repo",
+        )
+        sqlite_session.add(cluster)
+        sqlite_session.commit()
+        return cluster
+
+    return _make
+
+
+@pytest.fixture
 def mock_db(mocker):
     """Create a mocked StarRocksDB instance with context manager support."""
     mock = mocker.Mock()
@@ -69,15 +113,65 @@ def mock_db(mocker):
 
 
 @pytest.fixture
-def mock_initialized_schema(mocker):
-    """Mock schema that already exists (ensure_ops_schema returns False)."""
-    return mocker.patch("starrocks_br.schema.ensure_ops_schema", return_value=False)
+def mock_resolved_cluster(mocker):
+    """Mock cli.py's SQLite session/cluster lookup as already-initialized (the common case).
+
+    Replaces the old `mock_initialized_schema` fixture from the StarRocks-side
+    ops-schema era: `cli.py` no longer auto-creates anything on first use - it
+    looks up a `Cluster` row in the SQLite metastore via `resolve_cluster`,
+    which this fixture makes succeed without touching a real database. Tests
+    using this fixture should mock every ops-table-touching function they
+    exercise directly (labels/planner/concurrency/executor/restore/prune), as
+    before - only the "is this cluster registered" step is faked here.
+    """
+    from contextlib import contextmanager
+
+    from starrocks_br.store.models import Cluster
+
+    fake_cluster = Cluster(
+        id=1,
+        name="test-cluster",
+        host="127.0.0.1",
+        port=9030,
+        user="root",
+        password_encrypted="token",
+        database="test_db",
+        repository="test_repo",
+    )
+    fake_session = mocker.Mock(name="fake_cli_session")
+
+    @contextmanager
+    def _scope():
+        yield fake_session
+
+    mocker.patch("starrocks_br.cli.session_scope", _scope)
+    mocker.patch("starrocks_br.cli.resolve_cluster", return_value=fake_cluster)
+    return fake_cluster
 
 
 @pytest.fixture
-def mock_uninitialized_schema(mocker):
-    """Mock schema that doesn't exist (ensure_ops_schema returns True - was created)."""
-    return mocker.patch("starrocks_br.schema.ensure_ops_schema", return_value=True)
+def mock_cluster_not_initialized(mocker):
+    """Mock cli.py's cluster lookup as not-yet-registered (the "run init first" case).
+
+    Replaces the old `mock_uninitialized_schema` fixture: `resolve_cluster`
+    now raises `ClusterNotInitializedError` instead of auto-creating anything,
+    since a hard `init` step is required before other commands will run.
+    """
+    from contextlib import contextmanager
+
+    from starrocks_br import exceptions
+
+    fake_session = mocker.Mock(name="fake_cli_session")
+
+    @contextmanager
+    def _scope():
+        yield fake_session
+
+    mocker.patch("starrocks_br.cli.session_scope", _scope)
+    mocker.patch(
+        "starrocks_br.cli.resolve_cluster",
+        side_effect=exceptions.ClusterNotInitializedError("127.0.0.1:9030/test_db"),
+    )
 
 
 @pytest.fixture

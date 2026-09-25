@@ -10,7 +10,7 @@ from ...store.models import Cluster, Job
 from ..auth import require_api_key
 from ..deps import get_db
 from ..schemas import BackupFullRequest, BackupIncrementalRequest, JobRead, PruneRequest, RestoreRequest
-from ._cluster_connect import connect_or_503, get_cluster_or_404 as _get_cluster_or_404
+from ._cluster_connect import get_cluster_or_404 as _get_cluster_or_404
 
 router = APIRouter(tags=["jobs"], dependencies=[Depends(require_api_key)])
 
@@ -74,15 +74,11 @@ def _submit_backup_job(
     """
     cluster = _get_cluster_or_404(db, cluster_id)
 
-    database = connect_or_503(cluster)
-    try:
-        if not inventory_groups.group_exists(database, payload.group, cluster.ops_database):
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Inventory group '{payload.group}' not found on cluster '{cluster.name}'",
-            )
-    finally:
-        database.close()
+    if not inventory_groups.group_exists(db, cluster_id, payload.group):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Inventory group '{payload.group}' not found on cluster '{cluster.name}'",
+        )
 
     params = payload.model_dump(exclude={"backend"})
     return submit_job(db, cluster, job_type, params, payload.backend)

@@ -28,7 +28,6 @@ def create_cluster(payload: ClusterCreate, db: Session = Depends(get_db)) -> Clu
         password_encrypted=encrypt_password(payload.password),
         database=payload.database,
         repository=payload.repository,
-        ops_database=payload.ops_database,
         default_backend=payload.default_backend,
     )
     db.add(cluster)

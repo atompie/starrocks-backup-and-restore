@@ -67,6 +67,15 @@ class ConfigValidationError(StarRocksBRError):
         super().__init__(f"Configuration error: {message}")
 
 
+class ClusterNotInitializedError(StarRocksBRError):
+    def __init__(self, identity: str):
+        self.identity = identity
+        super().__init__(
+            f"No cluster registered for '{identity}' in the local SQLite metastore. "
+            "Run 'starrocks-br init --config <config.yaml>' first."
+        )
+
+
 class ClusterHealthCheckFailedError(StarRocksBRError):
     def __init__(self, message: str):
         self.health_message = message

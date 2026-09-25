@@ -20,7 +20,7 @@ from starrocks_br import cli
 def test_prune_keep_last_success(
     config_file,
     mock_db,
-    mock_initialized_schema,
+    mock_resolved_cluster,
     mock_healthy_cluster,
     mock_repo_exists,
     setup_password_env,
@@ -66,7 +66,7 @@ def test_prune_keep_last_success(
 def test_prune_older_than_success(
     config_file,
     mock_db,
-    mock_initialized_schema,
+    mock_resolved_cluster,
     mock_healthy_cluster,
     mock_repo_exists,
     setup_password_env,
@@ -105,7 +105,7 @@ def test_prune_older_than_success(
 def test_prune_single_snapshot_success(
     config_file,
     mock_db,
-    mock_initialized_schema,
+    mock_resolved_cluster,
     mock_healthy_cluster,
     mock_repo_exists,
     setup_password_env,
@@ -142,7 +142,7 @@ def test_prune_single_snapshot_success(
 def test_prune_multiple_snapshots_success(
     config_file,
     mock_db,
-    mock_initialized_schema,
+    mock_resolved_cluster,
     mock_healthy_cluster,
     mock_repo_exists,
     setup_password_env,
@@ -197,7 +197,7 @@ def test_prune_multiple_snapshots_success(
 def test_prune_dry_run_mode(
     config_file,
     mock_db,
-    mock_initialized_schema,
+    mock_resolved_cluster,
     mock_healthy_cluster,
     mock_repo_exists,
     setup_password_env,
@@ -237,7 +237,7 @@ def test_prune_dry_run_mode(
 def test_prune_confirmation_prompt_accept(
     config_file,
     mock_db,
-    mock_initialized_schema,
+    mock_resolved_cluster,
     mock_healthy_cluster,
     mock_repo_exists,
     setup_password_env,
@@ -276,7 +276,7 @@ def test_prune_confirmation_prompt_accept(
 def test_prune_confirmation_prompt_cancel(
     config_file,
     mock_db,
-    mock_initialized_schema,
+    mock_resolved_cluster,
     mock_healthy_cluster,
     mock_repo_exists,
     setup_password_env,
@@ -315,7 +315,7 @@ def test_prune_confirmation_prompt_cancel(
 def test_prune_mutually_exclusive_options_keep_last_and_older_than(
     config_file,
     mock_db,
-    mock_initialized_schema,
+    mock_resolved_cluster,
     mock_healthy_cluster,
     mock_repo_exists,
     setup_password_env,
@@ -335,7 +335,7 @@ def test_prune_mutually_exclusive_options_keep_last_and_older_than(
 def test_prune_mutually_exclusive_options_snapshot_and_snapshots(
     config_file,
     mock_db,
-    mock_initialized_schema,
+    mock_resolved_cluster,
     mock_healthy_cluster,
     mock_repo_exists,
     setup_password_env,
@@ -355,7 +355,7 @@ def test_prune_mutually_exclusive_options_snapshot_and_snapshots(
 def test_prune_no_options_specified(
     config_file,
     mock_db,
-    mock_initialized_schema,
+    mock_resolved_cluster,
     mock_healthy_cluster,
     mock_repo_exists,
     setup_password_env,
@@ -375,7 +375,7 @@ def test_prune_no_options_specified(
 def test_prune_snapshot_not_found(
     config_file,
     mock_db,
-    mock_initialized_schema,
+    mock_resolved_cluster,
     mock_healthy_cluster,
     mock_repo_exists,
     setup_password_env,
@@ -409,7 +409,7 @@ def test_prune_snapshot_not_found(
 def test_prune_repository_not_found(
     config_file,
     mock_db,
-    mock_initialized_schema,
+    mock_resolved_cluster,
     mock_healthy_cluster,
     setup_password_env,
     mocker,
@@ -434,7 +434,7 @@ def test_prune_repository_not_found(
 def test_prune_invalid_timestamp_format(
     config_file,
     mock_db,
-    mock_initialized_schema,
+    mock_resolved_cluster,
     mock_healthy_cluster,
     mock_repo_exists,
     setup_password_env,
@@ -454,7 +454,7 @@ def test_prune_invalid_timestamp_format(
 def test_prune_keep_last_zero(
     config_file,
     mock_db,
-    mock_initialized_schema,
+    mock_resolved_cluster,
     mock_healthy_cluster,
     mock_repo_exists,
     setup_password_env,
@@ -474,7 +474,7 @@ def test_prune_keep_last_zero(
 def test_prune_no_snapshots_to_delete(
     config_file,
     mock_db,
-    mock_initialized_schema,
+    mock_resolved_cluster,
     mock_healthy_cluster,
     mock_repo_exists,
     setup_password_env,
@@ -509,7 +509,7 @@ def test_prune_no_snapshots_to_delete(
 def test_prune_cleanup_history_after_deletion(
     config_file,
     mock_db,
-    mock_initialized_schema,
+    mock_resolved_cluster,
     mock_healthy_cluster,
     mock_repo_exists,
     setup_password_env,
@@ -540,13 +540,13 @@ def test_prune_cleanup_history_after_deletion(
 
     mock_cleanup.assert_called_once()
     call_args = mock_cleanup.call_args
-    assert call_args[0][1] == "backup_20240101"
+    assert call_args[0][2] == "backup_20240101"
 
 
 def test_prune_partial_failure_continues_deletion(
     config_file,
     mock_db,
-    mock_initialized_schema,
+    mock_resolved_cluster,
     mock_healthy_cluster,
     mock_repo_exists,
     setup_password_env,
@@ -597,7 +597,7 @@ def test_prune_partial_failure_continues_deletion(
 def test_prune_with_group_filter_keep_last(
     config_file,
     mock_db,
-    mock_initialized_schema,
+    mock_resolved_cluster,
     mock_healthy_cluster,
     mock_repo_exists,
     setup_password_env,
@@ -657,7 +657,7 @@ def test_prune_with_group_filter_keep_last(
 def test_prune_with_group_filter_older_than(
     config_file,
     mock_db,
-    mock_initialized_schema,
+    mock_resolved_cluster,
     mock_healthy_cluster,
     mock_repo_exists,
     setup_password_env,
@@ -719,7 +719,7 @@ def test_prune_with_group_filter_older_than(
 def test_prune_without_group_affects_all_backups(
     config_file,
     mock_db,
-    mock_initialized_schema,
+    mock_resolved_cluster,
     mock_healthy_cluster,
     mock_repo_exists,
     setup_password_env,
@@ -774,7 +774,7 @@ def test_prune_without_group_affects_all_backups(
 def test_prune_group_not_found(
     config_file,
     mock_db,
-    mock_initialized_schema,
+    mock_resolved_cluster,
     mock_healthy_cluster,
     mock_repo_exists,
     setup_password_env,

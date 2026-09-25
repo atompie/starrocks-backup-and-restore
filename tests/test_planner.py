@@ -12,11 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import datetime as dt
+import hashlib
 from unittest.mock import Mock
 
 import pytest
 
 from starrocks_br import exceptions, planner
+from starrocks_br.store.models import BackupHistory, BackupPartition, TableInventory
 
 
 @pytest.fixture
@@ -26,40 +29,71 @@ def db_with_timezone():
     return db
 
 
-def test_should_find_latest_full_backup(db_with_timezone):
-    """Test finding the latest successful full backup."""
-    db_with_timezone.timezone = "UTC"
-    db_with_timezone.query.return_value = [("test_db_20251015_full", "full", "2025-10-15 10:00:00")]
+def _add_backup_history(session, cluster_id, label, backup_type, finished_at, status="FINISHED"):
+    session.add(
+        BackupHistory(
+            cluster_id=cluster_id,
+            label=label,
+            backup_type=backup_type,
+            status=status,
+            repository="repo",
+            started_at=finished_at,
+            finished_at=finished_at,
+        )
+    )
+    session.commit()
 
-    result = planner.find_latest_full_backup(db_with_timezone, "test_db")
+
+def _add_inventory(session, cluster_id, group, database, table):
+    session.add(
+        TableInventory(cluster_id=cluster_id, inventory_group=group, database_name=database, table_name=table)
+    )
+    session.commit()
+
+
+def test_should_find_latest_full_backup(db_with_timezone, sqlite_session, make_cluster):
+    """Test finding the latest successful full backup."""
+    cluster = make_cluster()
+    _add_backup_history(
+        sqlite_session, cluster.id, "test_db_20251015_full", "full", dt.datetime(2025, 10, 15, 10, 0, 0)
+    )
+
+    result = planner.find_latest_full_backup(db_with_timezone, sqlite_session, cluster.id, "test_db")
 
     assert result is not None
     assert result["label"] == "test_db_20251015_full"
     assert result["backup_type"] == "full"
     assert result["finished_at"] == "2025-10-15 10:00:00"
 
-    query = db_with_timezone.query.call_args[0][0]
-    assert "ops.backup_history" in query
-    assert "backup_type = 'full'" in query
-    assert "status = 'FINISHED'" in query
-    assert "label LIKE 'test_db_%'" in query
 
-
-def test_should_return_none_when_no_full_backup_found(db_with_timezone):
+def test_should_return_none_when_no_full_backup_found(db_with_timezone, sqlite_session, make_cluster):
     """Test that find_latest_full_backup returns None when no backup found."""
-    db_with_timezone.query.return_value = []
+    cluster = make_cluster()
 
-    result = planner.find_latest_full_backup(db_with_timezone, "test_db")
+    result = planner.find_latest_full_backup(db_with_timezone, sqlite_session, cluster.id, "test_db")
 
     assert result is None
 
 
-def test_should_find_partitions_with_specific_baseline_backup(db_with_timezone):
+def test_find_latest_full_backup_scoped_by_cluster(db_with_timezone, sqlite_session, make_cluster):
+    """A full backup on another cluster must not leak into this cluster's lookup."""
+    cluster_a = make_cluster("cluster-a")
+    cluster_b = make_cluster("cluster-b")
+    _add_backup_history(sqlite_session, cluster_a.id, "test_db_20251015_full", "full", dt.datetime(2025, 10, 15))
+
+    result = planner.find_latest_full_backup(db_with_timezone, sqlite_session, cluster_b.id, "test_db")
+
+    assert result is None
+
+
+def test_should_find_partitions_with_specific_baseline_backup(db_with_timezone, sqlite_session, make_cluster):
     """Test finding partitions with a specific baseline backup."""
-    db_with_timezone.timezone = "UTC"
+    cluster = make_cluster()
+    _add_backup_history(
+        sqlite_session, cluster.id, "sales_db_20251010_full", "full", dt.datetime(2025, 10, 10, 10, 0, 0)
+    )
+    _add_inventory(sqlite_session, cluster.id, "daily_incremental", "sales_db", "fact_sales")
     db_with_timezone.query.side_effect = [
-        [("2025-10-10 10:00:00",)],
-        [("sales_db", "fact_sales")],
         [
             (
                 "PartitionId",
@@ -72,7 +106,12 @@ def test_should_find_partitions_with_specific_baseline_backup(db_with_timezone):
     ]
 
     partitions = planner.find_recent_partitions(
-        db_with_timezone, "sales_db", "sales_db_20251010_full", group_name="daily_incremental"
+        db_with_timezone,
+        sqlite_session,
+        cluster.id,
+        "sales_db",
+        "sales_db_20251010_full",
+        group_name="daily_incremental",
     )
 
     assert len(partitions) == 1
@@ -82,43 +121,45 @@ def test_should_find_partitions_with_specific_baseline_backup(db_with_timezone):
         "partition_name": "p20251015",
     } in partitions
 
-    baseline_query = db_with_timezone.query.call_args_list[0][0][0]
-    assert "ops.backup_history" in baseline_query
-    assert "label = 'sales_db_20251010_full'" in baseline_query
-
-    show_partitions_query = db_with_timezone.query.call_args_list[2][0][0]
+    show_partitions_query = db_with_timezone.query.call_args_list[0][0][0]
     assert "SHOW PARTITIONS FROM `sales_db`.`fact_sales`" in show_partitions_query
 
 
-def test_should_fail_when_no_full_backup_found(mocker, db_with_timezone):
+def test_should_fail_when_no_full_backup_found(mocker, db_with_timezone, sqlite_session, make_cluster):
     """Test that find_recent_partitions fails when no full backup is found."""
-    db_with_timezone.timezone = "UTC"
-    db_with_timezone.query.return_value = []
+    cluster = make_cluster()
 
     mocker.patch("starrocks_br.planner.find_latest_full_backup", return_value=None)
 
     with pytest.raises(exceptions.NoFullBackupFoundError) as exc_info:
-        planner.find_recent_partitions(db_with_timezone, "test_db", group_name="daily_incremental")
+        planner.find_recent_partitions(
+            db_with_timezone, sqlite_session, cluster.id, "test_db", group_name="daily_incremental"
+        )
 
     assert exc_info.value.database == "test_db"
 
 
-def test_should_fail_when_invalid_baseline_backup(db_with_timezone):
+def test_should_fail_when_invalid_baseline_backup(db_with_timezone, sqlite_session, make_cluster):
     """Test that find_recent_partitions fails when baseline backup is invalid."""
-    db_with_timezone.timezone = "UTC"
-    db_with_timezone.query.return_value = []
+    cluster = make_cluster()
 
     with pytest.raises(exceptions.BackupLabelNotFoundError):
         planner.find_recent_partitions(
-            db_with_timezone, "test_db", "invalid_backup", group_name="daily_incremental"
+            db_with_timezone,
+            sqlite_session,
+            cluster.id,
+            "test_db",
+            "invalid_backup",
+            group_name="daily_incremental",
         )
 
 
-def test_should_find_partitions_updated_since_latest_full_backup(mocker, db_with_timezone):
+def test_should_find_partitions_updated_since_latest_full_backup(mocker, db_with_timezone, sqlite_session, make_cluster):
     """Test finding partitions updated since the latest full backup."""
-    db_with_timezone.timezone = "UTC"
+    cluster = make_cluster()
+    _add_inventory(sqlite_session, cluster.id, "daily_incremental", "sales_db", "fact_sales")
+    _add_inventory(sqlite_session, cluster.id, "daily_incremental", "orders_db", "fact_orders")
     db_with_timezone.query.side_effect = [
-        [("sales_db", "fact_sales"), ("orders_db", "fact_orders")],
         [
             (
                 "PartitionId",
@@ -147,7 +188,7 @@ def test_should_find_partitions_updated_since_latest_full_backup(mocker, db_with
     )
 
     partitions = planner.find_recent_partitions(
-        db_with_timezone, "sales_db", group_name="daily_incremental"
+        db_with_timezone, sqlite_session, cluster.id, "sales_db", group_name="daily_incremental"
     )
 
     assert len(partitions) == 2
@@ -161,7 +202,7 @@ def test_should_find_partitions_updated_since_latest_full_backup(mocker, db_with
         "table": "fact_sales",
         "partition_name": "p20251014",
     } in partitions
-    assert db_with_timezone.query.call_count == 2
+    assert db_with_timezone.query.call_count == 1
 
 
 def test_should_build_incremental_backup_command():
@@ -196,11 +237,11 @@ def test_should_handle_single_partition():
     assert "TO `repo`" in command
 
 
-def test_should_format_date_correctly_in_query(mocker, db_with_timezone):
+def test_should_format_date_correctly_in_query(mocker, db_with_timezone, sqlite_session, make_cluster):
     """Test that the query uses the correct baseline time format and SHOW PARTITIONS command."""
-    db_with_timezone.timezone = "UTC"
+    cluster = make_cluster()
+    _add_inventory(sqlite_session, cluster.id, "daily_incremental", "sales_db", "fact_sales")
     db_with_timezone.query.side_effect = [
-        [("sales_db", "fact_sales")],
         [],
     ]
 
@@ -213,21 +254,22 @@ def test_should_format_date_correctly_in_query(mocker, db_with_timezone):
         },
     )
 
-    planner.find_recent_partitions(db_with_timezone, "sales_db", group_name="daily_incremental")
+    planner.find_recent_partitions(
+        db_with_timezone, sqlite_session, cluster.id, "sales_db", group_name="daily_incremental"
+    )
 
-    partitions_query = db_with_timezone.query.call_args_list[1][0][0]
+    partitions_query = db_with_timezone.query.call_args_list[0][0][0]
     assert "SHOW PARTITIONS FROM `sales_db`.`fact_sales`" in partitions_query
 
 
-def test_should_build_full_backup_command_with_wildcard(db_with_timezone):
+def test_should_build_full_backup_command_with_wildcard(sqlite_session, make_cluster):
     """Test building full backup command when group contains wildcard."""
-    db_with_timezone.query.return_value = [
-        ("sales_db", "*"),
-        ("sales_db", "dim_customers"),
-    ]
+    cluster = make_cluster()
+    _add_inventory(sqlite_session, cluster.id, "monthly_full", "sales_db", "*")
+    _add_inventory(sqlite_session, cluster.id, "monthly_full", "sales_db", "dim_customers")
 
     command = planner.build_full_backup_command(
-        db_with_timezone, "monthly_full", "my_repo", "sales_db_20251015_full", "sales_db"
+        sqlite_session, cluster.id, "monthly_full", "my_repo", "sales_db_20251015_full", "sales_db"
     )
 
     expected = """BACKUP DATABASE `sales_db` SNAPSHOT `sales_db_20251015_full`
@@ -235,15 +277,14 @@ def test_should_build_full_backup_command_with_wildcard(db_with_timezone):
     assert command == expected
 
 
-def test_should_build_full_backup_command_with_specific_tables(db_with_timezone):
+def test_should_build_full_backup_command_with_specific_tables(sqlite_session, make_cluster):
     """Test building full backup command with specific tables."""
-    db_with_timezone.query.return_value = [
-        ("sales_db", "dim_customers"),
-        ("sales_db", "dim_products"),
-    ]
+    cluster = make_cluster()
+    _add_inventory(sqlite_session, cluster.id, "weekly_dimensions", "sales_db", "dim_customers")
+    _add_inventory(sqlite_session, cluster.id, "weekly_dimensions", "sales_db", "dim_products")
 
     command = planner.build_full_backup_command(
-        db_with_timezone, "weekly_dimensions", "my_repo", "weekly_backup_20251015", "sales_db"
+        sqlite_session, cluster.id, "weekly_dimensions", "my_repo", "weekly_backup_20251015", "sales_db"
     )
 
     expected = """BACKUP DATABASE `sales_db` SNAPSHOT `weekly_backup_20251015`
@@ -253,78 +294,78 @@ def test_should_build_full_backup_command_with_specific_tables(db_with_timezone)
     assert command == expected
 
 
-def test_should_return_empty_command_when_no_tables_in_group(db_with_timezone):
+def test_should_return_empty_command_when_no_tables_in_group(sqlite_session, make_cluster):
     """Test that build_full_backup_command returns empty when no tables in group."""
-    db_with_timezone.query.return_value = []
+    cluster = make_cluster()
 
-    command = planner.build_full_backup_command(
-        db_with_timezone, "empty_group", "repo", "label", "test_db"
-    )
+    command = planner.build_full_backup_command(sqlite_session, cluster.id, "empty_group", "repo", "label", "test_db")
 
     assert command == ""
 
 
-def test_should_return_empty_command_when_no_tables_for_database(db_with_timezone):
+def test_should_return_empty_command_when_no_tables_for_database(sqlite_session, make_cluster):
     """Test that build_full_backup_command returns empty when no tables for specific database."""
-    db_with_timezone.query.return_value = [
-        ("other_db", "table1"),
-    ]
+    cluster = make_cluster()
+    _add_inventory(sqlite_session, cluster.id, "group", "other_db", "table1")
 
-    command = planner.build_full_backup_command(
-        db_with_timezone, "group", "repo", "label", "test_db"
-    )
+    command = planner.build_full_backup_command(sqlite_session, cluster.id, "group", "repo", "label", "test_db")
 
     assert command == ""
 
 
-def test_should_find_tables_by_group(db_with_timezone):
+def test_should_find_tables_by_group(sqlite_session, make_cluster):
     """Test finding tables by inventory group."""
-    db_with_timezone.query.return_value = [
-        ("sales_db", "fact_sales"),
-        ("sales_db", "dim_customers"),
-        ("orders_db", "fact_orders"),
-    ]
+    cluster = make_cluster()
+    _add_inventory(sqlite_session, cluster.id, "daily_incremental", "sales_db", "fact_sales")
+    _add_inventory(sqlite_session, cluster.id, "daily_incremental", "sales_db", "dim_customers")
+    _add_inventory(sqlite_session, cluster.id, "daily_incremental", "orders_db", "fact_orders")
 
-    tables = planner.find_tables_by_group(db_with_timezone, "daily_incremental")
+    tables = planner.find_tables_by_group(sqlite_session, cluster.id, "daily_incremental")
 
     assert len(tables) == 3
     assert {"database": "sales_db", "table": "fact_sales"} in tables
     assert {"database": "sales_db", "table": "dim_customers"} in tables
     assert {"database": "orders_db", "table": "fact_orders"} in tables
 
-    query = db_with_timezone.query.call_args[0][0]
-    assert "ops.table_inventory" in query
-    assert "inventory_group = 'daily_incremental'" in query
 
-
-def test_should_find_tables_by_group_with_wildcard(db_with_timezone):
+def test_should_find_tables_by_group_with_wildcard(sqlite_session, make_cluster):
     """Test finding tables by group including wildcard entries."""
-    db_with_timezone.query.return_value = [
-        ("sales_db", "*"),  # Wildcard
-        ("orders_db", "fact_orders"),  # Specific table
-    ]
+    cluster = make_cluster()
+    _add_inventory(sqlite_session, cluster.id, "monthly_full", "sales_db", "*")
+    _add_inventory(sqlite_session, cluster.id, "monthly_full", "orders_db", "fact_orders")
 
-    tables = planner.find_tables_by_group(db_with_timezone, "monthly_full")
+    tables = planner.find_tables_by_group(sqlite_session, cluster.id, "monthly_full")
 
     assert len(tables) == 2
     assert {"database": "sales_db", "table": "*"} in tables
     assert {"database": "orders_db", "table": "fact_orders"} in tables
 
 
-def test_should_return_empty_list_when_group_not_found(db_with_timezone):
+def test_should_return_empty_list_when_group_not_found(sqlite_session, make_cluster):
     """Test that find_tables_by_group returns empty list when group not found."""
-    db_with_timezone.query.return_value = []
+    cluster = make_cluster()
 
-    tables = planner.find_tables_by_group(db_with_timezone, "nonexistent_group")
+    tables = planner.find_tables_by_group(sqlite_session, cluster.id, "nonexistent_group")
 
     assert len(tables) == 0
 
 
-def test_should_find_recent_partitions_with_group_filtering(mocker, db_with_timezone):
+def test_find_tables_by_group_scoped_by_cluster(sqlite_session, make_cluster):
+    """A table-inventory row on another cluster must not leak into this cluster's group lookup."""
+    cluster_a = make_cluster("cluster-a")
+    cluster_b = make_cluster("cluster-b")
+    _add_inventory(sqlite_session, cluster_a.id, "daily_incremental", "sales_db", "fact_sales")
+
+    tables = planner.find_tables_by_group(sqlite_session, cluster_b.id, "daily_incremental")
+
+    assert tables == []
+
+
+def test_should_find_recent_partitions_with_group_filtering(mocker, db_with_timezone, sqlite_session, make_cluster):
     """Test finding recent partitions filtered by inventory group."""
-    db_with_timezone.timezone = "UTC"
+    cluster = make_cluster()
+    _add_inventory(sqlite_session, cluster.id, "daily_incremental", "sales_db", "fact_sales")
     db_with_timezone.query.side_effect = [
-        [("sales_db", "fact_sales"), ("orders_db", "fact_orders")],
         [
             (
                 "PartitionId",
@@ -346,7 +387,7 @@ def test_should_find_recent_partitions_with_group_filtering(mocker, db_with_time
     )
 
     partitions = planner.find_recent_partitions(
-        db_with_timezone, "sales_db", group_name="daily_incremental"
+        db_with_timezone, sqlite_session, cluster.id, "sales_db", group_name="daily_incremental"
     )
 
     assert len(partitions) == 1
@@ -355,14 +396,14 @@ def test_should_find_recent_partitions_with_group_filtering(mocker, db_with_time
         "table": "fact_sales",
         "partition_name": "p20251015",
     } in partitions
-    assert db_with_timezone.query.call_count == 2
+    assert db_with_timezone.query.call_count == 1
 
 
-def test_should_handle_no_recent_partitions_with_group_filtering(mocker, db_with_timezone):
+def test_should_handle_no_recent_partitions_with_group_filtering(mocker, db_with_timezone, sqlite_session, make_cluster):
     """Test handling when no recent partitions exist for group tables."""
-    db_with_timezone.timezone = "UTC"
+    cluster = make_cluster()
+    _add_inventory(sqlite_session, cluster.id, "daily_incremental", "sales_db", "fact_sales")
     db_with_timezone.query.side_effect = [
-        [("sales_db", "fact_sales")],
         [
             (
                 "PartitionId",
@@ -384,17 +425,16 @@ def test_should_handle_no_recent_partitions_with_group_filtering(mocker, db_with
     )
 
     partitions = planner.find_recent_partitions(
-        db_with_timezone, "sales_db", group_name="daily_incremental"
+        db_with_timezone, sqlite_session, cluster.id, "sales_db", group_name="daily_incremental"
     )
 
     assert len(partitions) == 0
-    assert db_with_timezone.query.call_count == 2
+    assert db_with_timezone.query.call_count == 1
 
 
-def test_should_return_empty_partitions_when_no_group_tables(mocker, db_with_timezone):
+def test_should_return_empty_partitions_when_no_group_tables(mocker, db_with_timezone, sqlite_session, make_cluster):
     """Test that find_recent_partitions returns empty when no tables in group."""
-    db_with_timezone.timezone = "UTC"
-    db_with_timezone.query.return_value = []
+    cluster = make_cluster()
 
     mocker.patch(
         "starrocks_br.planner.find_latest_full_backup",
@@ -406,17 +446,16 @@ def test_should_return_empty_partitions_when_no_group_tables(mocker, db_with_tim
     )
 
     partitions = planner.find_recent_partitions(
-        db_with_timezone, "test_db", group_name="empty_group"
+        db_with_timezone, sqlite_session, cluster.id, "test_db", group_name="empty_group"
     )
 
     assert len(partitions) == 0
-    assert db_with_timezone.query.call_count == 1
+    assert db_with_timezone.query.call_count == 0
 
 
-def test_should_record_backup_partitions(db_with_timezone):
+def test_should_record_backup_partitions(sqlite_session, make_cluster):
     """Test recording partition metadata for a backup."""
-    import hashlib
-
+    cluster = make_cluster()
     partitions = [
         {"database": "sales_db", "table": "fact_sales", "partition_name": "p20251015"},
         {"database": "sales_db", "table": "fact_sales", "partition_name": "p20251014"},
@@ -424,29 +463,27 @@ def test_should_record_backup_partitions(db_with_timezone):
     ]
     label = "sales_db_20251015_incremental"
 
-    planner.record_backup_partitions(db_with_timezone, label, partitions)
+    planner.record_backup_partitions(sqlite_session, cluster.id, label, partitions)
+    sqlite_session.commit()
 
-    assert db_with_timezone.execute.call_count == 3
+    rows = sqlite_session.query(BackupPartition).filter_by(cluster_id=cluster.id).all()
+    assert len(rows) == 3
 
-    first_call = db_with_timezone.execute.call_args_list[0][0][0]
-    assert "INSERT INTO ops.backup_partitions" in first_call
-    assert "key_hash, label, database_name, table_name, partition_name" in first_call
-
-    # Verify the hash is computed correctly for the first partition
     expected_composite_key = f"{label}|sales_db|fact_sales|p20251015"
     expected_hash = hashlib.md5(expected_composite_key.encode("utf-8")).hexdigest()
-    assert (
-        f"VALUES ('{expected_hash}', 'sales_db_20251015_incremental', 'sales_db', 'fact_sales', 'p20251015')"
-        in first_call
-    )
+    first_row = next(r for r in rows if r.partition_name == "p20251015" and r.table_name == "fact_sales")
+    assert first_row.key_hash == expected_hash
+    assert first_row.label == label
+    assert first_row.database_name == "sales_db"
 
 
-def test_should_handle_empty_partitions_list_in_record_backup_partitions(db_with_timezone):
+def test_should_handle_empty_partitions_list_in_record_backup_partitions(sqlite_session, make_cluster):
     """Test that record_backup_partitions handles empty partitions list gracefully."""
+    cluster = make_cluster()
 
-    planner.record_backup_partitions(db_with_timezone, "test_label", [])
+    planner.record_backup_partitions(sqlite_session, cluster.id, "test_label", [])
 
-    db_with_timezone.execute.assert_not_called()
+    assert sqlite_session.query(BackupPartition).filter_by(cluster_id=cluster.id).count() == 0
 
 
 def test_should_get_all_partitions_for_tables(db_with_timezone):
@@ -546,11 +583,11 @@ def test_should_return_empty_list_when_no_tables_for_database_in_get_all_partiti
     db_with_timezone.query.assert_not_called()
 
 
-def test_find_recent_partitions_handles_wildcard_group(mocker, db_with_timezone):
+def test_find_recent_partitions_handles_wildcard_group(mocker, db_with_timezone, sqlite_session, make_cluster):
     """Test that find_recent_partitions correctly handles wildcard table groups."""
-    db_with_timezone.timezone = "UTC"
+    cluster = make_cluster()
+    _add_inventory(sqlite_session, cluster.id, "monthly_full", "sales_db", "*")
     db_with_timezone.query.side_effect = [
-        [("sales_db", "*")],
         [("fact_sales",), ("dim_customers",)],
         [
             (
@@ -582,7 +619,7 @@ def test_find_recent_partitions_handles_wildcard_group(mocker, db_with_timezone)
     )
 
     partitions = planner.find_recent_partitions(
-        db_with_timezone, "sales_db", group_name="monthly_full"
+        db_with_timezone, sqlite_session, cluster.id, "sales_db", group_name="monthly_full"
     )
 
     assert len(partitions) == 2
@@ -597,21 +634,60 @@ def test_find_recent_partitions_handles_wildcard_group(mocker, db_with_timezone)
         "partition_name": "p20251014",
     } in partitions
 
-    show_tables_query = db_with_timezone.query.call_args_list[1][0][0]
+    show_tables_query = db_with_timezone.query.call_args_list[0][0][0]
     assert "SHOW TABLES FROM `sales_db`" in show_tables_query
 
-    show_partitions_query_1 = db_with_timezone.query.call_args_list[2][0][0]
+    show_partitions_query_1 = db_with_timezone.query.call_args_list[1][0][0]
     assert "SHOW PARTITIONS FROM `sales_db`.`fact_sales`" in show_partitions_query_1
 
-    show_partitions_query_2 = db_with_timezone.query.call_args_list[3][0][0]
+    show_partitions_query_2 = db_with_timezone.query.call_args_list[2][0][0]
     assert "SHOW PARTITIONS FROM `sales_db`.`dim_customers`" in show_partitions_query_2
 
 
-def test_find_recent_partitions_with_multiple_tables_mixed_timestamps(mocker, db_with_timezone):
+def test_find_recent_partitions_with_multiple_tables_mixed_timestamps(mocker, db_with_timezone, sqlite_session, make_cluster):
     """Test finding recent partitions across multiple tables with mixed old and new partitions."""
-    db_with_timezone.timezone = "UTC"
+    cluster = make_cluster()
+    _add_inventory(sqlite_session, cluster.id, "daily_incremental", "sales_db", "fact_sales")
+    _add_inventory(sqlite_session, cluster.id, "daily_incremental", "sales_db", "fact_orders")
+    _add_inventory(sqlite_session, cluster.id, "daily_incremental", "sales_db", "dim_products")
+    # find_tables_by_group orders rows by (database_name, table_name), so with all
+    # three tables in "sales_db" the SHOW PARTITIONS calls happen alphabetically:
+    # dim_products, fact_orders, fact_sales.
     db_with_timezone.query.side_effect = [
-        [("sales_db", "fact_sales"), ("sales_db", "fact_orders"), ("sales_db", "dim_products")],
+        # SHOW PARTITIONS for dim_products - only new partitions
+        [
+            (
+                "PartitionId",
+                "p20251020",
+                "VisibleVersion",
+                "2025-10-20 09:00:00",
+                "VisibleVersionHash",
+            ),  # New
+            (
+                "PartitionId",
+                "p20251021",
+                "VisibleVersion",
+                "2025-10-21 10:00:00",
+                "VisibleVersionHash",
+            ),
+        ],  # New
+        # SHOW PARTITIONS for fact_orders - only old partitions
+        [
+            (
+                "PartitionId",
+                "p20251001",
+                "VisibleVersion",
+                "2025-10-01 10:00:00",
+                "VisibleVersionHash",
+            ),  # Old
+            (
+                "PartitionId",
+                "p20251008",
+                "VisibleVersion",
+                "2025-10-08 11:00:00",
+                "VisibleVersionHash",
+            ),
+        ],  # Old
         # SHOW PARTITIONS for fact_sales - mix of old and new partitions
         [
             (
@@ -636,40 +712,6 @@ def test_find_recent_partitions_with_multiple_tables_mixed_timestamps(mocker, db
                 "VisibleVersionHash",
             ),
         ],  # New
-        # SHOW PARTITIONS for fact_orders - only old partitions
-        [
-            (
-                "PartitionId",
-                "p20251001",
-                "VisibleVersion",
-                "2025-10-01 10:00:00",
-                "VisibleVersionHash",
-            ),  # Old
-            (
-                "PartitionId",
-                "p20251008",
-                "VisibleVersion",
-                "2025-10-08 11:00:00",
-                "VisibleVersionHash",
-            ),
-        ],  # Old
-        # SHOW PARTITIONS for dim_products - only new partitions
-        [
-            (
-                "PartitionId",
-                "p20251020",
-                "VisibleVersion",
-                "2025-10-20 09:00:00",
-                "VisibleVersionHash",
-            ),  # New
-            (
-                "PartitionId",
-                "p20251021",
-                "VisibleVersion",
-                "2025-10-21 10:00:00",
-                "VisibleVersionHash",
-            ),
-        ],  # New
     ]
 
     mocker.patch(
@@ -682,7 +724,7 @@ def test_find_recent_partitions_with_multiple_tables_mixed_timestamps(mocker, db
     )
 
     partitions = planner.find_recent_partitions(
-        db_with_timezone, "sales_db", group_name="daily_incremental"
+        db_with_timezone, sqlite_session, cluster.id, "sales_db", group_name="daily_incremental"
     )
 
     # Should only include partitions with timestamps after 2025-10-10 10:00:00
@@ -724,16 +766,16 @@ def test_find_recent_partitions_with_multiple_tables_mixed_timestamps(mocker, db
         "partition_name": "p20251021",
     } in partitions
 
-    assert db_with_timezone.query.call_count == 4
+    assert db_with_timezone.query.call_count == 3
 
-    show_partitions_query_1 = db_with_timezone.query.call_args_list[1][0][0]
-    assert "SHOW PARTITIONS FROM `sales_db`.`fact_sales`" in show_partitions_query_1
+    show_partitions_query_1 = db_with_timezone.query.call_args_list[0][0][0]
+    assert "SHOW PARTITIONS FROM `sales_db`.`dim_products`" in show_partitions_query_1
 
-    show_partitions_query_2 = db_with_timezone.query.call_args_list[2][0][0]
+    show_partitions_query_2 = db_with_timezone.query.call_args_list[1][0][0]
     assert "SHOW PARTITIONS FROM `sales_db`.`fact_orders`" in show_partitions_query_2
 
-    show_partitions_query_3 = db_with_timezone.query.call_args_list[3][0][0]
-    assert "SHOW PARTITIONS FROM `sales_db`.`dim_products`" in show_partitions_query_3
+    show_partitions_query_3 = db_with_timezone.query.call_args_list[2][0][0]
+    assert "SHOW PARTITIONS FROM `sales_db`.`fact_sales`" in show_partitions_query_3
 
 
 def test_should_validate_tables_exist_in_database(db_with_timezone):

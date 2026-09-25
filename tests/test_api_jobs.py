@@ -16,19 +16,12 @@ def _create_cluster(api_client) -> int:
     return api_client.post("/cluster", json=CLUSTER_PAYLOAD).json()["id"]
 
 
-class _FakeDB:
-    def close(self):
-        pass
-
-
 def _mock_group_check(monkeypatch, exists=True):
     """Bypass the synchronous group-existence check for backup_full/incremental submission."""
     from starrocks_br import inventory_groups
-    from starrocks_br.api.routes import jobs as jobs_module
 
-    monkeypatch.setattr(jobs_module, "connect_or_503", lambda cluster: _FakeDB())
     monkeypatch.setattr(
-        inventory_groups, "group_exists", lambda db, group, ops_database: exists
+        inventory_groups, "group_exists", lambda db, cluster_id, group: exists
     )
 
 

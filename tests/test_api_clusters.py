@@ -19,6 +19,18 @@ def test_create_cluster_succeeds_and_hides_password(api_client):
     assert "password_encrypted" not in body
 
 
+def test_create_cluster_ignores_ops_database_field(api_client):
+    """`ops_database` was removed from the user-facing surface entirely - a client
+    still sending it (e.g. an old CLI) must be silently ignored, not echoed back
+    or rejected, since ClusterCreate has no `extra="forbid"` config."""
+    payload = dict(CLUSTER_PAYLOAD, name="legacy-client-cluster", ops_database="custom_ops")
+
+    response = api_client.post("/cluster", json=payload)
+
+    assert response.status_code == 201
+    assert "ops_database" not in response.json()
+
+
 def test_create_cluster_duplicate_name_conflicts(api_client):
     api_client.post("/cluster", json=CLUSTER_PAYLOAD)
     response = api_client.post("/cluster", json=CLUSTER_PAYLOAD)
@@ -85,7 +97,6 @@ def test_delete_idle_cluster_succeeds(api_client):
 
 def test_delete_cluster_blocked_by_active_job(api_client, monkeypatch):
     from starrocks_br import inventory_groups
-    from starrocks_br.api.routes import jobs as jobs_module
     from starrocks_br.jobs import handlers
 
     def slow_handler(cluster, params, on_progress=None):
@@ -94,13 +105,8 @@ def test_delete_cluster_blocked_by_active_job(api_client, monkeypatch):
         time.sleep(0.3)
         return {}
 
-    class _FakeDB:
-        def close(self):
-            pass
-
     monkeypatch.setitem(handlers.JOB_HANDLERS, "backup_full", slow_handler)
-    monkeypatch.setattr(jobs_module, "connect_or_503", lambda cluster: _FakeDB())
-    monkeypatch.setattr(inventory_groups, "group_exists", lambda db, group, ops_database: True)
+    monkeypatch.setattr(inventory_groups, "group_exists", lambda db, cluster_id, group: True)
 
     created = api_client.post("/cluster", json=CLUSTER_PAYLOAD).json()
     api_client.post(f"/cluster/{created['id']}/backups/full", json={"group": "g1"})

@@ -14,78 +14,91 @@
 
 """Unit tests for the prune module."""
 
+import datetime as dt
+
 import pytest
 
 from starrocks_br import prune
+from starrocks_br.store.models import BackupHistory, BackupPartition, TableInventory
+
+
+def _add_backup_history(session, cluster_id, label, finished_at, repository="test_repo", status="FINISHED"):
+    session.add(
+        BackupHistory(
+            cluster_id=cluster_id,
+            label=label,
+            backup_type="full",
+            status=status,
+            repository=repository,
+            started_at=finished_at,
+            finished_at=finished_at,
+        )
+    )
+    session.commit()
 
 
 class TestGetSuccessfulBackups:
     """Unit tests for get_successful_backups function."""
 
-    def test_get_backups_without_group(self, mocker):
+    def test_get_backups_without_group(self, sqlite_session, make_cluster):
         """Test getting backups without group filter."""
-        mock_db = mocker.Mock()
-        mock_db.query.return_value = [
-            ("backup1", "2024-01-01 00:00:00"),
-            ("backup2", "2024-01-02 00:00:00"),
-        ]
+        cluster = make_cluster()
+        _add_backup_history(sqlite_session, cluster.id, "backup1", dt.datetime(2024, 1, 1))
+        _add_backup_history(sqlite_session, cluster.id, "backup2", dt.datetime(2024, 1, 2))
 
-        result = prune.get_successful_backups(mock_db, "test_repo")
+        result = prune.get_successful_backups(sqlite_session, cluster.id, "test_repo")
 
         assert len(result) == 2
-        assert result[0] == {"label": "backup1", "finished_at": "2024-01-01 00:00:00"}
-        assert result[1] == {"label": "backup2", "finished_at": "2024-01-02 00:00:00"}
+        assert result[0]["label"] == "backup1"
+        assert result[1]["label"] == "backup2"
+        assert "inventory_group" not in result[0]
 
-        query_sql = mock_db.query.call_args[0][0]
-        assert "test_repo" in query_sql
-        assert "FINISHED" in query_sql
-        assert "inventory_group" not in query_sql
-
-    def test_get_backups_with_group(self, mocker):
+    def test_get_backups_with_group(self, sqlite_session, make_cluster):
         """Test getting backups with group filter."""
-        mock_db = mocker.Mock()
-        mock_db.query.return_value = [
-            ("backup1", "2024-01-01 00:00:00", "prod_group"),
-            ("backup2", "2024-01-02 00:00:00", "prod_group"),
-        ]
+        cluster = make_cluster()
+        _add_backup_history(sqlite_session, cluster.id, "backup1", dt.datetime(2024, 1, 1))
+        _add_backup_history(sqlite_session, cluster.id, "backup2", dt.datetime(2024, 1, 2))
+        for label in ("backup1", "backup2"):
+            sqlite_session.add(
+                BackupPartition(
+                    cluster_id=cluster.id,
+                    key_hash=f"hash-{label}",
+                    label=label,
+                    database_name="sales_db",
+                    table_name="orders",
+                    partition_name="p1",
+                )
+            )
+        sqlite_session.add(
+            TableInventory(
+                cluster_id=cluster.id, inventory_group="prod_group", database_name="sales_db", table_name="orders"
+            )
+        )
+        sqlite_session.commit()
 
-        result = prune.get_successful_backups(mock_db, "test_repo", group="prod_group")
+        result = prune.get_successful_backups(sqlite_session, cluster.id, "test_repo", group="prod_group")
 
         assert len(result) == 2
-        assert result[0] == {
-            "label": "backup1",
-            "finished_at": "2024-01-01 00:00:00",
-            "inventory_group": "prod_group",
-        }
-        assert result[1] == {
-            "label": "backup2",
-            "finished_at": "2024-01-02 00:00:00",
-            "inventory_group": "prod_group",
-        }
+        assert result[0] == {"label": "backup1", "finished_at": str(dt.datetime(2024, 1, 1)), "inventory_group": "prod_group"}
+        assert result[1]["inventory_group"] == "prod_group"
 
-        query_sql = mock_db.query.call_args[0][0]
-        assert "prod_group" in query_sql
-        assert "inventory_group" in query_sql
-        assert "table_inventory" in query_sql
-
-    def test_get_backups_empty_result(self, mocker):
+    def test_get_backups_empty_result(self, sqlite_session, make_cluster):
         """Test getting backups when none exist."""
-        mock_db = mocker.Mock()
-        mock_db.query.return_value = []
+        cluster = make_cluster()
 
-        result = prune.get_successful_backups(mock_db, "test_repo")
+        result = prune.get_successful_backups(sqlite_session, cluster.id, "test_repo")
 
         assert result == []
 
-    def test_get_backups_custom_ops_database(self, mocker):
-        """Test using custom ops database name."""
-        mock_db = mocker.Mock()
-        mock_db.query.return_value = []
+    def test_get_backups_scoped_by_cluster(self, sqlite_session, make_cluster):
+        """A backup on another cluster must not leak into this cluster's results."""
+        cluster_a = make_cluster("cluster-a")
+        cluster_b = make_cluster("cluster-b")
+        _add_backup_history(sqlite_session, cluster_a.id, "backup1", dt.datetime(2024, 1, 1))
 
-        prune.get_successful_backups(mock_db, "test_repo", ops_database="custom_ops")
+        result = prune.get_successful_backups(sqlite_session, cluster_b.id, "test_repo")
 
-        query_sql = mock_db.query.call_args[0][0]
-        assert "custom_ops.backup_history" in query_sql
+        assert result == []
 
 
 class TestFilterSnapshotsToDelete:
@@ -347,30 +360,42 @@ class TestExecuteDropSnapshot:
 class TestCleanupBackupHistory:
     """Unit tests for cleanup_backup_history function."""
 
-    def test_cleanup_success(self, mocker):
+    def test_cleanup_success(self, sqlite_session, make_cluster):
         """Test successful backup history cleanup."""
-        mock_db = mocker.Mock()
+        cluster = make_cluster()
+        _add_backup_history(sqlite_session, cluster.id, "backup1", dt.datetime(2024, 1, 1))
+        sqlite_session.add(
+            BackupPartition(
+                cluster_id=cluster.id,
+                key_hash="hash1",
+                label="backup1",
+                database_name="sales_db",
+                table_name="orders",
+                partition_name="p1",
+            )
+        )
+        sqlite_session.commit()
 
-        prune.cleanup_backup_history(mock_db, "backup1")
+        prune.cleanup_backup_history(sqlite_session, cluster.id, "backup1")
 
-        assert mock_db.execute.call_count == 2
+        assert sqlite_session.query(BackupHistory).filter_by(cluster_id=cluster.id, label="backup1").count() == 0
+        assert sqlite_session.query(BackupPartition).filter_by(cluster_id=cluster.id, label="backup1").count() == 0
 
-        calls = [call[0][0] for call in mock_db.execute.call_args_list]
-        assert any("backup_partitions" in call and "backup1" in call for call in calls)
-        assert any("backup_history" in call and "backup1" in call for call in calls)
+    def test_cleanup_scoped_by_cluster(self, sqlite_session, make_cluster):
+        """Cleanup on one cluster must not remove another cluster's history for the same label."""
+        cluster_a = make_cluster("cluster-a")
+        cluster_b = make_cluster("cluster-b")
+        _add_backup_history(sqlite_session, cluster_a.id, "shared-label", dt.datetime(2024, 1, 1))
+        _add_backup_history(sqlite_session, cluster_b.id, "shared-label", dt.datetime(2024, 1, 1))
 
-    def test_cleanup_custom_ops_database(self, mocker):
-        """Test cleanup with custom ops database."""
-        mock_db = mocker.Mock()
+        prune.cleanup_backup_history(sqlite_session, cluster_a.id, "shared-label")
 
-        prune.cleanup_backup_history(mock_db, "backup1", ops_database="custom_ops")
+        assert sqlite_session.query(BackupHistory).filter_by(cluster_id=cluster_a.id).count() == 0
+        assert sqlite_session.query(BackupHistory).filter_by(cluster_id=cluster_b.id).count() == 1
 
-        calls = [call[0][0] for call in mock_db.execute.call_args_list]
-        assert all("custom_ops" in call for call in calls)
-
-    def test_cleanup_failure(self, mocker):
+    def test_cleanup_failure_does_not_raise(self, sqlite_session, make_cluster, mocker):
         """Test cleanup when deletion fails (should not raise)."""
-        mock_db = mocker.Mock()
-        mock_db.execute.side_effect = Exception("Delete failed")
+        cluster_id = make_cluster().id
+        mocker.patch.object(sqlite_session, "execute", side_effect=Exception("Delete failed"))
 
-        prune.cleanup_backup_history(mock_db, "backup1")
+        prune.cleanup_backup_history(sqlite_session, cluster_id, "backup1")

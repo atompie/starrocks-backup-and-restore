@@ -19,38 +19,13 @@ def _create_cluster(api_client) -> int:
     return api_client.post("/cluster", json=CLUSTER_PAYLOAD).json()["id"]
 
 
-class FakeDB:
-    """Stand-in for StarRocksDB that never opens a real socket."""
-
-    def __init__(self, connect_error=None):
-        self.connect_error = connect_error
-        self.connected = False
-        self.closed = False
-
-    def connect(self):
-        if self.connect_error:
-            raise self.connect_error
-        self.connected = True
-
-    def close(self):
-        self.closed = True
-
-
-def _patch_connect(monkeypatch, fake_db):
-    from starrocks_br.api.routes import _cluster_connect
-
-    monkeypatch.setattr(_cluster_connect, "connect", lambda cluster: fake_db)
-
-
 def test_list_inventory_groups_success(api_client, monkeypatch):
     from starrocks_br import inventory_groups as inventory_groups_module
 
-    fake_db = FakeDB()
-    _patch_connect(monkeypatch, fake_db)
     monkeypatch.setattr(
         inventory_groups_module,
         "list_groups",
-        lambda db, ops_database: [{"name": "prod", "table_count": 2}],
+        lambda db, cluster_id: [{"name": "prod", "table_count": 2}],
     )
 
     cluster_id = _create_cluster(api_client)
@@ -58,20 +33,19 @@ def test_list_inventory_groups_success(api_client, monkeypatch):
 
     assert response.status_code == 200
     assert response.json() == [{"name": "prod", "table_count": 2}]
-    assert fake_db.closed is True
 
 
 def test_create_inventory_group_success(api_client, monkeypatch):
     from starrocks_br import inventory_groups as inventory_groups_module
 
-    fake_db = FakeDB()
-    _patch_connect(monkeypatch, fake_db)
-    monkeypatch.setattr(inventory_groups_module, "group_exists", lambda db, name, ops_database: False)
-    monkeypatch.setattr(inventory_groups_module, "add_memberships_bulk", lambda db, name, entries, ops_database: [])
+    monkeypatch.setattr(inventory_groups_module, "group_exists", lambda db, cluster_id, name: False)
+    monkeypatch.setattr(
+        inventory_groups_module, "add_memberships_bulk", lambda db, cluster_id, name, entries: []
+    )
     monkeypatch.setattr(
         inventory_groups_module,
         "get_group",
-        lambda db, name, ops_database: [
+        lambda db, cluster_id, name: [
             {"database": "sales_db", "table": "*", "created_at": "t1", "updated_at": "t1"}
         ],
     )
@@ -93,9 +67,7 @@ def test_create_inventory_group_success(api_client, monkeypatch):
 def test_create_inventory_group_duplicate_is_409(api_client, monkeypatch):
     from starrocks_br import inventory_groups as inventory_groups_module
 
-    fake_db = FakeDB()
-    _patch_connect(monkeypatch, fake_db)
-    monkeypatch.setattr(inventory_groups_module, "group_exists", lambda db, name, ops_database: True)
+    monkeypatch.setattr(inventory_groups_module, "group_exists", lambda db, cluster_id, name: True)
 
     cluster_id = _create_cluster(api_client)
     response = api_client.post(
@@ -119,12 +91,10 @@ def test_create_inventory_group_requires_at_least_one_table(api_client):
 def test_get_inventory_group_success(api_client, monkeypatch):
     from starrocks_br import inventory_groups as inventory_groups_module
 
-    fake_db = FakeDB()
-    _patch_connect(monkeypatch, fake_db)
     monkeypatch.setattr(
         inventory_groups_module,
         "get_group",
-        lambda db, name, ops_database: [
+        lambda db, cluster_id, name: [
             {"database": "sales_db", "table": "orders", "created_at": "t1", "updated_at": "t1"}
         ],
     )
@@ -140,9 +110,7 @@ def test_get_inventory_group_success(api_client, monkeypatch):
 def test_get_unknown_inventory_group_is_404(api_client, monkeypatch):
     from starrocks_br import inventory_groups as inventory_groups_module
 
-    fake_db = FakeDB()
-    _patch_connect(monkeypatch, fake_db)
-    monkeypatch.setattr(inventory_groups_module, "get_group", lambda db, name, ops_database: [])
+    monkeypatch.setattr(inventory_groups_module, "get_group", lambda db, cluster_id, name: [])
 
     cluster_id = _create_cluster(api_client)
     response = api_client.get(f"/cluster/{cluster_id}/inventory-groups/unknown")
@@ -153,12 +121,10 @@ def test_get_unknown_inventory_group_is_404(api_client, monkeypatch):
 def test_add_table_to_group_success(api_client, monkeypatch):
     from starrocks_br import inventory_groups as inventory_groups_module
 
-    fake_db = FakeDB()
-    _patch_connect(monkeypatch, fake_db)
     monkeypatch.setattr(
         inventory_groups_module,
         "add_membership",
-        lambda db, group, database, table, ops_database: {
+        lambda db, cluster_id, group, database, table: {
             "group": group,
             "database": database,
             "table": table,
@@ -167,7 +133,7 @@ def test_add_table_to_group_success(api_client, monkeypatch):
     monkeypatch.setattr(
         inventory_groups_module,
         "get_group",
-        lambda db, name, ops_database: [
+        lambda db, cluster_id, name: [
             {"database": "sales_db", "table": "orders", "created_at": "t1", "updated_at": "t1"}
         ],
     )
@@ -190,10 +156,7 @@ def test_add_table_to_group_success(api_client, monkeypatch):
 def test_add_duplicate_table_to_group_is_409(api_client, monkeypatch):
     from starrocks_br import inventory_groups as inventory_groups_module
 
-    fake_db = FakeDB()
-    _patch_connect(monkeypatch, fake_db)
-
-    def _raise_conflict(db, group, database, table, ops_database):
+    def _raise_conflict(db, cluster_id, group, database, table):
         raise InventoryMembershipConflictError("already exists")
 
     monkeypatch.setattr(inventory_groups_module, "add_membership", _raise_conflict)
@@ -210,13 +173,11 @@ def test_add_duplicate_table_to_group_is_409(api_client, monkeypatch):
 def test_remove_table_from_group_success(api_client, monkeypatch):
     from starrocks_br import inventory_groups as inventory_groups_module
 
-    fake_db = FakeDB()
-    _patch_connect(monkeypatch, fake_db)
     removed = []
     monkeypatch.setattr(
         inventory_groups_module,
         "remove_membership",
-        lambda db, group, database, table, ops_database: removed.append((group, database, table)),
+        lambda db, cluster_id, group, database, table: removed.append((group, database, table)),
     )
 
     cluster_id = _create_cluster(api_client)
@@ -229,10 +190,7 @@ def test_remove_table_from_group_success(api_client, monkeypatch):
 def test_remove_nonexistent_table_from_group_is_404(api_client, monkeypatch):
     from starrocks_br import inventory_groups as inventory_groups_module
 
-    fake_db = FakeDB()
-    _patch_connect(monkeypatch, fake_db)
-
-    def _raise_not_found(db, group, database, table, ops_database):
+    def _raise_not_found(db, cluster_id, group, database, table):
         raise InventoryMembershipNotFoundError("not found")
 
     monkeypatch.setattr(inventory_groups_module, "remove_membership", _raise_not_found)
@@ -246,13 +204,11 @@ def test_remove_nonexistent_table_from_group_is_404(api_client, monkeypatch):
 def test_delete_inventory_group_success(api_client, monkeypatch):
     from starrocks_br import inventory_groups as inventory_groups_module
 
-    fake_db = FakeDB()
-    _patch_connect(monkeypatch, fake_db)
     deleted = []
     monkeypatch.setattr(
         inventory_groups_module,
         "delete_group",
-        lambda db, name, ops_database: deleted.append(name) or 2,
+        lambda db, cluster_id, name: deleted.append(name) or 2,
     )
 
     cluster_id = _create_cluster(api_client)
@@ -265,10 +221,7 @@ def test_delete_inventory_group_success(api_client, monkeypatch):
 def test_delete_nonexistent_inventory_group_is_404(api_client, monkeypatch):
     from starrocks_br import inventory_groups as inventory_groups_module
 
-    fake_db = FakeDB()
-    _patch_connect(monkeypatch, fake_db)
-
-    def _raise_not_found(db, name, ops_database):
+    def _raise_not_found(db, cluster_id, name):
         raise InventoryGroupNotFoundError("not found")
 
     monkeypatch.setattr(inventory_groups_module, "delete_group", _raise_not_found)
@@ -282,14 +235,3 @@ def test_delete_nonexistent_inventory_group_is_404(api_client, monkeypatch):
 def test_inventory_groups_against_unknown_cluster_is_404(api_client):
     response = api_client.get("/cluster/999/inventory-groups")
     assert response.status_code == 404
-
-
-def test_inventory_groups_unreachable_cluster_is_503(api_client, monkeypatch):
-    fake_db = FakeDB(connect_error=RuntimeError("connection refused"))
-    _patch_connect(monkeypatch, fake_db)
-
-    cluster_id = _create_cluster(api_client)
-    response = api_client.get(f"/cluster/{cluster_id}/inventory-groups")
-
-    assert response.status_code == 503
-    assert "connection refused" in response.json()["detail"].lower()

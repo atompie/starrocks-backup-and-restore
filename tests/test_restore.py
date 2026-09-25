@@ -13,11 +13,51 @@
 # limitations under the License.
 
 import re
+from datetime import datetime
 from unittest.mock import Mock, patch
 
 import pytest
 
 from starrocks_br import history, restore
+from starrocks_br.store.models import BackupHistory, BackupPartition, RestoreHistory, TableInventory
+
+
+def _add_backup_history(session, cluster_id, label, backup_type, finished_at, status="FINISHED"):
+    if isinstance(finished_at, str):
+        finished_at = datetime.strptime(finished_at, "%Y-%m-%d %H:%M:%S")
+    session.add(
+        BackupHistory(
+            cluster_id=cluster_id,
+            label=label,
+            backup_type=backup_type,
+            status=status,
+            repository="repo",
+            started_at=finished_at,
+            finished_at=finished_at,
+        )
+    )
+    session.commit()
+
+
+def _add_backup_partition(session, cluster_id, label, database_name, table_name, partition_name="p1"):
+    session.add(
+        BackupPartition(
+            cluster_id=cluster_id,
+            key_hash=f"{label}|{database_name}|{table_name}|{partition_name}",
+            label=label,
+            database_name=database_name,
+            table_name=table_name,
+            partition_name=partition_name,
+        )
+    )
+    session.commit()
+
+
+def _add_table_inventory(session, cluster_id, group, database_name, table_name):
+    session.add(
+        TableInventory(cluster_id=cluster_id, inventory_group=group, database_name=database_name, table_name=table_name)
+    )
+    session.commit()
 
 
 @pytest.fixture
@@ -184,8 +224,8 @@ def test_should_query_correct_show_restore_syntax(mocker):
     assert "SHOW RESTORE FROM `test_db`" in query
 
 
-def test_should_log_restore_history(mocker):
-    db = mocker.Mock()
+def test_should_log_restore_history(sqlite_session, make_cluster):
+    cluster = make_cluster()
 
     entry = {
         "job_id": "restore-1",
@@ -198,21 +238,22 @@ def test_should_log_restore_history(mocker):
         "error_message": None,
     }
 
-    history.log_restore(db, entry)
+    history.log_restore(sqlite_session, cluster.id, entry)
+    sqlite_session.commit()
 
-    assert db.execute.call_count == 1
-    sql = db.execute.call_args[0][0]
-    assert "INSERT INTO ops.restore_history" in sql
-    assert "sales_db_20251015_incremental" in sql
+    row = sqlite_session.query(RestoreHistory).filter_by(cluster_id=cluster.id).one()
+    assert row.job_id == "restore-1"
+    assert row.backup_label == "sales_db_20251015_incremental"
 
 
-def test_should_execute_restore_workflow(mocker, db_with_timezone):
+def test_should_execute_restore_workflow(mocker, db_with_timezone, sqlite_session, make_cluster):
     db = db_with_timezone
     db.execute.return_value = None
     db.query.side_effect = [
         [{"Label": "sales_db_20251015_incremental", "State": "PENDING"}],
         [{"Label": "sales_db_20251015_incremental", "State": "FINISHED"}],
     ]
+    cluster = make_cluster()
 
     mocker.patch("starrocks_br.history.log_restore")
     mocker.patch("starrocks_br.concurrency.complete_job_slot")
@@ -226,6 +267,8 @@ def test_should_execute_restore_workflow(mocker, db_with_timezone):
 
     result = restore.execute_restore(
         db,
+        sqlite_session,
+        cluster.id,
         restore_command,
         backup_label="sales_db_20251015_incremental",
         restore_type="partition",
@@ -418,7 +461,7 @@ def test_should_handle_empty_restore_status_result():
     assert status["state"] == "TIMEOUT"
 
 
-def test_should_execute_restore_with_custom_polling_parameters(db_with_timezone):
+def test_should_execute_restore_with_custom_polling_parameters(db_with_timezone, sqlite_session, make_cluster):
     """Test restore execution with custom polling parameters."""
     db = db_with_timezone
     db.execute.return_value = None
@@ -426,11 +469,14 @@ def test_should_execute_restore_with_custom_polling_parameters(db_with_timezone)
         [{"Label": "restore_job", "State": "PENDING"}],
         [{"Label": "restore_job", "State": "FINISHED"}],
     ]
+    cluster = make_cluster()
 
     restore_command = "RESTORE SNAPSHOT restore_job FROM repo"
 
     result = restore.execute_restore(
         db,
+        sqlite_session,
+        cluster.id,
         restore_command,
         backup_label="restore_job",
         restore_type="partition",
@@ -444,7 +490,7 @@ def test_should_execute_restore_with_custom_polling_parameters(db_with_timezone)
     assert result["final_status"]["state"] == "FINISHED"
 
 
-def test_should_execute_restore_with_history_logging_failure(db_with_timezone):
+def test_should_execute_restore_with_history_logging_failure(db_with_timezone, sqlite_session, make_cluster):
     """Test restore execution when history logging fails."""
     db = db_with_timezone
     db.execute.return_value = None
@@ -452,6 +498,7 @@ def test_should_execute_restore_with_history_logging_failure(db_with_timezone):
         [{"Label": "restore_job", "State": "RUNNING"}],
         [{"Label": "restore_job", "State": "FINISHED"}],
     ]
+    cluster = make_cluster()
 
     log_restore = Mock(side_effect=Exception("Logging failed"))
     complete_slot = Mock()
@@ -460,6 +507,8 @@ def test_should_execute_restore_with_history_logging_failure(db_with_timezone):
         with patch("starrocks_br.restore.concurrency.complete_job_slot", complete_slot):
             result = restore.execute_restore(
                 db,
+                sqlite_session,
+                cluster.id,
                 "RESTORE SNAPSHOT restore_job FROM repo",
                 backup_label="restore_job",
                 restore_type="partition",
@@ -492,7 +541,7 @@ def test_should_return_lost_when_label_mismatch():
     assert db.query.call_count == 2
 
 
-def test_should_execute_restore_with_job_slot_completion_failure(db_with_timezone):
+def test_should_execute_restore_with_job_slot_completion_failure(db_with_timezone, sqlite_session, make_cluster):
     """Test restore execution when job slot completion fails."""
     db = db_with_timezone
     db.execute.return_value = None
@@ -500,6 +549,7 @@ def test_should_execute_restore_with_job_slot_completion_failure(db_with_timezon
         [{"Label": "restore_job", "State": "RUNNING"}],
         [{"Label": "restore_job", "State": "FINISHED"}],
     ]
+    cluster = make_cluster()
 
     log_restore = Mock()
     complete_slot = Mock(side_effect=Exception("Slot completion failed"))
@@ -508,6 +558,8 @@ def test_should_execute_restore_with_job_slot_completion_failure(db_with_timezon
         with patch("starrocks_br.restore.concurrency.complete_job_slot", complete_slot):
             result = restore.execute_restore(
                 db,
+                sqlite_session,
+                cluster.id,
                 "RESTORE SNAPSHOT restore_job FROM repo",
                 backup_label="restore_job",
                 restore_type="partition",
@@ -523,7 +575,7 @@ def test_should_execute_restore_with_job_slot_completion_failure(db_with_timezon
     assert complete_slot.call_count == 1
 
 
-def test_should_execute_restore_with_both_logging_and_slot_failures(db_with_timezone):
+def test_should_execute_restore_with_both_logging_and_slot_failures(db_with_timezone, sqlite_session, make_cluster):
     """Test restore execution when both history logging and job slot completion fail."""
     db = db_with_timezone
     db.execute.return_value = None
@@ -531,6 +583,7 @@ def test_should_execute_restore_with_both_logging_and_slot_failures(db_with_time
         [{"Label": "restore_job", "State": "RUNNING"}],
         [{"Label": "restore_job", "State": "FINISHED"}],
     ]
+    cluster = make_cluster()
 
     log_restore = Mock(side_effect=Exception("Logging failed"))
     complete_slot = Mock(side_effect=Exception("Slot completion failed"))
@@ -539,6 +592,8 @@ def test_should_execute_restore_with_both_logging_and_slot_failures(db_with_time
         with patch("starrocks_br.restore.concurrency.complete_job_slot", complete_slot):
             result = restore.execute_restore(
                 db,
+                sqlite_session,
+                cluster.id,
                 "RESTORE SNAPSHOT restore_job FROM repo",
                 backup_label="restore_job",
                 restore_type="partition",
@@ -554,16 +609,19 @@ def test_should_execute_restore_with_both_logging_and_slot_failures(db_with_time
     assert complete_slot.call_count == 1
 
 
-def test_should_handle_restore_execution_with_very_long_polling(db_with_timezone):
+def test_should_handle_restore_execution_with_very_long_polling(db_with_timezone, sqlite_session, make_cluster):
     """Test restore execution with very long polling duration."""
     db = db_with_timezone
     db.execute.return_value = None
     db.query.return_value = [{"Label": "restore_job", "State": "RUNNING"}]
+    cluster = make_cluster()
 
     restore_command = "RESTORE SNAPSHOT restore_job FROM repo"
 
     result = restore.execute_restore(
         db,
+        sqlite_session,
+        cluster.id,
         restore_command,
         backup_label="restore_job",
         restore_type="partition",
@@ -578,15 +636,18 @@ def test_should_handle_restore_execution_with_very_long_polling(db_with_timezone
     assert db.query.call_count == 3
 
 
-def test_should_handle_restore_execution_with_zero_polls(db_with_timezone):
+def test_should_handle_restore_execution_with_zero_polls(db_with_timezone, sqlite_session, make_cluster):
     """Test restore execution with zero max polls."""
     db = db_with_timezone
     db.execute.return_value = None
+    cluster = make_cluster()
 
     restore_command = "RESTORE SNAPSHOT restore_job FROM repo"
 
     result = restore.execute_restore(
         db,
+        sqlite_session,
+        cluster.id,
         restore_command,
         backup_label="restore_job",
         restore_type="partition",
@@ -601,7 +662,7 @@ def test_should_handle_restore_execution_with_zero_polls(db_with_timezone):
     assert db.query.call_count == 0
 
 
-def test_should_execute_restore_with_different_scope_values(db_with_timezone):
+def test_should_execute_restore_with_different_scope_values(db_with_timezone, sqlite_session, make_cluster):
     """Test restore execution with different scope values."""
     db = db_with_timezone
     db.execute.return_value = None
@@ -609,6 +670,7 @@ def test_should_execute_restore_with_different_scope_values(db_with_timezone):
         [{"Label": "restore_job", "State": "RUNNING"}],
         [{"Label": "restore_job", "State": "FINISHED"}],
     ]
+    cluster = make_cluster()
 
     complete_slot = Mock()
 
@@ -619,6 +681,8 @@ def test_should_execute_restore_with_different_scope_values(db_with_timezone):
     with patch("starrocks_br.restore.concurrency.complete_job_slot", complete_slot):
         result = restore.execute_restore(
             db,
+            sqlite_session,
+            cluster.id,
             restore_command,
             backup_label="restore_job",
             restore_type="partition",
@@ -636,7 +700,7 @@ def test_should_execute_restore_with_different_scope_values(db_with_timezone):
     assert kwargs.get("scope") == scope
 
 
-def test_should_handle_restore_execution_with_intermittent_query_failures(db_with_timezone):
+def test_should_handle_restore_execution_with_intermittent_query_failures(db_with_timezone, sqlite_session, make_cluster):
     """Test restore execution with intermittent query failures."""
     db = db_with_timezone
     db.execute.return_value = None
@@ -646,11 +710,14 @@ def test_should_handle_restore_execution_with_intermittent_query_failures(db_wit
         Exception("Another temporary error"),
         [{"Label": "restore_job", "State": "FINISHED"}],
     ]
+    cluster = make_cluster()
 
     restore_command = "RESTORE SNAPSHOT restore_job FROM repo"
 
     result = restore.execute_restore(
         db,
+        sqlite_session,
+        cluster.id,
         restore_command,
         backup_label="restore_job",
         restore_type="partition",
@@ -664,15 +731,18 @@ def test_should_handle_restore_execution_with_intermittent_query_failures(db_wit
     assert result["final_status"]["state"] == "ERROR"
 
 
-def test_should_handle_restore_command_submission_failure(db_with_timezone):
+def test_should_handle_restore_command_submission_failure(db_with_timezone, sqlite_session, make_cluster):
     """Test restore execution when command submission fails."""
     db = db_with_timezone
     db.execute.side_effect = Exception("Permission denied")
+    cluster = make_cluster()
 
     restore_command = "RESTORE SNAPSHOT restore_job FROM repo"
 
     result = restore.execute_restore(
         db,
+        sqlite_session,
+        cluster.id,
         restore_command,
         backup_label="restore_job",
         restore_type="partition",
@@ -685,7 +755,7 @@ def test_should_handle_restore_command_submission_failure(db_with_timezone):
     assert "Failed to submit restore command" in result["error_message"]
 
 
-def test_should_execute_restore_with_multiline_command(db_with_timezone):
+def test_should_execute_restore_with_multiline_command(db_with_timezone, sqlite_session, make_cluster):
     """Test restore execution with multiline restore commands."""
     db = db_with_timezone
     db.execute.return_value = None
@@ -693,6 +763,7 @@ def test_should_execute_restore_with_multiline_command(db_with_timezone):
         [{"Label": "complex_backup_2025-01-15", "State": "RUNNING"}],
         [{"Label": "complex_backup_2025-01-15", "State": "FINISHED"}],
     ]
+    cluster = make_cluster()
 
     multiline_command = """
     RESTORE SNAPSHOT complex_backup_2025-01-15
@@ -704,6 +775,8 @@ def test_should_execute_restore_with_multiline_command(db_with_timezone):
 
     result = restore.execute_restore(
         db,
+        sqlite_session,
+        cluster.id,
         multiline_command,
         backup_label="complex_backup_2025-01-15",
         restore_type="partition",
@@ -721,7 +794,7 @@ def test_should_execute_restore_with_multiline_command(db_with_timezone):
     assert "FROM my_repo" in restore_call
 
 
-def test_should_execute_restore_with_special_characters_in_names(db_with_timezone):
+def test_should_execute_restore_with_special_characters_in_names(db_with_timezone, sqlite_session, make_cluster):
     """Test restore execution with special characters in backup names."""
     db = db_with_timezone
     db.execute.return_value = None
@@ -729,11 +802,14 @@ def test_should_execute_restore_with_special_characters_in_names(db_with_timezon
         [{"Label": "restore-job_2025.01.15", "State": "RUNNING"}],
         [{"Label": "restore-job_2025.01.15", "State": "FINISHED"}],
     ]
+    cluster = make_cluster()
 
     restore_command = "RESTORE SNAPSHOT restore-job_2025.01.15 FROM repo-with-special.chars"
 
     result = restore.execute_restore(
         db,
+        sqlite_session,
+        cluster.id,
         restore_command,
         backup_label="restore-job_2025.01.15",
         restore_type="table",
@@ -747,7 +823,7 @@ def test_should_execute_restore_with_special_characters_in_names(db_with_timezon
     assert result["final_status"]["state"] == "FINISHED"
 
 
-def test_should_log_restore_history_with_correct_parameters(db_with_timezone):
+def test_should_log_restore_history_with_correct_parameters(db_with_timezone, sqlite_session, make_cluster):
     """Test that restore history is logged with correct parameters."""
     db = db_with_timezone
     db.execute.return_value = None
@@ -755,6 +831,7 @@ def test_should_log_restore_history_with_correct_parameters(db_with_timezone):
         [{"Label": "restore_job", "State": "RUNNING"}],
         [{"Label": "restore_job", "State": "FINISHED"}],
     ]
+    cluster = make_cluster()
 
     log_restore = Mock()
     complete_slot = Mock()
@@ -763,6 +840,8 @@ def test_should_log_restore_history_with_correct_parameters(db_with_timezone):
         with patch("starrocks_br.restore.concurrency.complete_job_slot", complete_slot):
             result = restore.execute_restore(
                 db,
+                sqlite_session,
+                cluster.id,
                 "RESTORE SNAPSHOT restore_job FROM repo",
                 backup_label="restore_job",
                 restore_type="partition",
@@ -775,14 +854,14 @@ def test_should_log_restore_history_with_correct_parameters(db_with_timezone):
 
     assert result["success"] is True
 
-    entry = log_restore.call_args[0][1]
+    entry = log_restore.call_args[0][2]
     assert entry["job_id"] == "restore_job"
     assert entry["status"] == "FINISHED"
     assert entry["repository"] == "test_repo"
     assert entry["restore_type"] == "partition"
 
 
-def test_should_log_restore_history_with_failure_state(db_with_timezone):
+def test_should_log_restore_history_with_failure_state(db_with_timezone, sqlite_session, make_cluster):
     """Test that restore history is logged correctly for failed restores."""
     db = db_with_timezone
     db.execute.return_value = None
@@ -790,6 +869,7 @@ def test_should_log_restore_history_with_failure_state(db_with_timezone):
         [{"Label": "restore_job", "State": "RUNNING"}],
         [{"Label": "restore_job", "State": "CANCELLED"}],
     ]
+    cluster = make_cluster()
 
     log_restore = Mock()
     complete_slot = Mock()
@@ -798,6 +878,8 @@ def test_should_log_restore_history_with_failure_state(db_with_timezone):
         with patch("starrocks_br.restore.concurrency.complete_job_slot", complete_slot):
             result = restore.execute_restore(
                 db,
+                sqlite_session,
+                cluster.id,
                 "RESTORE SNAPSHOT restore_job FROM repo",
                 backup_label="restore_job",
                 restore_type="partition",
@@ -809,208 +891,203 @@ def test_should_log_restore_history_with_failure_state(db_with_timezone):
 
     assert result["success"] is False
 
-    entry = log_restore.call_args[0][1]
+    entry = log_restore.call_args[0][2]
     assert entry["job_id"] == "restore_job"
     assert entry["status"] == "CANCELLED"
     assert entry["repository"] == "test_repo"
     assert entry["restore_type"] == "partition"
 
 
-def test_should_find_restore_pair_for_full_backup(mocker):
+def test_should_find_restore_pair_for_full_backup(sqlite_session, make_cluster):
     """Test finding restore pair for a full backup (returns single label)."""
-    db = mocker.Mock()
-    db.query.return_value = [("sales_db_20251015_full", "full", "2025-10-15 10:00:00")]
+    cluster = make_cluster()
+    _add_backup_history(sqlite_session, cluster.id, "sales_db_20251015_full", "full", "2025-10-15 10:00:00")
 
-    result = restore.find_restore_pair(db, "sales_db_20251015_full")
+    result = restore.find_restore_pair(sqlite_session, cluster.id, "sales_db_20251015_full")
 
     assert result == ["sales_db_20251015_full"]
 
-    query = db.query.call_args[0][0]
-    assert "ops.backup_history" in query
-    assert "label = 'sales_db_20251015_full'" in query
-    assert "status = 'FINISHED'" in query
 
-
-def test_should_find_restore_pair_for_incremental_backup(mocker):
+def test_should_find_restore_pair_for_incremental_backup(sqlite_session, make_cluster):
     """Test finding restore pair for an incremental backup (returns full + incremental)."""
-    db = mocker.Mock()
-    db.query.side_effect = [
-        [("sales_db_20251016_inc", "incremental", "2025-10-16 10:00:00")],  # Target backup
-        [("sales_db_20251015_full", "full", "2025-10-15 10:00:00")],  # Base full backup
-    ]
+    cluster = make_cluster()
+    _add_backup_history(sqlite_session, cluster.id, "sales_db_20251015_full", "full", "2025-10-15 10:00:00")
+    _add_backup_history(sqlite_session, cluster.id, "sales_db_20251016_inc", "incremental", "2025-10-16 10:00:00")
 
-    result = restore.find_restore_pair(db, "sales_db_20251016_inc")
+    result = restore.find_restore_pair(sqlite_session, cluster.id, "sales_db_20251016_inc")
 
     assert result == ["sales_db_20251015_full", "sales_db_20251016_inc"]
-    assert db.query.call_count == 2
 
 
-def test_should_raise_error_when_target_label_not_found(mocker):
+def test_should_raise_error_when_target_label_not_found(sqlite_session, make_cluster):
     """Test that find_restore_pair raises error when target label not found."""
     from starrocks_br import exceptions
 
-    db = mocker.Mock()
-    db.query.return_value = []
+    cluster = make_cluster()
 
     with pytest.raises(
         exceptions.BackupLabelNotFoundError, match="Backup label 'nonexistent' not found"
     ):
-        restore.find_restore_pair(db, "nonexistent")
+        restore.find_restore_pair(sqlite_session, cluster.id, "nonexistent")
 
 
-def test_should_raise_error_when_incremental_has_no_full_backup(mocker):
+def test_should_raise_error_when_incremental_has_no_full_backup(sqlite_session, make_cluster):
     """Test that find_restore_pair raises error when incremental has no preceding full backup."""
     from starrocks_br import exceptions
 
-    db = mocker.Mock()
-    db.query.side_effect = [
-        [("sales_db_20251016_inc", "incremental", "2025-10-16 10:00:00")],  # Target backup
-        [],  # No full backup found
-    ]
+    cluster = make_cluster()
+    _add_backup_history(sqlite_session, cluster.id, "sales_db_20251016_inc", "incremental", "2025-10-16 10:00:00")
 
     with pytest.raises(
         exceptions.NoSuccessfulFullBackupFoundError,
         match="No successful full backup found before incremental",
     ):
-        restore.find_restore_pair(db, "sales_db_20251016_inc")
+        restore.find_restore_pair(sqlite_session, cluster.id, "sales_db_20251016_inc")
 
 
-def test_should_raise_error_for_unknown_backup_type(mocker):
+def test_should_raise_error_for_unknown_backup_type(sqlite_session, make_cluster):
     """Test that find_restore_pair raises error for unknown backup type."""
-    db = mocker.Mock()
-    db.query.return_value = [("sales_db_20251015_unknown", "unknown", "2025-10-15 10:00:00")]
+    cluster = make_cluster()
+    _add_backup_history(sqlite_session, cluster.id, "sales_db_20251015_unknown", "unknown", "2025-10-15 10:00:00")
 
     with pytest.raises(ValueError, match="Unknown backup type 'unknown'"):
-        restore.find_restore_pair(db, "sales_db_20251015_unknown")
+        restore.find_restore_pair(sqlite_session, cluster.id, "sales_db_20251015_unknown")
 
 
-def test_should_get_tables_from_backup_without_group_filter(mocker):
+def test_find_restore_pair_scoped_by_cluster(sqlite_session, make_cluster):
+    """A full backup on another cluster must not satisfy this cluster's incremental lookup."""
+    from starrocks_br import exceptions
+
+    cluster_a = make_cluster("cluster-a")
+    cluster_b = make_cluster("cluster-b")
+    _add_backup_history(sqlite_session, cluster_a.id, "sales_db_20251015_full", "full", "2025-10-15 10:00:00")
+    _add_backup_history(sqlite_session, cluster_b.id, "sales_db_20251016_inc", "incremental", "2025-10-16 10:00:00")
+
+    with pytest.raises(exceptions.NoSuccessfulFullBackupFoundError):
+        restore.find_restore_pair(sqlite_session, cluster_b.id, "sales_db_20251016_inc")
+
+
+def test_should_get_tables_from_backup_without_group_filter(mocker, sqlite_session, make_cluster):
     """Test getting tables from backup without group filtering."""
     db = mocker.Mock()
-    db.query.return_value = [
-        ("sales_db", "fact_sales"),
-        ("sales_db", "dim_customers"),
-        ("orders_db", "fact_orders"),
-    ]
+    cluster = make_cluster()
+    _add_backup_partition(sqlite_session, cluster.id, "sales_db_20251015_full", "sales_db", "fact_sales")
+    _add_backup_partition(sqlite_session, cluster.id, "sales_db_20251015_full", "sales_db", "dim_customers")
+    _add_backup_partition(sqlite_session, cluster.id, "sales_db_20251015_full", "orders_db", "fact_orders")
 
-    result = restore.get_tables_from_backup(db, "sales_db_20251015_full")
+    result = restore.get_tables_from_backup(db, sqlite_session, cluster.id, "sales_db_20251015_full")
 
-    assert result == ["sales_db.fact_sales", "sales_db.dim_customers", "orders_db.fact_orders"]
-
-    query = db.query.call_args[0][0]
-    assert "ops.backup_partitions" in query
-    assert "label = 'sales_db_20251015_full'" in query
+    # ORM query orders by (database_name, table_name).
+    assert result == ["orders_db.fact_orders", "sales_db.dim_customers", "sales_db.fact_sales"]
+    db.query.assert_not_called()
 
 
-def test_should_get_tables_from_backup_with_group_filter(mocker):
+def test_should_get_tables_from_backup_with_group_filter(sqlite_session, make_cluster, mocker):
     """Test getting tables from backup with group filtering."""
     db = mocker.Mock()
-    db.query.side_effect = [
-        [
-            ("sales_db", "fact_sales"),
-            ("sales_db", "dim_customers"),
-            ("orders_db", "fact_orders"),
-        ],  # Backup tables
-        [("sales_db", "fact_sales"), ("sales_db", "dim_customers")],  # Group tables
-    ]
-
-    result = restore.get_tables_from_backup(db, "sales_db_20251015_full", group="daily_incremental")
-
-    assert result == ["sales_db.fact_sales", "sales_db.dim_customers"]
-    assert db.query.call_count == 2
-
-
-def test_should_return_empty_list_when_no_tables_in_backup(mocker):
-    """Test that get_tables_from_backup returns empty list when no tables in backup."""
-    db = mocker.Mock()
-    db.query.return_value = []
-
-    result = restore.get_tables_from_backup(db, "empty_backup")
-
-    assert result == []
-
-
-def test_should_return_empty_list_when_group_has_no_tables(mocker):
-    """Test that get_tables_from_backup returns empty list when group has no tables."""
-    db = mocker.Mock()
-    db.query.side_effect = [
-        [("sales_db", "fact_sales")],  # Backup tables
-        [],  # No group tables
-    ]
-
-    result = restore.get_tables_from_backup(db, "sales_db_20251015_full", group="empty_group")
-
-    assert result == []
-
-
-def test_should_get_tables_from_backup_with_wildcard_group_filter(mocker):
-    """Test getting tables from backup with group filtering that includes wildcard entries."""
-    db = mocker.Mock()
-    db.query.side_effect = [
-        [
-            ("sales_db", "fact_sales"),
-            ("sales_db", "dim_customers"),
-            ("orders_db", "fact_orders"),
-        ],  # Backup tables
-        [("sales_db", "*")],  # Group inventory with wildcard
-        [("fact_sales",), ("dim_customers",)],  # SHOW TABLES FROM sales_db result
-    ]
-
-    result = restore.get_tables_from_backup(db, "sales_db_20251015_full", group="full_database")
-
-    assert result == ["sales_db.fact_sales", "sales_db.dim_customers"]
-    assert db.query.call_count == 3
-
-    calls = [call[0][0] for call in db.query.call_args_list]
-    assert "SHOW TABLES FROM `sales_db`" in calls
-
-
-def test_should_get_tables_from_backup_with_table_filter(mocker):
-    """Test getting tables from backup with table filtering."""
-    db = mocker.Mock()
-    db.query.return_value = [
-        ("sales_db", "fact_sales"),
-        ("sales_db", "dim_customers"),
-        ("orders_db", "fact_orders"),
-    ]
+    cluster = make_cluster()
+    _add_backup_partition(sqlite_session, cluster.id, "sales_db_20251015_full", "sales_db", "fact_sales")
+    _add_backup_partition(sqlite_session, cluster.id, "sales_db_20251015_full", "sales_db", "dim_customers")
+    _add_backup_partition(sqlite_session, cluster.id, "sales_db_20251015_full", "orders_db", "fact_orders")
+    _add_table_inventory(sqlite_session, cluster.id, "daily_incremental", "sales_db", "fact_sales")
+    _add_table_inventory(sqlite_session, cluster.id, "daily_incremental", "sales_db", "dim_customers")
 
     result = restore.get_tables_from_backup(
-        db, "sales_db_20251015_full", table="fact_sales", database="sales_db"
+        db, sqlite_session, cluster.id, "sales_db_20251015_full", group="daily_incremental"
+    )
+
+    assert sorted(result) == ["sales_db.dim_customers", "sales_db.fact_sales"]
+
+
+def test_should_return_empty_list_when_no_tables_in_backup(sqlite_session, make_cluster, mocker):
+    """Test that get_tables_from_backup returns empty list when no tables in backup."""
+    db = mocker.Mock()
+    cluster = make_cluster()
+
+    result = restore.get_tables_from_backup(db, sqlite_session, cluster.id, "empty_backup")
+
+    assert result == []
+
+
+def test_should_return_empty_list_when_group_has_no_tables(sqlite_session, make_cluster, mocker):
+    """Test that get_tables_from_backup returns empty list when group has no tables."""
+    db = mocker.Mock()
+    cluster = make_cluster()
+    _add_backup_partition(sqlite_session, cluster.id, "sales_db_20251015_full", "sales_db", "fact_sales")
+
+    result = restore.get_tables_from_backup(
+        db, sqlite_session, cluster.id, "sales_db_20251015_full", group="empty_group"
+    )
+
+    assert result == []
+
+
+def test_should_get_tables_from_backup_with_wildcard_group_filter(sqlite_session, make_cluster, mocker):
+    """Test getting tables from backup with group filtering that includes wildcard entries."""
+    db = mocker.Mock()
+    db.query.return_value = [("fact_sales",), ("dim_customers",)]  # SHOW TABLES FROM sales_db
+    cluster = make_cluster()
+    _add_backup_partition(sqlite_session, cluster.id, "sales_db_20251015_full", "sales_db", "fact_sales")
+    _add_backup_partition(sqlite_session, cluster.id, "sales_db_20251015_full", "sales_db", "dim_customers")
+    _add_backup_partition(sqlite_session, cluster.id, "sales_db_20251015_full", "orders_db", "fact_orders")
+    _add_table_inventory(sqlite_session, cluster.id, "full_database", "sales_db", "*")
+
+    result = restore.get_tables_from_backup(
+        db, sqlite_session, cluster.id, "sales_db_20251015_full", group="full_database"
+    )
+
+    assert sorted(result) == ["sales_db.dim_customers", "sales_db.fact_sales"]
+    db.query.assert_called_once()
+    assert "SHOW TABLES FROM `sales_db`" in db.query.call_args[0][0]
+
+
+def test_should_get_tables_from_backup_with_table_filter(sqlite_session, make_cluster, mocker):
+    """Test getting tables from backup with table filtering."""
+    db = mocker.Mock()
+    cluster = make_cluster()
+    _add_backup_partition(sqlite_session, cluster.id, "sales_db_20251015_full", "sales_db", "fact_sales")
+    _add_backup_partition(sqlite_session, cluster.id, "sales_db_20251015_full", "sales_db", "dim_customers")
+    _add_backup_partition(sqlite_session, cluster.id, "sales_db_20251015_full", "orders_db", "fact_orders")
+
+    result = restore.get_tables_from_backup(
+        db, sqlite_session, cluster.id, "sales_db_20251015_full", table="fact_sales", database="sales_db"
     )
 
     assert result == ["sales_db.fact_sales"]
-    assert db.query.call_count == 1
+    db.query.assert_not_called()
 
 
-def test_should_raise_value_error_when_table_not_found_in_backup(mocker):
+def test_should_raise_value_error_when_table_not_found_in_backup(sqlite_session, make_cluster, mocker):
     """Test that get_tables_from_backup raises ValueError when table is not found in backup."""
     from starrocks_br import exceptions
 
     db = mocker.Mock()
-    db.query.return_value = [
-        ("sales_db", "fact_sales"),
-        ("sales_db", "dim_customers"),
-    ]
+    cluster = make_cluster()
+    _add_backup_partition(sqlite_session, cluster.id, "sales_db_20251015_full", "sales_db", "fact_sales")
+    _add_backup_partition(sqlite_session, cluster.id, "sales_db_20251015_full", "sales_db", "dim_customers")
 
     with pytest.raises(
         exceptions.TableNotFoundInBackupError, match="Table 'nonexistent_table' not found in backup"
     ):
         restore.get_tables_from_backup(
-            db, "sales_db_20251015_full", table="nonexistent_table", database="sales_db"
+            db, sqlite_session, cluster.id, "sales_db_20251015_full", table="nonexistent_table", database="sales_db"
         )
 
 
-def test_should_raise_value_error_when_table_and_group_both_specified(mocker):
+def test_should_raise_value_error_when_table_and_group_both_specified(sqlite_session, make_cluster, mocker):
     """Test that get_tables_from_backup raises ValueError when both table and group are specified."""
     from starrocks_br import exceptions
 
     db = mocker.Mock()
+    cluster = make_cluster()
 
     with pytest.raises(
         exceptions.InvalidTableNameError, match="Cannot specify both --group and --table"
     ):
         restore.get_tables_from_backup(
             db,
+            sqlite_session,
+            cluster.id,
             "sales_db_20251015_full",
             group="daily_incremental",
             table="fact_sales",
@@ -1018,52 +1095,63 @@ def test_should_raise_value_error_when_table_and_group_both_specified(mocker):
         )
 
 
-def test_should_raise_value_error_when_table_specified_without_database(mocker):
+def test_should_raise_value_error_when_table_specified_without_database(sqlite_session, make_cluster, mocker):
     """Test that get_tables_from_backup raises ValueError when table is specified without database."""
     from starrocks_br import exceptions
 
     db = mocker.Mock()
+    cluster = make_cluster()
 
     with pytest.raises(
         exceptions.InvalidTableNameError,
         match="database parameter is required when table is specified",
     ):
-        restore.get_tables_from_backup(db, "sales_db_20251015_full", table="fact_sales")
+        restore.get_tables_from_backup(db, sqlite_session, cluster.id, "sales_db_20251015_full", table="fact_sales")
 
 
-def test_should_filter_table_by_database_when_multiple_databases_in_backup(mocker):
+def test_should_filter_table_by_database_when_multiple_databases_in_backup(sqlite_session, make_cluster, mocker):
     """Test that table filtering correctly filters by database when backup contains multiple databases."""
     db = mocker.Mock()
-    db.query.return_value = [
-        ("sales_db", "users"),
-        ("orders_db", "users"),
-        ("sales_db", "products"),
-    ]
+    cluster = make_cluster()
+    _add_backup_partition(sqlite_session, cluster.id, "multi_db_backup", "sales_db", "users")
+    _add_backup_partition(sqlite_session, cluster.id, "multi_db_backup", "orders_db", "users")
+    _add_backup_partition(sqlite_session, cluster.id, "multi_db_backup", "sales_db", "products")
 
     result = restore.get_tables_from_backup(
-        db, "multi_db_backup", table="users", database="sales_db"
+        db, sqlite_session, cluster.id, "multi_db_backup", table="users", database="sales_db"
     )
 
     assert result == ["sales_db.users"]
     assert len(result) == 1
 
 
-def test_should_return_empty_list_when_table_not_in_specified_database(mocker):
+def test_should_return_empty_list_when_table_not_in_specified_database(sqlite_session, make_cluster, mocker):
     """Test that get_tables_from_backup returns empty list when table exists but in different database."""
     from starrocks_br import exceptions
 
     db = mocker.Mock()
-    db.query.return_value = [
-        ("sales_db", "fact_sales"),
-        ("orders_db", "fact_orders"),
-    ]
+    cluster = make_cluster()
+    _add_backup_partition(sqlite_session, cluster.id, "multi_db_backup", "sales_db", "fact_sales")
+    _add_backup_partition(sqlite_session, cluster.id, "multi_db_backup", "orders_db", "fact_orders")
 
     with pytest.raises(
         exceptions.TableNotFoundInBackupError, match="Table 'fact_orders' not found in backup"
     ):
         restore.get_tables_from_backup(
-            db, "multi_db_backup", table="fact_orders", database="sales_db"
+            db, sqlite_session, cluster.id, "multi_db_backup", table="fact_orders", database="sales_db"
         )
+
+
+def test_get_tables_from_backup_scoped_by_cluster(sqlite_session, make_cluster, mocker):
+    """A backup partition on another cluster must not leak into this cluster's manifest."""
+    db = mocker.Mock()
+    cluster_a = make_cluster("cluster-a")
+    cluster_b = make_cluster("cluster-b")
+    _add_backup_partition(sqlite_session, cluster_a.id, "shared-label", "sales_db", "fact_sales")
+
+    result = restore.get_tables_from_backup(db, sqlite_session, cluster_b.id, "shared-label")
+
+    assert result == []
 
 
 def test_should_build_restore_command_with_rename():
@@ -1154,9 +1242,10 @@ def test_should_handle_atomic_rename_failure(mocker):
     assert "Failed to perform atomic rename" in result["error_message"]
 
 
-def test_should_execute_restore_flow_with_full_backup(mocker):
+def test_should_execute_restore_flow_with_full_backup(mocker, sqlite_session, make_cluster):
     """Test executing restore flow with full backup only."""
     db = mocker.Mock()
+    cluster = make_cluster()
     repo_name = "my_repo"
     restore_pair = ["sales_db_20251015_full"]
     tables_to_restore = ["sales_db.fact_sales", "sales_db.dim_customers"]
@@ -1175,7 +1264,7 @@ def test_should_execute_restore_flow_with_full_backup(mocker):
     mocker.patch("builtins.input", return_value="y")
 
     result = restore.execute_restore_flow(
-        db, repo_name, restore_pair, tables_to_restore, rename_suffix
+        db, sqlite_session, cluster.id, repo_name, restore_pair, tables_to_restore, rename_suffix
     )
 
     assert result["success"] is True
@@ -1186,9 +1275,10 @@ def test_should_execute_restore_flow_with_full_backup(mocker):
     get_snapshot_timestamp.assert_called_once_with(db, repo_name, "sales_db_20251015_full")
 
 
-def test_should_execute_restore_flow_with_incremental_backup(mocker):
+def test_should_execute_restore_flow_with_incremental_backup(mocker, sqlite_session, make_cluster):
     """Test executing restore flow with full + incremental backup."""
     db = mocker.Mock()
+    cluster = make_cluster()
     repo_name = "my_repo"
     restore_pair = ["sales_db_20251015_full", "sales_db_20251016_inc"]
     tables_to_restore = ["sales_db.fact_sales"]
@@ -1207,7 +1297,7 @@ def test_should_execute_restore_flow_with_incremental_backup(mocker):
     mocker.patch("builtins.input", return_value="y")
 
     result = restore.execute_restore_flow(
-        db, repo_name, restore_pair, tables_to_restore, rename_suffix
+        db, sqlite_session, cluster.id, repo_name, restore_pair, tables_to_restore, rename_suffix
     )
 
     assert result["success"] is True
@@ -1220,11 +1310,12 @@ def test_should_execute_restore_flow_with_incremental_backup(mocker):
     get_snapshot_timestamp.assert_any_call(db, repo_name, "sales_db_20251016_inc")
 
 
-def test_should_cancel_restore_flow_when_user_says_no(mocker):
+def test_should_cancel_restore_flow_when_user_says_no(mocker, sqlite_session, make_cluster):
     """Test that restore flow is cancelled when user says no."""
     from starrocks_br import exceptions
 
     db = mocker.Mock()
+    cluster = make_cluster()
     repo_name = "my_repo"
     restore_pair = ["sales_db_20251015_full"]
     tables_to_restore = ["sales_db.fact_sales"]
@@ -1232,12 +1323,13 @@ def test_should_cancel_restore_flow_when_user_says_no(mocker):
     mocker.patch("builtins.input", return_value="n")
 
     with pytest.raises(exceptions.RestoreOperationCancelledError, match="cancelled by user"):
-        restore.execute_restore_flow(db, repo_name, restore_pair, tables_to_restore)
+        restore.execute_restore_flow(db, sqlite_session, cluster.id, repo_name, restore_pair, tables_to_restore)
 
 
-def test_should_skip_confirmation_when_skip_confirmation_is_true(mocker):
+def test_should_skip_confirmation_when_skip_confirmation_is_true(mocker, sqlite_session, make_cluster):
     """Test that restore flow skips input prompt when skip_confirmation is True."""
     db = mocker.Mock()
+    cluster = make_cluster()
     repo_name = "my_repo"
     restore_pair = ["sales_db_20251015_full"]
     tables_to_restore = ["sales_db.fact_sales"]
@@ -1254,7 +1346,7 @@ def test_should_skip_confirmation_when_skip_confirmation_is_true(mocker):
     input_mock = mocker.patch("builtins.input")
 
     result = restore.execute_restore_flow(
-        db, repo_name, restore_pair, tables_to_restore, skip_confirmation=True
+        db, sqlite_session, cluster.id, repo_name, restore_pair, tables_to_restore, skip_confirmation=True
     )
 
     assert result["success"] is True
@@ -1262,9 +1354,10 @@ def test_should_skip_confirmation_when_skip_confirmation_is_true(mocker):
     input_mock.assert_not_called()
 
 
-def test_should_fail_restore_flow_when_base_restore_fails(mocker):
+def test_should_fail_restore_flow_when_base_restore_fails(mocker, sqlite_session, make_cluster):
     """Test that restore flow fails when base restore fails."""
     db = mocker.Mock()
+    cluster = make_cluster()
     repo_name = "my_repo"
     restore_pair = ["sales_db_20251015_full"]
     tables_to_restore = ["sales_db.fact_sales"]
@@ -1282,15 +1375,16 @@ def test_should_fail_restore_flow_when_base_restore_fails(mocker):
 
     mocker.patch("builtins.input", return_value="y")
 
-    result = restore.execute_restore_flow(db, repo_name, restore_pair, tables_to_restore)
+    result = restore.execute_restore_flow(db, sqlite_session, cluster.id, repo_name, restore_pair, tables_to_restore)
 
     assert result["success"] is False
     assert "Base restore failed" in result["error_message"]
 
 
-def test_should_fail_restore_flow_when_incremental_restore_fails(mocker):
+def test_should_fail_restore_flow_when_incremental_restore_fails(mocker, sqlite_session, make_cluster):
     """Test that restore flow fails when incremental restore fails."""
     db = mocker.Mock()
+    cluster = make_cluster()
     repo_name = "my_repo"
     restore_pair = ["sales_db_20251015_full", "sales_db_20251016_inc"]
     tables_to_restore = ["sales_db.fact_sales"]
@@ -1305,13 +1399,14 @@ def test_should_fail_restore_flow_when_incremental_restore_fails(mocker):
 
     def mock_execute_restore(
         db,
+        session,
+        cluster_id,
         command,
         backup_label,
         restore_type,
         repo,
         database,
         scope="restore",
-        ops_database="ops",
         on_progress=None,
     ):
         if "full" in backup_label:
@@ -1323,15 +1418,16 @@ def test_should_fail_restore_flow_when_incremental_restore_fails(mocker):
 
     mocker.patch("builtins.input", return_value="y")
 
-    result = restore.execute_restore_flow(db, repo_name, restore_pair, tables_to_restore)
+    result = restore.execute_restore_flow(db, sqlite_session, cluster.id, repo_name, restore_pair, tables_to_restore)
 
     assert result["success"] is False
     assert "Incremental restore failed" in result["error_message"]
 
 
-def test_should_fail_restore_flow_when_atomic_rename_fails(mocker):
+def test_should_fail_restore_flow_when_atomic_rename_fails(mocker, sqlite_session, make_cluster):
     """Test that restore flow fails when atomic rename fails."""
     db = mocker.Mock()
+    cluster = make_cluster()
     repo_name = "my_repo"
     restore_pair = ["sales_db_20251015_full"]
     tables_to_restore = ["sales_db.fact_sales"]
@@ -1350,31 +1446,35 @@ def test_should_fail_restore_flow_when_atomic_rename_fails(mocker):
 
     mocker.patch("builtins.input", return_value="y")
 
-    result = restore.execute_restore_flow(db, repo_name, restore_pair, tables_to_restore)
+    result = restore.execute_restore_flow(db, sqlite_session, cluster.id, repo_name, restore_pair, tables_to_restore)
 
     assert result["success"] is False
     assert "Atomic rename failed" in result["error_message"]
 
 
-def test_should_validate_restore_flow_inputs(mocker):
+def test_should_validate_restore_flow_inputs(mocker, sqlite_session, make_cluster):
     """Test that restore flow validates inputs properly."""
     db = mocker.Mock()
+    cluster = make_cluster()
     repo_name = "my_repo"
 
     # Test empty restore pair
-    result = restore.execute_restore_flow(db, repo_name, [], ["sales_db.fact_sales"])
+    result = restore.execute_restore_flow(db, sqlite_session, cluster.id, repo_name, [], ["sales_db.fact_sales"])
     assert result["success"] is False
     assert "No restore pair provided" in result["error_message"]
 
     # Test empty tables list
-    result = restore.execute_restore_flow(db, repo_name, ["sales_db_20251015_full"], [])
+    result = restore.execute_restore_flow(
+        db, sqlite_session, cluster.id, repo_name, ["sales_db_20251015_full"], []
+    )
     assert result["success"] is False
     assert "No tables to restore" in result["error_message"]
 
 
-def test_should_include_correct_timestamp_in_restore_commands(mocker):
+def test_should_include_correct_timestamp_in_restore_commands(mocker, sqlite_session, make_cluster):
     """Test that restore commands include the correct timestamp from repository."""
     db = mocker.Mock()
+    cluster = make_cluster()
     repo_name = "my_repo"
     restore_pair = ["sales_db_20251015_full"]
     tables_to_restore = ["sales_db.fact_sales"]
@@ -1392,23 +1492,24 @@ def test_should_include_correct_timestamp_in_restore_commands(mocker):
 
     mocker.patch("builtins.input", return_value="y")
 
-    result = restore.execute_restore_flow(db, repo_name, restore_pair, tables_to_restore)
+    result = restore.execute_restore_flow(db, sqlite_session, cluster.id, repo_name, restore_pair, tables_to_restore)
 
     assert result["success"] is True
 
     execute_restore_mock.assert_called_once()
-    restore_command = execute_restore_mock.call_args[0][1]
+    restore_command = execute_restore_mock.call_args[0][3]
 
     assert f'PROPERTIES ("backup_timestamp" = "{mock_timestamp}")' in restore_command
     assert "DATABASE `sales_db`" in restore_command
 
 
-def test_should_use_cluster_timezone_for_restore_timestamps(mocker):
+def test_should_use_cluster_timezone_for_restore_timestamps(mocker, sqlite_session, make_cluster):
     """Test that execute_restore uses cluster timezone for timestamps, not local time."""
     db = mocker.Mock()
     db.timezone = "Asia/Shanghai"
     db.execute.return_value = None
     db.query.return_value = [{"Label": "test_label", "State": "FINISHED"}]
+    cluster = make_cluster()
 
     log_restore = mocker.patch("starrocks_br.history.log_restore")
     mocker.patch("starrocks_br.concurrency.complete_job_slot")
@@ -1417,6 +1518,8 @@ def test_should_use_cluster_timezone_for_restore_timestamps(mocker):
 
     restore.execute_restore(
         db,
+        sqlite_session,
+        cluster.id,
         "RESTORE SNAPSHOT test FROM repo",
         backup_label="test_label",
         restore_type="full",
@@ -1430,7 +1533,7 @@ def test_should_use_cluster_timezone_for_restore_timestamps(mocker):
     assert mock_get_time.call_args_list[0][0][0] == "Asia/Shanghai"
     assert mock_get_time.call_args_list[1][0][0] == "Asia/Shanghai"
 
-    log_restore_call = log_restore.call_args[0][1]
+    log_restore_call = log_restore.call_args[0][2]
     assert log_restore_call["started_at"] == "2025-11-20 15:30:00"
     assert log_restore_call["finished_at"] == "2025-11-20 15:30:00"
 
@@ -1558,7 +1661,7 @@ def test_should_handle_restore_backoff_with_immediate_completion(mocker):
     assert sleep_mock.call_count == 0
 
 
-def test_should_restore_table_that_only_exists_in_incremental_backup(mocker):
+def test_should_restore_table_that_only_exists_in_incremental_backup(mocker, sqlite_session, make_cluster):
     """Test restoring a table that was added after full backup and only exists in incremental.
 
     Scenario:
@@ -1572,6 +1675,7 @@ def test_should_restore_table_that_only_exists_in_incremental_backup(mocker):
     - Should succeed
     """
     db = mocker.Mock()
+    cluster = make_cluster()
     repo_name = "my_repo"
     restore_pair = ["quickstart_20251223_full", "quickstart_20251223_incremental"]
     tables_to_restore = ["quickstart.weatherdata"]
@@ -1584,7 +1688,7 @@ def test_should_restore_table_that_only_exists_in_incremental_backup(mocker):
 
     # Mock get_tables_from_backup to return which tables exist in each backup
     def mock_get_tables_from_backup(
-        db, label, group=None, table=None, database=None, ops_database="ops"
+        db, session, cluster_id, label, group=None, table=None, database=None
     ):
         if label == "quickstart_20251223_full":
             # Full backup only has crashdata
@@ -1599,7 +1703,7 @@ def test_should_restore_table_that_only_exists_in_incremental_backup(mocker):
     )
 
     # Mock get_partitions_from_backup to return partition list for each table
-    def mock_get_partitions_from_backup(db, label, table, ops_database="ops"):
+    def mock_get_partitions_from_backup(session, cluster_id, label, table):
         if label == "quickstart_20251223_incremental" and table == "quickstart.weatherdata":
             # weatherdata is non-partitioned, so partition name = table name
             return ["weatherdata"]
@@ -1623,7 +1727,7 @@ def test_should_restore_table_that_only_exists_in_incremental_backup(mocker):
     mocker.patch("builtins.input", return_value="y")
 
     result = restore.execute_restore_flow(
-        db, repo_name, restore_pair, tables_to_restore, rename_suffix
+        db, sqlite_session, cluster.id, repo_name, restore_pair, tables_to_restore, rename_suffix
     )
 
     # Should succeed
@@ -1635,8 +1739,8 @@ def test_should_restore_table_that_only_exists_in_incremental_backup(mocker):
 
     # Verify the incremental restore was called
     call_args = execute_restore_mock.call_args_list[0]
-    restore_command = call_args[0][1]
-    backup_label = call_args[0][2]
+    restore_command = call_args[0][3]
+    backup_label = call_args[0][4]
 
     assert backup_label == "quickstart_20251223_incremental"
     assert "weatherdata" in restore_command
@@ -1649,7 +1753,7 @@ def test_should_restore_table_that_only_exists_in_incremental_backup(mocker):
     )
 
 
-def test_should_restore_table_in_both_backups_using_partition_level_incremental(mocker):
+def test_should_restore_table_in_both_backups_using_partition_level_incremental(mocker, sqlite_session, make_cluster):
     """Test restoring a table that exists in both full and incremental backups.
 
     Scenario:
@@ -1665,6 +1769,7 @@ def test_should_restore_table_in_both_backups_using_partition_level_incremental(
     - Atomic rename works because table has _restored suffix
     """
     db = mocker.Mock()
+    cluster = make_cluster()
     repo_name = "my_repo"
     restore_pair = ["orders_20260106_full", "orders_20260106_incremental"]
     tables_to_restore = ["quickstart.orders"]
@@ -1677,7 +1782,7 @@ def test_should_restore_table_in_both_backups_using_partition_level_incremental(
 
     # Mock get_tables_from_backup
     def mock_get_tables_from_backup(
-        db, label, group=None, table=None, database=None, ops_database="ops"
+        db, session, cluster_id, label, group=None, table=None, database=None
     ):
         if label == "orders_20260106_full":
             return ["quickstart.orders"]
@@ -1690,7 +1795,7 @@ def test_should_restore_table_in_both_backups_using_partition_level_incremental(
     )
 
     # Mock get_partitions_from_backup
-    def mock_get_partitions_from_backup(db, label, table, ops_database="ops"):
+    def mock_get_partitions_from_backup(session, cluster_id, label, table):
         if label == "orders_20260106_full" and table == "quickstart.orders":
             return ["p202501", "p202502", "p202503"]
         elif label == "orders_20260106_incremental" and table == "quickstart.orders":
@@ -1715,7 +1820,7 @@ def test_should_restore_table_in_both_backups_using_partition_level_incremental(
     mocker.patch("builtins.input", return_value="y")
 
     result = restore.execute_restore_flow(
-        db, repo_name, restore_pair, tables_to_restore, rename_suffix
+        db, sqlite_session, cluster.id, repo_name, restore_pair, tables_to_restore, rename_suffix
     )
 
     # Should succeed
@@ -1727,8 +1832,8 @@ def test_should_restore_table_in_both_backups_using_partition_level_incremental(
 
     # Verify base restore (first call)
     base_call = execute_restore_mock.call_args_list[0]
-    base_command = base_call[0][1]
-    base_label = base_call[0][2]
+    base_command = base_call[0][3]
+    base_label = base_call[0][4]
 
     assert base_label == "orders_20260106_full"
     assert "AS `orders_restored`" in base_command, (
@@ -1740,8 +1845,8 @@ def test_should_restore_table_in_both_backups_using_partition_level_incremental(
 
     # Verify incremental restore (second call)
     inc_call = execute_restore_mock.call_args_list[1]
-    inc_command = inc_call[0][1]
-    inc_label = inc_call[0][2]
+    inc_command = inc_call[0][3]
+    inc_label = inc_call[0][4]
 
     assert inc_label == "orders_20260106_incremental"
     assert "PARTITION" in inc_command, "Incremental restore must use partition-level syntax"

@@ -14,18 +14,20 @@
 
 """SQLAlchemy models for the API's own metadata store.
 
-These tables are unrelated to the per-cluster `ops` schema (backup_history,
-table_inventory, run_status, backup_partitions) that already lives inside
-each target StarRocks cluster - this store only tracks which clusters are
-registered with the API, the jobs submitted against them, and recurring
-schedules. Column types are chosen to be portable between SQLite (the
-default) and MySQL/Postgres (via DATABASE_URL) without migration changes.
+This store tracks which clusters are registered with the API, the jobs
+submitted against them, recurring schedules, and (since the move-ops-tables-
+to-sqlite change) each cluster's own backup/restore bookkeeping - table
+inventory, backup/restore history, the job-concurrency lock table, and
+backup partition manifests - all scoped by `cluster_id` instead of living in
+a per-cluster StarRocks database. Column types are chosen to be portable
+between SQLite (the default) and MySQL/Postgres (via DATABASE_URL) without
+migration changes.
 """
 
 import datetime
 import enum
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -62,7 +64,6 @@ class Cluster(Base):
     password_encrypted: Mapped[str] = mapped_column(Text, nullable=False)
     database: Mapped[str] = mapped_column(String(128), nullable=False)
     repository: Mapped[str] = mapped_column(String(128), nullable=False)
-    ops_database: Mapped[str] = mapped_column(String(128), nullable=False, default="ops")
     default_backend: Mapped[str] = mapped_column(String(64), nullable=False, default="thread")
     created_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     updated_at: Mapped[datetime.datetime] = mapped_column(
@@ -113,3 +114,90 @@ class Schedule(Base):
     )
 
     cluster: Mapped["Cluster"] = relationship(back_populates="schedules")
+
+
+class TableInventory(Base):
+    __tablename__ = "table_inventory"
+    __table_args__ = (
+        UniqueConstraint(
+            "cluster_id", "inventory_group", "database_name", "table_name", name="uq_table_inventory_membership"
+        ),
+        Index("ix_table_inventory_cluster_group", "cluster_id", "inventory_group"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    cluster_id: Mapped[int] = mapped_column(ForeignKey("clusters.id", ondelete="CASCADE"), nullable=False, index=True)
+    inventory_group: Mapped[str] = mapped_column(String(128), nullable=False)
+    database_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    table_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    created_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    updated_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
+    )
+
+
+class BackupHistory(Base):
+    __tablename__ = "backup_history"
+    __table_args__ = (UniqueConstraint("cluster_id", "label", name="uq_backup_history_cluster_label"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    cluster_id: Mapped[int] = mapped_column(ForeignKey("clusters.id", ondelete="CASCADE"), nullable=False, index=True)
+    label: Mapped[str] = mapped_column(String(255), nullable=False)
+    backup_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    repository: Mapped[str] = mapped_column(String(128), nullable=False)
+    started_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    finished_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+class RestoreHistory(Base):
+    __tablename__ = "restore_history"
+    __table_args__ = (UniqueConstraint("cluster_id", "job_id", name="uq_restore_history_cluster_job"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    cluster_id: Mapped[int] = mapped_column(ForeignKey("clusters.id", ondelete="CASCADE"), nullable=False, index=True)
+    job_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    backup_label: Mapped[str] = mapped_column(String(255), nullable=False)
+    restore_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    repository: Mapped[str] = mapped_column(String(128), nullable=False)
+    started_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    finished_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    verification_checksum: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+class RunStatus(Base):
+    __tablename__ = "run_status"
+    __table_args__ = (
+        UniqueConstraint("cluster_id", "scope", "label", name="uq_run_status_cluster_scope_label"),
+        Index("ix_run_status_cluster_scope_state", "cluster_id", "scope", "state"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    cluster_id: Mapped[int] = mapped_column(ForeignKey("clusters.id", ondelete="CASCADE"), nullable=False, index=True)
+    scope: Mapped[str] = mapped_column(String(64), nullable=False)
+    label: Mapped[str] = mapped_column(String(255), nullable=False)
+    state: Mapped[str] = mapped_column(String(32), nullable=False, default="ACTIVE")
+    started_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    finished_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class BackupPartition(Base):
+    __tablename__ = "backup_partitions"
+    __table_args__ = (
+        UniqueConstraint("cluster_id", "key_hash", name="uq_backup_partitions_cluster_key_hash"),
+        Index("ix_backup_partitions_cluster_label", "cluster_id", "label"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    cluster_id: Mapped[int] = mapped_column(ForeignKey("clusters.id", ondelete="CASCADE"), nullable=False, index=True)
+    key_hash: Mapped[str] = mapped_column(String(32), nullable=False)
+    label: Mapped[str] = mapped_column(String(255), nullable=False)
+    database_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    table_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    partition_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    created_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)

@@ -19,6 +19,8 @@ specs/api-job-execution "Job execution reuses existing backup/restore/prune
 behavior unchanged".
 """
 
+from contextlib import contextmanager
+
 from click.testing import CliRunner
 
 from starrocks_br import cli
@@ -38,7 +40,7 @@ SHARED_CONNECTION = {
 def test_cli_and_api_produce_the_same_backup_command_and_label(
     config_file,
     mock_db,
-    mock_initialized_schema,
+    mock_resolved_cluster,
     mock_healthy_cluster,
     mock_repo_exists,
     mock_validate_tables_exist,
@@ -63,21 +65,28 @@ def test_cli_and_api_produce_the_same_backup_command_and_label(
     runner = CliRunner()
     cli_result = runner.invoke(cli.backup_full, ["--config", config_file, "--group", "weekly_dimensions"])
     assert cli_result.exit_code == 0
-    cli_command = execute_backup.call_args[0][1]
+    # execute_backup(db, session, cluster_id, backup_command, ...) - command is the 4th positional arg.
+    cli_command = execute_backup.call_args[0][3]
 
     execute_backup.reset_mock()
 
     # --- API job-handler path, same inputs ---
     mocker.patch("starrocks_br.jobs.handlers.decrypt_password", return_value="test_password")
+
+    @contextmanager
+    def _fake_session_scope():
+        yield mocker.Mock(name="fake_handlers_session")
+
+    mocker.patch("starrocks_br.jobs.handlers.session_scope", _fake_session_scope)
+
     cluster = Cluster(
         id=1,
         name="prod-eu",
         password_encrypted="enc",
-        ops_database="ops",
         default_backend="thread",
         **SHARED_CONNECTION,
     )
     handlers.run_backup_full(cluster, {"group": "weekly_dimensions"})
-    api_command = execute_backup.call_args[0][1]
+    api_command = execute_backup.call_args[0][3]
 
     assert api_command == cli_command

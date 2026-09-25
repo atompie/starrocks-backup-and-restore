@@ -60,9 +60,20 @@ def validate_config(config: dict[str, Any]) -> None:
     _validate_table_inventory_section(config.get("table_inventory"))
 
 
-def get_ops_database(config: dict[str, Any]) -> str:
-    """Get the ops database name from config, defaulting to 'ops'."""
-    return config.get("ops_database", "ops")
+def get_cluster_identity(config: dict[str, Any]) -> str:
+    """Derive a stable identity for this config's cluster, for the SQLite metastore.
+
+    Returns the optional `name` field if present in the YAML, else derives one
+    from fields that are already required (`host`, `port`, `database`) so no
+    new required config field is introduced. Used to get-or-create the
+    `Cluster` row this config resolves to (see `resolve_cluster`) - the ops
+    bookkeeping tables (table_inventory, backup_history, etc.) are keyed by
+    that row's `cluster_id`, not by a StarRocks-side database name anymore.
+    """
+    name = config.get("name")
+    if name:
+        return name
+    return f"{config['host']}:{config['port']}/{config['database']}"
 
 
 def get_table_inventory_entries(config: dict[str, Any]) -> list[tuple[str, str, str]]:

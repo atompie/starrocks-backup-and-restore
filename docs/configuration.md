@@ -21,10 +21,31 @@ repository: "your_repo_name"
 | `user` | string | Yes | Database user with backup/restore privileges |
 | `database` | string | Yes | Database containing tables to backup |
 | `repository` | string | Yes | Repository name (created via `CREATE REPOSITORY`) |
-| `ops_database` | string | No | Custom name for ops database (default: "ops") |
+| `name` | string | No | Optional stable identity for this cluster in the local metastore (see below). If omitted, one is derived from `host`/`port`/`database`. |
 | `table_inventory` | list | No | Table inventory groups definition (see below) |
 
-**Note:** The `database` field specifies which database contains your tables. The `ops` database is created automatically.
+**Note:** The `database` field specifies which database contains your tables to back up.
+
+**Breaking change:** `ops_database` has been removed. Backup/restore bookkeeping
+(table inventory, backup/restore history, job-concurrency locks, backup
+partition manifests) no longer lives in a StarRocks-side database at all - it
+lives in this tool's own SQLite (or MySQL/Postgres, via `STARROCKS_BR_DATABASE_URL`)
+metastore, the same one the API server uses, scoped per cluster. This means:
+
+- `alembic upgrade head` (from the repo root, against `STARROCKS_BR_DATABASE_URL`)
+  and `STARROCKS_BR_DB_ENCRYPTION_KEY` (see the [API Server guide](api.md)) are
+  now required before running `starrocks-br init` or any other CLI command -
+  previously the CLI needed nothing beyond a YAML file.
+- `starrocks-br init --config config.yaml` registers this config's cluster in
+  that metastore (get-or-create, keyed by the identity above) and bootstraps
+  `table_inventory` from the YAML's `table_inventory` section, if present.
+  Every other command (`backup incremental`, `backup full`, `restore`,
+  `prune`) requires `init` to have been run first for this config, and fails
+  clearly if not - it will not silently register a cluster on a typo'd
+  `--config` path.
+- Re-running `init` with the same config refreshes the stored connection
+  fields (host/port/user/password/database/repository) from the YAML, so the
+  config file stays the source of truth.
 
 ## Table Inventory Configuration
 

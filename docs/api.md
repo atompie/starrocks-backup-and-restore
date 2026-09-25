@@ -28,7 +28,9 @@ commands (`backup`, `restore`, `prune`, `init`) work exactly as before and don't
 |   auth: bearer token (STARROCKS_BR_API_KEY)                          |
 |   +----------------------------------------------------------+       |
 |   | metadata store (SQLAlchemy; SQLite by default)            |      |
-|   |   clusters, jobs, schedules                                |      |
+|   |   clusters, jobs, schedules, table_inventory,             |      |
+|   |   backup_history, restore_history, run_status,            |      |
+|   |   backup_partitions - all scoped by cluster_id            |      |
 |   +----------------------------------------------------------+       |
 |   job execution backend: in-process thread pool (default)            |
 +----------------------------------------------------------------------+
@@ -38,10 +40,15 @@ commands (`backup`, `restore`, `prune`, `init`) work exactly as before and don't
   (registered via API)      (registered via API)      (registered via API)
 ```
 
-Each registered cluster's own `ops` schema (`backup_history`, `table_inventory`, `run_status`,
-`backup_partitions`) still lives inside that cluster, exactly as with the direct CLI — the API
-server's own metadata store only tracks *which clusters exist* and *what jobs/schedules are
-running against them*.
+Unlike the direct CLI's original design, backup/restore bookkeeping
+(`backup_history`, `table_inventory`, `run_status`, `backup_partitions`,
+`restore_history`) is **not** stored on each target StarRocks cluster - it
+lives in this same metadata store, scoped by `cluster_id`, alongside the
+`clusters`/`jobs`/`schedules` tables. This means the bookkeeping survives a
+dead or unreachable StarRocks cluster, and no cluster needs an `ops` database
+of its own. The legacy standalone CLI (`starrocks-br init`/`backup`/
+`restore`/`prune`) shares this same metastore now too - see the
+[Configuration Reference](configuration.md) for what that requires.
 
 ## Installation
 
@@ -195,13 +202,18 @@ All request/response bodies are JSON. `{id}` path segments are integers.
   "password": "secret",
   "database": "mydb",
   "repository": "s3_repo",
-  "ops_database": "ops",
   "default_backend": "thread"
 }
 ```
-`password` may be an empty string (StarRocks permits passwordless users). `ops_database` and
-`default_backend` are optional and default to `"ops"`/`"thread"`. Responses never include the
-password in any form.
+`password` may be an empty string (StarRocks permits passwordless users). `default_backend` is
+optional and defaults to `"thread"`. Responses never include the password in any form.
+
+**Breaking change:** `ops_database` has been removed. Backup/restore bookkeeping
+(table inventory, backup/restore history, job-concurrency locks, backup
+partition manifests) now lives entirely in this metastore, scoped by cluster
+id, instead of a StarRocks-side database - a registered cluster's StarRocks
+instance no longer needs an `ops` database at all. A request body still
+containing `ops_database` is silently ignored, not rejected.
 
 ### Jobs
 

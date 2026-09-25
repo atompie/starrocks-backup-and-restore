@@ -13,14 +13,34 @@
 # limitations under the License.
 
 import os
+import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
 from functools import lru_cache
 
-from sqlalchemy import Engine, create_engine
+from sqlalchemy import Engine, create_engine, event
 from sqlalchemy.orm import Session, sessionmaker
 
 DEFAULT_DATABASE_URL = "sqlite:///./starrocks_br_api.db"
+
+
+@event.listens_for(Engine, "connect")
+def _set_sqlite_pragmas(dbapi_connection, connection_record) -> None:
+    """Enable FK enforcement and WAL mode on every new SQLite connection.
+
+    SQLite ignores foreign keys unless told otherwise per-connection, so
+    `ondelete="CASCADE"` on the ops tables' `cluster_id` FK would silently do
+    nothing without this. WAL mode lets readers (e.g. API routes) proceed
+    while a job holds a brief write transaction; it does not add concurrent
+    writers, so job handlers still use short-lived per-touchpoint sessions
+    rather than one held open for a whole job (see design.md Decision 2).
+    """
+    if not isinstance(dbapi_connection, sqlite3.Connection):
+        return
+    cursor = dbapi_connection.cursor()
+    cursor.execute("PRAGMA foreign_keys=ON")
+    cursor.execute("PRAGMA journal_mode=WAL")
+    cursor.close()
 
 
 def get_database_url() -> str:

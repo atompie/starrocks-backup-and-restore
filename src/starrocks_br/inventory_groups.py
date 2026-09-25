@@ -1,15 +1,22 @@
 """Inventory group CRUD, scoped to a registered cluster's `table_inventory`.
 
-Mirrors `repository.py`: SQL-building + `StarRocksDB` calls, no HTTP
-knowledge. `table_inventory` is a StarRocks UNIQUE KEY table, so a naive
-`INSERT` on an existing key would silently replace the row rather than
-error - membership conflicts are therefore detected with an existence
-check before inserting, not by catching an insert error.
+`table_inventory` lives in the app's own SQLite metastore (see
+`store.models.TableInventory`), scoped by `cluster_id` - not in a StarRocks
+database. It has a `UniqueConstraint` on (cluster_id, inventory_group,
+database_name, table_name), but membership conflicts are still detected with
+an existence check before inserting, not by catching an IntegrityError - the
+constraint is a backstop, matching the pre-existing StarRocks-era behavior
+where a naive INSERT into a UNIQUE KEY table would silently replace the row
+rather than error.
 """
 
 from __future__ import annotations
 
-from . import utils
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session
+
+from . import logger
+from .store.models import TableInventory
 
 
 class InventoryGroupNotFoundError(RuntimeError):
@@ -24,126 +31,131 @@ class InventoryMembershipNotFoundError(RuntimeError):
     """Raised when removing a (group, database, table) row that does not exist."""
 
 
-def _field(row, dict_key: str, tuple_index: int):
-    if isinstance(row, dict):
-        return row.get(dict_key)
-    return row[tuple_index]
-
-
-def list_groups(db, ops_database: str = "ops") -> list[dict]:
+def list_groups(session: Session, cluster_id: int) -> list[dict]:
     """List every inventory group with its table-membership count."""
-    rows = db.query(
-        f"SELECT inventory_group, COUNT(*) FROM {ops_database}.table_inventory "
-        f"GROUP BY inventory_group ORDER BY inventory_group"
-    )
-    return [
-        {"name": _field(row, "inventory_group", 0), "table_count": _field(row, "count", 1)}
-        for row in rows
-    ]
+    rows = session.execute(
+        select(TableInventory.inventory_group, func.count())
+        .where(TableInventory.cluster_id == cluster_id)
+        .group_by(TableInventory.inventory_group)
+        .order_by(TableInventory.inventory_group)
+    ).all()
+    return [{"name": name, "table_count": count} for name, count in rows]
 
 
-def group_exists(db, group_name: str, ops_database: str = "ops") -> bool:
+def group_exists(session: Session, cluster_id: int, group_name: str) -> bool:
     """Return whether `group_name` has at least one row in table_inventory."""
-    rows = db.query(
-        f"SELECT 1 FROM {ops_database}.table_inventory "
-        f"WHERE inventory_group = {utils.quote_value(group_name)} LIMIT 1"
+    return (
+        session.scalars(
+            select(TableInventory.id)
+            .where(TableInventory.cluster_id == cluster_id, TableInventory.inventory_group == group_name)
+            .limit(1)
+        ).first()
+        is not None
     )
-    return len(rows) > 0
 
 
-def get_group(db, group_name: str, ops_database: str = "ops") -> list[dict]:
+def get_group(session: Session, cluster_id: int, group_name: str) -> list[dict]:
     """Return every membership for `group_name`, or `[]` if it has none.
 
     The caller decides whether an empty result means "unknown group" (404).
     """
-    rows = db.query(
-        f"SELECT database_name, table_name, created_at, updated_at "
-        f"FROM {ops_database}.table_inventory "
-        f"WHERE inventory_group = {utils.quote_value(group_name)} "
-        f"ORDER BY database_name, table_name"
+    rows = session.scalars(
+        select(TableInventory)
+        .where(TableInventory.cluster_id == cluster_id, TableInventory.inventory_group == group_name)
+        .order_by(TableInventory.database_name, TableInventory.table_name)
     )
     return [
         {
-            "database": _field(row, "database_name", 0),
-            "table": _field(row, "table_name", 1),
-            "created_at": str(_field(row, "created_at", 2)),
-            "updated_at": str(_field(row, "updated_at", 3)),
+            "database": row.database_name,
+            "table": row.table_name,
+            "created_at": str(row.created_at),
+            "updated_at": str(row.updated_at),
         }
         for row in rows
     ]
 
 
-def _membership_exists(db, group_name: str, database_name: str, table_name: str, ops_database: str) -> bool:
-    rows = db.query(
-        f"SELECT 1 FROM {ops_database}.table_inventory "
-        f"WHERE inventory_group = {utils.quote_value(group_name)} "
-        f"AND database_name = {utils.quote_value(database_name)} "
-        f"AND table_name = {utils.quote_value(table_name)} LIMIT 1"
+def _membership_exists(session: Session, cluster_id: int, group_name: str, database_name: str, table_name: str) -> bool:
+    return (
+        session.scalars(
+            select(TableInventory.id)
+            .where(
+                TableInventory.cluster_id == cluster_id,
+                TableInventory.inventory_group == group_name,
+                TableInventory.database_name == database_name,
+                TableInventory.table_name == table_name,
+            )
+            .limit(1)
+        ).first()
+        is not None
     )
-    return len(rows) > 0
 
 
-def add_membership(
-    db, group_name: str, database_name: str, table_name: str, ops_database: str = "ops"
-) -> dict:
+def add_membership(session: Session, cluster_id: int, group_name: str, database_name: str, table_name: str) -> dict:
     """Insert a single (group, database, table) membership row.
 
     Raises:
         InventoryMembershipConflictError: If that exact membership already exists.
     """
-    if _membership_exists(db, group_name, database_name, table_name, ops_database):
+    if _membership_exists(session, cluster_id, group_name, database_name, table_name):
         raise InventoryMembershipConflictError(
             f"Membership ({group_name}, {database_name}, {table_name}) already exists"
         )
 
-    db.execute(
-        f"INSERT INTO {ops_database}.table_inventory "
-        f"(inventory_group, database_name, table_name) VALUES "
-        f"({utils.quote_value(group_name)}, {utils.quote_value(database_name)}, {utils.quote_value(table_name)})"
+    session.add(
+        TableInventory(
+            cluster_id=cluster_id,
+            inventory_group=group_name,
+            database_name=database_name,
+            table_name=table_name,
+        )
     )
+    session.flush()
     return {"group": group_name, "database": database_name, "table": table_name}
 
 
 def add_memberships_bulk(
-    db, group_name: str, entries: list[tuple[str, str]], ops_database: str = "ops"
+    session: Session, cluster_id: int, group_name: str, entries: list[tuple[str, str]]
 ) -> list[dict]:
     """Add several (database, table) memberships to `group_name`.
 
-    Matches `schema.bootstrap_table_inventory`'s existing idempotency:
-    entries that already exist are silently skipped rather than raising, so
-    partial success across the loop is acceptable and a retry is safe.
+    Matches `bootstrap_table_inventory`'s existing idempotency: entries that
+    already exist are silently skipped rather than raising, so partial
+    success across the loop is acceptable and a retry is safe.
     """
     added = []
     for database_name, table_name in entries:
         try:
-            added.append(add_membership(db, group_name, database_name, table_name, ops_database))
+            added.append(add_membership(session, cluster_id, group_name, database_name, table_name))
         except InventoryMembershipConflictError:
             continue
     return added
 
 
-def remove_membership(
-    db, group_name: str, database_name: str, table_name: str, ops_database: str = "ops"
-) -> None:
+def remove_membership(session: Session, cluster_id: int, group_name: str, database_name: str, table_name: str) -> None:
     """Remove a single (group, database, table) membership row.
 
     Raises:
         InventoryMembershipNotFoundError: If that membership does not exist.
     """
-    if not _membership_exists(db, group_name, database_name, table_name, ops_database):
+    row = session.scalars(
+        select(TableInventory).where(
+            TableInventory.cluster_id == cluster_id,
+            TableInventory.inventory_group == group_name,
+            TableInventory.database_name == database_name,
+            TableInventory.table_name == table_name,
+        )
+    ).one_or_none()
+    if row is None:
         raise InventoryMembershipNotFoundError(
             f"Membership ({group_name}, {database_name}, {table_name}) not found"
         )
 
-    db.execute(
-        f"DELETE FROM {ops_database}.table_inventory "
-        f"WHERE inventory_group = {utils.quote_value(group_name)} "
-        f"AND database_name = {utils.quote_value(database_name)} "
-        f"AND table_name = {utils.quote_value(table_name)}"
-    )
+    session.delete(row)
+    session.flush()
 
 
-def delete_group(db, group_name: str, ops_database: str = "ops") -> int:
+def delete_group(session: Session, cluster_id: int, group_name: str) -> int:
     """Delete every membership row for `group_name`.
 
     Raises:
@@ -152,16 +164,37 @@ def delete_group(db, group_name: str, ops_database: str = "ops") -> int:
     Returns:
         The number of rows deleted.
     """
-    rows = db.query(
-        f"SELECT COUNT(*) FROM {ops_database}.table_inventory "
-        f"WHERE inventory_group = {utils.quote_value(group_name)}"
-    )
-    count = _field(rows[0], "count", 0) if rows else 0
-    if not count:
+    rows = session.scalars(
+        select(TableInventory).where(
+            TableInventory.cluster_id == cluster_id, TableInventory.inventory_group == group_name
+        )
+    ).all()
+    if not rows:
         raise InventoryGroupNotFoundError(f"Inventory group '{group_name}' not found")
 
-    db.execute(
-        f"DELETE FROM {ops_database}.table_inventory "
-        f"WHERE inventory_group = {utils.quote_value(group_name)}"
-    )
+    count = len(rows)
+    for row in rows:
+        session.delete(row)
+    session.flush()
     return count
+
+
+def bootstrap_table_inventory(session: Session, cluster_id: int, entries: list[tuple[str, str, str]]) -> None:
+    """Bootstrap table_inventory rows from configuration (used by `cli.py init`).
+
+    Args:
+        session: SQLite metastore session
+        cluster_id: Cluster these entries belong to
+        entries: List of (group, database, table) tuples
+    """
+    if not entries:
+        return
+
+    for group, database, table in entries:
+        try:
+            add_membership(session, cluster_id, group, database, table)
+        except InventoryMembershipConflictError:
+            # Re-running init only adds new rows - an existing entry is a no-op.
+            continue
+
+    logger.success(f"table_inventory bootstrapped with {len(entries)} entries")

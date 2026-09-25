@@ -15,37 +15,42 @@
 import datetime
 import hashlib
 
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
 from starrocks_br import exceptions, logger, timezone, utils
+from starrocks_br.store.models import BackupHistory, BackupPartition, TableInventory
 
 
-def find_latest_full_backup(db, database: str, ops_database: str = "ops") -> dict[str, str] | None:
+def find_latest_full_backup(db, session: Session, cluster_id: int, database: str) -> dict[str, str] | None:
     """Find the latest successful full backup for a database.
 
     Args:
-        db: Database connection
+        db: Database connection (only used for its `.timezone`)
+        session: SQLite metastore session
+        cluster_id: Cluster this backup history belongs to
         database: Database name to search for
 
     Returns:
         Dictionary with keys: label, backup_type, finished_at, or None if no full backup found.
         The finished_at value is returned as a string in the cluster timezone format.
     """
-    query = f"""
-    SELECT label, backup_type, finished_at
-    FROM {ops_database}.backup_history
-    WHERE backup_type = 'full'
-    AND status = 'FINISHED'
-    AND label LIKE {utils.quote_value(f"{database}_%")}
-    ORDER BY finished_at DESC
-    LIMIT 1
-    """
+    row = session.scalars(
+        select(BackupHistory)
+        .where(
+            BackupHistory.cluster_id == cluster_id,
+            BackupHistory.backup_type == "full",
+            BackupHistory.status == "FINISHED",
+            BackupHistory.label.like(f"{database}_%"),
+        )
+        .order_by(BackupHistory.finished_at.desc())
+        .limit(1)
+    ).first()
 
-    rows = db.query(query)
-
-    if not rows:
+    if row is None:
         return None
 
-    row = rows[0]
-    finished_at = row[2]
+    finished_at = row.finished_at
 
     if isinstance(finished_at, datetime.datetime):
         finished_at_normalized = timezone.normalize_datetime_to_tz(finished_at, db.timezone)
@@ -53,23 +58,21 @@ def find_latest_full_backup(db, database: str, ops_database: str = "ops") -> dic
     elif not isinstance(finished_at, str):
         finished_at = str(finished_at)
 
-    return {"label": row[0], "backup_type": row[1], "finished_at": finished_at}
+    return {"label": row.label, "backup_type": row.backup_type, "finished_at": finished_at}
 
 
-def find_tables_by_group(db, group_name: str, ops_database: str = "ops") -> list[dict[str, str]]:
+def find_tables_by_group(session: Session, cluster_id: int, group_name: str) -> list[dict[str, str]]:
     """Find tables belonging to a specific inventory group.
 
     Returns list of dictionaries with keys: database, table.
     Supports '*' table wildcard which signifies all tables in a database.
     """
-    query = f"""
-    SELECT database_name, table_name
-    FROM {ops_database}.table_inventory
-    WHERE inventory_group = {utils.quote_value(group_name)}
-    ORDER BY database_name, table_name
-    """
-    rows = db.query(query)
-    return [{"database": row[0], "table": row[1]} for row in rows]
+    rows = session.scalars(
+        select(TableInventory)
+        .where(TableInventory.cluster_id == cluster_id, TableInventory.inventory_group == group_name)
+        .order_by(TableInventory.database_name, TableInventory.table_name)
+    )
+    return [{"database": row.database_name, "table": row.table_name} for row in rows]
 
 
 def validate_tables_exist(
@@ -110,16 +113,19 @@ def validate_tables_exist(
 
 def find_recent_partitions(
     db,
+    session: Session,
+    cluster_id: int,
     database: str,
     baseline_backup_label: str | None = None,
     *,
     group_name: str,
-    ops_database: str = "ops",
 ) -> list[dict[str, str]]:
     """Find partitions updated since baseline for tables in the given inventory group.
 
     Args:
         db: Database connection
+        session: SQLite metastore session
+        cluster_id: Cluster this backup history/table inventory belongs to
         database: Database name (StarRocks database scope for backup)
         baseline_backup_label: Optional specific backup label to use as baseline.
         group_name: Inventory group whose tables will be considered
@@ -130,18 +136,18 @@ def find_recent_partitions(
     cluster_tz = db.timezone
 
     if baseline_backup_label:
-        baseline_query = f"""
-        SELECT finished_at
-        FROM {ops_database}.backup_history
-        WHERE label = {utils.quote_value(baseline_backup_label)}
-        AND status = 'FINISHED'
-        """
-        baseline_rows = db.query(baseline_query)
-        if not baseline_rows:
+        baseline_row = session.scalars(
+            select(BackupHistory).where(
+                BackupHistory.cluster_id == cluster_id,
+                BackupHistory.label == baseline_backup_label,
+                BackupHistory.status == "FINISHED",
+            )
+        ).first()
+        if baseline_row is None:
             raise exceptions.BackupLabelNotFoundError(baseline_backup_label)
-        baseline_time_raw = baseline_rows[0][0]
+        baseline_time_raw = baseline_row.finished_at
     else:
-        latest_backup = find_latest_full_backup(db, database, ops_database)
+        latest_backup = find_latest_full_backup(db, session, cluster_id, database)
         if not latest_backup:
             raise exceptions.NoFullBackupFoundError(database)
         baseline_time_raw = latest_backup["finished_at"]
@@ -155,7 +161,7 @@ def find_recent_partitions(
 
     baseline_dt = timezone.parse_datetime_with_tz(baseline_time_str, cluster_tz)
 
-    group_tables = find_tables_by_group(db, group_name, ops_database)
+    group_tables = find_tables_by_group(session, cluster_id, group_name)
 
     if not group_tables:
         return []
@@ -259,7 +265,7 @@ def build_incremental_backup_command(
 
 
 def build_full_backup_command(
-    db, group_name: str, repository: str, label: str, database: str, ops_database: str = "ops"
+    session: Session, cluster_id: int, group_name: str, repository: str, label: str, database: str
 ) -> str:
     """Build BACKUP command for an inventory group.
 
@@ -267,7 +273,7 @@ def build_full_backup_command(
     simple BACKUP DATABASE command. Otherwise, generate ON (TABLE ...) list for
     the specific tables within the database.
     """
-    tables = find_tables_by_group(db, group_name, ops_database)
+    tables = find_tables_by_group(session, cluster_id, group_name)
 
     db_entries = [t for t in tables if t["database"] == database]
     if not db_entries:
@@ -287,12 +293,13 @@ def build_full_backup_command(
 
 
 def record_backup_partitions(
-    db, label: str, partitions: list[dict[str, str]], ops_database: str = "ops"
+    session: Session, cluster_id: int, label: str, partitions: list[dict[str, str]]
 ) -> None:
     """Record partition metadata for a backup in the backup_partitions table.
 
     Args:
-        db: Database connection
+        session: SQLite metastore session
+        cluster_id: Cluster this backup belongs to
         label: Backup label
         partitions: List of partitions with keys: database, table, partition_name
     """
@@ -305,11 +312,17 @@ def record_backup_partitions(
         )
         key_hash = hashlib.md5(composite_key.encode("utf-8")).hexdigest()
 
-        db.execute(f"""
-            INSERT INTO {ops_database}.backup_partitions
-            (key_hash, label, database_name, table_name, partition_name)
-            VALUES ({utils.quote_value(key_hash)}, {utils.quote_value(label)}, {utils.quote_value(partition["database"])}, {utils.quote_value(partition["table"])}, {utils.quote_value(partition["partition_name"])})
-        """)
+        session.add(
+            BackupPartition(
+                cluster_id=cluster_id,
+                key_hash=key_hash,
+                label=label,
+                database_name=partition["database"],
+                table_name=partition["table"],
+                partition_name=partition["partition_name"],
+            )
+        )
+    session.flush()
 
 
 def get_all_partitions_for_tables(

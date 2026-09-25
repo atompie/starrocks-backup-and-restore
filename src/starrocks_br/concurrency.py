@@ -12,56 +12,61 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import datetime
 from typing import Literal
 
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
 from . import exceptions, logger, utils
+from .store.models import RunStatus
 
 
-def reserve_job_slot(db, scope: str, label: str, ops_database: str = "ops") -> None:
+def reserve_job_slot(db, session: Session, cluster_id: int, scope: str, label: str) -> None:
     """Reserve a job slot in the run_status table to prevent overlapping jobs.
 
     We consider any row with state='ACTIVE' for the same scope as a conflict.
     However, we implement self-healing logic to automatically clean up stale locks.
     """
-    active_jobs = _get_active_jobs_for_scope(db, scope, ops_database)
+    active_jobs = _get_active_jobs_for_scope(session, cluster_id, scope)
 
     if not active_jobs:
-        _insert_new_job(db, scope, label, ops_database)
+        _insert_new_job(session, cluster_id, scope, label)
         return
 
-    _handle_active_job_conflicts(db, scope, active_jobs, ops_database)
+    _handle_active_job_conflicts(db, session, cluster_id, scope, active_jobs)
 
-    _insert_new_job(db, scope, label, ops_database)
+    _insert_new_job(session, cluster_id, scope, label)
 
 
-def _get_active_jobs_for_scope(
-    db, scope: str, ops_database: str = "ops"
-) -> list[tuple[str, str, str]]:
+def _get_active_jobs_for_scope(session: Session, cluster_id: int, scope: str) -> list[tuple[str, str, str]]:
     """Get all active jobs for the given scope."""
-    rows = db.query(
-        f"SELECT scope, label, state FROM {ops_database}.run_status WHERE state = 'ACTIVE'"
-    )
-    return [row for row in rows if row[0] == scope]
+    rows = session.execute(
+        select(RunStatus.scope, RunStatus.label, RunStatus.state).where(
+            RunStatus.cluster_id == cluster_id, RunStatus.state == "ACTIVE"
+        )
+    ).all()
+    return [tuple(row) for row in rows if row[0] == scope]
 
 
 def _handle_active_job_conflicts(
-    db, scope: str, active_jobs: list[tuple[str, str, str]], ops_database: str = "ops"
+    db, session: Session, cluster_id: int, scope: str, active_jobs: list[tuple[str, str, str]]
 ) -> None:
     """Handle conflicts with active jobs, cleaning up stale ones where possible."""
     for active_scope, active_label, _ in active_jobs:
-        if _can_heal_stale_job(active_scope, active_label, db, ops_database):
-            _cleanup_stale_job(db, active_scope, active_label, ops_database)
+        if _can_heal_stale_job(db, active_scope, active_label):
+            _cleanup_stale_job(session, cluster_id, active_scope, active_label)
             logger.success(f"Cleaned up stale backup job: {active_label}")
         else:
             _raise_concurrency_conflict(scope, active_jobs)
 
 
-def _can_heal_stale_job(scope: str, label: str, db, ops_database: str = "ops") -> bool:
+def _can_heal_stale_job(db, scope: str, label: str) -> bool:
     """Check if a stale job can be healed (only for backup jobs)."""
     if scope != "backup":
         return False
 
-    return _is_backup_job_stale(db, label, ops_database)
+    return _is_backup_job_stale(db, label)
 
 
 def _raise_concurrency_conflict(scope: str, active_jobs: list[tuple[str, str, str]]) -> None:
@@ -69,22 +74,19 @@ def _raise_concurrency_conflict(scope: str, active_jobs: list[tuple[str, str, st
     raise exceptions.ConcurrencyConflictError(scope, active_jobs)
 
 
-def _insert_new_job(db, scope: str, label: str, ops_database: str = "ops") -> None:
+def _insert_new_job(session: Session, cluster_id: int, scope: str, label: str) -> None:
     """Insert a new active job record."""
-    sql = f"""
-        INSERT INTO {ops_database}.run_status (scope, label, state, started_at)
-        VALUES ({utils.quote_value(scope)}, {utils.quote_value(label)}, 'ACTIVE', NOW())
-    """
-    db.execute(sql)
+    session.add(RunStatus(cluster_id=cluster_id, scope=scope, label=label, state="ACTIVE"))
+    session.flush()
 
 
-def _is_backup_job_stale(db, label: str, ops_database: str = "ops") -> bool:
+def _is_backup_job_stale(db, label: str) -> bool:
     """Check if a backup job is stale by querying StarRocks SHOW BACKUP.
 
     Returns True if the job is stale (not actually running), False if it's still active.
     """
     try:
-        user_databases = _get_user_databases(db, ops_database)
+        user_databases = _get_user_databases(db)
 
         for database_name in user_databases:
             job_status = _check_backup_job_in_database(db, database_name, label)
@@ -104,9 +106,9 @@ def _is_backup_job_stale(db, label: str, ops_database: str = "ops") -> bool:
         return False
 
 
-def _get_user_databases(db, ops_database: str = "ops") -> list[str]:
+def _get_user_databases(db) -> list[str]:
     """Get list of user databases (excluding system databases)."""
-    system_databases = {"information_schema", "mysql", "sys", ops_database}
+    system_databases = {"information_schema", "mysql", "sys"}
 
     databases = db.query("SHOW DATABASES")
     return [
@@ -165,30 +167,41 @@ def _extract_backup_info(result) -> tuple[str, str]:
     return snapshot_name, state
 
 
-def _cleanup_stale_job(db, scope: str, label: str, ops_database: str = "ops") -> None:
+def _cleanup_stale_job(session: Session, cluster_id: int, scope: str, label: str) -> None:
     """Clean up a stale job by updating its state to CANCELLED."""
-    sql = f"""
-        UPDATE {ops_database}.run_status
-        SET state='CANCELLED', finished_at=NOW()
-        WHERE scope={utils.quote_value(scope)} AND label={utils.quote_value(label)} AND state='ACTIVE'
-    """
-    db.execute(sql)
+    row = session.scalars(
+        select(RunStatus).where(
+            RunStatus.cluster_id == cluster_id,
+            RunStatus.scope == scope,
+            RunStatus.label == label,
+            RunStatus.state == "ACTIVE",
+        )
+    ).one_or_none()
+    if row is None:
+        return
+    row.state = "CANCELLED"
+    row.finished_at = datetime.datetime.now(datetime.timezone.utc)
+    session.flush()
 
 
 def complete_job_slot(
-    db,
+    session: Session,
+    cluster_id: int,
     scope: str,
     label: str,
     final_state: Literal["FINISHED", "FAILED", "CANCELLED"],
-    ops_database: str = "ops",
 ) -> None:
     """Complete job slot and persist final state.
 
     Simple approach: update the same row by scope/label.
     """
-    sql = f"""
-        UPDATE {ops_database}.run_status
-        SET state={utils.quote_value(final_state)}, finished_at=NOW()
-        WHERE scope={utils.quote_value(scope)} AND label={utils.quote_value(label)}
-    """
-    db.execute(sql)
+    row = session.scalars(
+        select(RunStatus).where(
+            RunStatus.cluster_id == cluster_id, RunStatus.scope == scope, RunStatus.label == label
+        )
+    ).one_or_none()
+    if row is None:
+        return
+    row.state = final_state
+    row.finished_at = datetime.datetime.now(datetime.timezone.utc)
+    session.flush()

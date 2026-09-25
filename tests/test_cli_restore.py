@@ -20,7 +20,7 @@ from starrocks_br import cli
 def test_restore_success(
     config_file,
     mock_db,
-    mock_initialized_schema,
+    mock_resolved_cluster,
     mock_healthy_cluster,
     mock_repo_exists,
     setup_password_env,
@@ -51,7 +51,7 @@ def test_restore_success(
 def test_restore_with_yes_flag_skips_confirmation(
     config_file,
     mock_db,
-    mock_initialized_schema,
+    mock_resolved_cluster,
     mock_healthy_cluster,
     mock_repo_exists,
     setup_password_env,
@@ -86,7 +86,7 @@ def test_restore_with_yes_flag_skips_confirmation(
 def test_restore_with_group_filter(
     config_file,
     mock_db,
-    mock_initialized_schema,
+    mock_resolved_cluster,
     mock_healthy_cluster,
     mock_repo_exists,
     setup_password_env,
@@ -129,7 +129,7 @@ def test_restore_with_group_filter(
 def test_restore_with_table_filter(
     config_file,
     mock_db,
-    mock_initialized_schema,
+    mock_resolved_cluster,
     mock_healthy_cluster,
     mock_repo_exists,
     setup_password_env,

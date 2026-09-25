@@ -17,6 +17,8 @@ import time
 from collections.abc import Callable
 from typing import Literal
 
+from sqlalchemy.orm import Session
+
 from . import concurrency, history, logger, timezone
 
 MAX_POLLS = 86400  # 1 day
@@ -228,6 +230,8 @@ def poll_backup_status(
 
 def execute_backup(
     db,
+    session: Session,
+    cluster_id: int,
     backup_command: str,
     max_polls: int = MAX_POLLS,
     poll_interval: float = 1.0,
@@ -236,13 +240,14 @@ def execute_backup(
     backup_type: Literal["incremental", "full"] = None,
     scope: str = "backup",
     database: str | None = None,
-    ops_database: str = "ops",
     on_progress: Callable[[dict], None] | None = None,
 ) -> dict:
     """Execute a complete backup workflow: submit command and monitor progress.
 
     Args:
         db: Database connection
+        session: SQLite metastore session
+        cluster_id: Cluster this backup belongs to
         backup_command: Backup SQL command to execute
         max_polls: Maximum polling attempts
         poll_interval: Seconds between polls
@@ -250,7 +255,6 @@ def execute_backup(
         backup_type: Type of backup (for logging)
         scope: Job scope (for concurrency control)
         database: Database name (required for SHOW BACKUP)
-        ops_database: Name of ops database (default: "ops")
         on_progress: Optional callback forwarded to poll_backup_status; see
             its docstring. Defaults to None (no behavior change).
 
@@ -285,7 +289,8 @@ def execute_backup(
         try:
             finished_at = timezone.get_current_time_in_cluster_tz(cluster_tz)
             history.log_backup(
-                db,
+                session,
+                cluster_id,
                 {
                     "label": label,
                     "backup_type": backup_type,
@@ -295,18 +300,17 @@ def execute_backup(
                     "finished_at": finished_at,
                     "error_message": None if success else (final_status["state"] or ""),
                 },
-                ops_database=ops_database,
             )
         except Exception:
             pass
 
         try:
             concurrency.complete_job_slot(
-                db,
+                session,
+                cluster_id,
                 scope=scope,
                 label=label,
                 final_state=final_status["state"],
-                ops_database=ops_database,
             )
         except Exception:
             pass

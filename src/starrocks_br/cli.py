@@ -16,6 +16,8 @@ import os
 import sys
 
 import click
+from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 from . import (
     concurrency,
@@ -24,20 +26,78 @@ from . import (
     exceptions,
     executor,
     health,
+    inventory_groups,
     labels,
     logger,
     planner,
     prune,
     repository,
     restore,
-    schema,
 )
 from . import config as config_module
+from .store.crypto import encrypt_password
+from .store.models import Cluster
+from .store.session import session_scope
 
 try:
     from .cli_api import api_group
 except ImportError:
     api_group = None
+
+
+def resolve_cluster(session: Session, cfg: dict, *, create: bool) -> Cluster:
+    """Get-or-create the `Cluster` row this config resolves to.
+
+    Ops bookkeeping (table_inventory, backup_history, restore_history,
+    run_status, backup_partitions) now lives in the SQLite metastore, keyed
+    by `cluster_id` - the legacy YAML-driven CLI has no cluster-identity
+    concept of its own, so one is derived from the config (see
+    `config.get_cluster_identity`).
+
+    `init` is the only command allowed to create the row (`create=True`);
+    every other command requires it to already exist (`create=False`) and
+    raises `ClusterNotInitializedError` otherwise - this preserves the
+    tool's existing stricter "must init first" behavior and guards against
+    a `--config` typo silently registering a phantom cluster.
+
+    On every run, mutable connection fields (host/port/user/password/
+    database/repository) are refreshed from the YAML so the config file
+    stays authoritative; the stored identity (`name`) itself is left alone
+    unless the config's optional `name` field is explicitly present and
+    differs from what's stored.
+    """
+    identity = config_module.get_cluster_identity(cfg)
+    password = os.getenv("STARROCKS_PASSWORD", "")
+
+    cluster = session.scalars(select(Cluster).where(Cluster.name == identity)).one_or_none()
+
+    if cluster is None:
+        if not create:
+            raise exceptions.ClusterNotInitializedError(identity)
+        cluster = Cluster(
+            name=identity,
+            host=cfg["host"],
+            port=cfg["port"],
+            user=cfg["user"],
+            password_encrypted=encrypt_password(password),
+            database=cfg["database"],
+            repository=cfg["repository"],
+        )
+        session.add(cluster)
+        session.flush()
+        return cluster
+
+    cluster.host = cfg["host"]
+    cluster.port = cfg["port"]
+    cluster.user = cfg["user"]
+    cluster.password_encrypted = encrypt_password(password)
+    cluster.database = cfg["database"]
+    cluster.repository = cfg["repository"]
+    configured_name = cfg.get("name")
+    if configured_name and configured_name != cluster.name:
+        cluster.name = configured_name
+    session.flush()
+    return cluster
 
 
 def _handle_snapshot_exists_error(
@@ -104,13 +164,13 @@ def cli(ctx, verbose):
 @cli.command("init")
 @click.option("--config", required=True, help="Path to config YAML file")
 def init(config):
-    """Initialize operations database and control tables.
+    """Register this cluster in the local SQLite metastore and bootstrap its inventory.
 
-    Creates the operations database (default: 'ops') with required tables:
-    - table_inventory: Inventory groups mapping to databases/tables
-    - backup_history: Backup operation history
-    - restore_history: Restore operation history
-    - run_status: Job concurrency control
+    Ops bookkeeping (table_inventory, backup_history, restore_history,
+    run_status, backup_partitions) lives in a SQLite metastore shared with
+    the API server, keyed by cluster_id - not in a StarRocks-side database.
+    This command requires `alembic upgrade head` (against
+    STARROCKS_BR_DATABASE_URL) to have already been run.
 
     Run this once before using backup/restore commands.
     """
@@ -118,7 +178,6 @@ def init(config):
         cfg = config_module.load_config(config)
         config_module.validate_config(cfg)
 
-        ops_database = config_module.get_ops_database(cfg)
         table_inventory_entries = config_module.get_table_inventory_entries(cfg)
 
         database = db.StarRocksDB(
@@ -130,43 +189,40 @@ def init(config):
             tls_config=cfg.get("tls"),
         )
 
-        ops_database = config_module.get_ops_database(cfg)
-
         with database:
             logger.info("Validating repository...")
             repository.ensure_repository(database, cfg["repository"])
             logger.info("")
 
-            logger.info("Initializing ops schema...")
-            schema.initialize_ops_schema(
-                database, ops_database=ops_database, table_inventory_entries=table_inventory_entries
+        logger.info("Registering cluster in the local SQLite metastore...")
+        with session_scope() as session:
+            cluster = resolve_cluster(session, cfg, create=True)
+            if table_inventory_entries:
+                inventory_groups.bootstrap_table_inventory(session, cluster.id, table_inventory_entries)
+        logger.success("Cluster registered")
+        logger.info("")
+
+        if table_inventory_entries:
+            logger.success(
+                f"Table inventory bootstrapped from config with {len(table_inventory_entries)} entries"
             )
             logger.info("")
-
-            if table_inventory_entries:
-                logger.success(
-                    f"Table inventory bootstrapped from config with {len(table_inventory_entries)} entries"
-                )
-                logger.info("")
-                logger.info("Next steps:")
-                logger.info("1. Run your first backup:")
-                logger.info(
-                    f"   starrocks-br backup incremental --group <your_group_name> --config {config}"
-                )
-            else:
-                logger.info("Next steps:")
-                logger.info("1. Insert your table inventory records:")
-                logger.info(f"   INSERT INTO {ops_database}.table_inventory")
-                logger.info("   (inventory_group, database_name, table_name)")
-                logger.info("   VALUES ('my_daily_incremental', 'your_db', 'your_fact_table');")
-                logger.info("   VALUES ('my_full_database_backup', 'your_db', '*');")
-                logger.info("   VALUES ('my_full_dimension_tables', 'your_db', 'dim_customers');")
-                logger.info("   VALUES ('my_full_dimension_tables', 'your_db', 'dim_products');")
-                logger.info("")
-                logger.info("2. Run your first backup:")
-                logger.info(
-                    "   starrocks-br backup incremental --group my_daily_incremental --config config.yaml"
-                )
+            logger.info("Next steps:")
+            logger.info("1. Run your first backup:")
+            logger.info(
+                f"   starrocks-br backup incremental --group <your_group_name> --config {config}"
+            )
+        else:
+            logger.info("Next steps:")
+            logger.info(
+                "1. Populate your table inventory (no rows exist yet) - add table_inventory "
+                "entries under this config's 'table_inventory' YAML section and re-run init, "
+                "or use the API's inventory-group endpoints."
+            )
+            logger.info("2. Run your first backup:")
+            logger.info(
+                "   starrocks-br backup incremental --group my_daily_incremental --config config.yaml"
+            )
 
     except exceptions.ConfigFileNotFoundError as e:
         error_handler.handle_config_file_not_found_error(e)
@@ -225,19 +281,7 @@ def backup_incremental(config, baseline_backup, group, name):
             tls_config=cfg.get("tls"),
         )
 
-        ops_database = config_module.get_ops_database(cfg)
-
         with database:
-            was_created = schema.ensure_ops_schema(database, ops_database=ops_database)
-            if was_created:
-                logger.warning(
-                    "ops schema was auto-created. Please run 'starrocks-br init' after populating config."
-                )
-                logger.warning(
-                    "Remember to populate the table_inventory table with your backup groups!"
-                )
-                sys.exit(1)  # Exit if schema was just created, requires user action
-
             healthy, message = health.check_cluster_health(database)
             if not healthy:
                 logger.error(f"Cluster health check failed: {message}")
@@ -249,64 +293,66 @@ def backup_incremental(config, baseline_backup, group, name):
 
             logger.success(f"Repository '{cfg['repository']}' verified")
 
-            label = labels.determine_backup_label(
-                db=database,
-                backup_type="incremental",
-                database_name=cfg["database"],
-                custom_name=name,
-                ops_database=ops_database,
-            )
+            with session_scope() as session:
+                cluster = resolve_cluster(session, cfg, create=False)
 
-            logger.success(f"Generated label: {label}")
+                label = labels.determine_backup_label(
+                    session, cluster.id, "incremental", cfg["database"], custom_name=name
+                )
 
-            if baseline_backup:
-                logger.success(f"Using specified baseline backup: {baseline_backup}")
-            else:
-                latest_backup = planner.find_latest_full_backup(database, cfg["database"])
-                if latest_backup:
-                    logger.success(
-                        f"Using latest full backup as baseline: {latest_backup['label']} ({latest_backup['backup_type']})"
-                    )
+                logger.success(f"Generated label: {label}")
+
+                if baseline_backup:
+                    logger.success(f"Using specified baseline backup: {baseline_backup}")
                 else:
-                    logger.warning(
-                        "No full backup found - this will be the first incremental backup"
+                    latest_backup = planner.find_latest_full_backup(
+                        database, session, cluster.id, cfg["database"]
                     )
+                    if latest_backup:
+                        logger.success(
+                            f"Using latest full backup as baseline: {latest_backup['label']} ({latest_backup['backup_type']})"
+                        )
+                    else:
+                        logger.warning(
+                            "No full backup found - this will be the first incremental backup"
+                        )
 
-            partitions = planner.find_recent_partitions(
-                database,
-                cfg["database"],
-                baseline_backup_label=baseline_backup,
-                group_name=group,
-                ops_database=ops_database,
-            )
+                partitions = planner.find_recent_partitions(
+                    database,
+                    session,
+                    cluster.id,
+                    cfg["database"],
+                    baseline_backup_label=baseline_backup,
+                    group_name=group,
+                )
 
-            if not partitions:
-                logger.warning("No partitions found to backup")
-                sys.exit(1)
+                if not partitions:
+                    logger.warning("No partitions found to backup")
+                    sys.exit(1)
 
-            logger.success(f"Found {len(partitions)} partition(s) to backup")
+                logger.success(f"Found {len(partitions)} partition(s) to backup")
 
-            backup_command = planner.build_incremental_backup_command(
-                partitions, cfg["repository"], label, cfg["database"]
-            )
+                backup_command = planner.build_incremental_backup_command(
+                    partitions, cfg["repository"], label, cfg["database"]
+                )
 
-            concurrency.reserve_job_slot(
-                database, scope="backup", label=label, ops_database=ops_database
-            )
+                concurrency.reserve_job_slot(database, session, cluster.id, "backup", label)
 
-            planner.record_backup_partitions(database, label, partitions, ops_database=ops_database)
+                planner.record_backup_partitions(session, cluster.id, label, partitions)
 
             logger.success("Job slot reserved")
             logger.info(f"Starting incremental backup for group '{group}'...")
-            result = executor.execute_backup(
-                database,
-                backup_command,
-                repository=cfg["repository"],
-                backup_type="incremental",
-                scope="backup",
-                database=cfg["database"],
-                ops_database=ops_database,
-            )
+            with session_scope() as session:
+                result = executor.execute_backup(
+                    database,
+                    session,
+                    cluster.id,
+                    backup_command,
+                    repository=cfg["repository"],
+                    backup_type="incremental",
+                    scope="backup",
+                    database=cfg["database"],
+                )
 
             if result["success"]:
                 logger.success(f"Backup completed successfully: {result['final_status']['state']}")
@@ -333,6 +379,9 @@ def backup_incremental(config, baseline_backup, group, name):
                 logger.error(f"{result['error_message']}")
                 sys.exit(1)
 
+    except exceptions.ClusterNotInitializedError as e:
+        logger.error(str(e))
+        sys.exit(1)
     except exceptions.ConcurrencyConflictError as e:
         error_handler.handle_concurrency_conflict_error(e, config)
         sys.exit(1)
@@ -389,19 +438,7 @@ def backup_full(config, group, name):
             tls_config=cfg.get("tls"),
         )
 
-        ops_database = config_module.get_ops_database(cfg)
-
         with database:
-            was_created = schema.ensure_ops_schema(database, ops_database=ops_database)
-            if was_created:
-                logger.warning(
-                    "ops schema was auto-created. Please run 'starrocks-br init' after populating config."
-                )
-                logger.warning(
-                    "Remember to populate the table_inventory table with your backup groups!"
-                )
-                sys.exit(1)  # Exit if schema was just created, requires user action
-
             healthy, message = health.check_cluster_health(database)
             if not healthy:
                 logger.error(f"Cluster health check failed: {message}")
@@ -413,58 +450,49 @@ def backup_full(config, group, name):
 
             logger.success(f"Repository '{cfg['repository']}' verified")
 
-            label = labels.determine_backup_label(
-                db=database,
-                backup_type="full",
-                database_name=cfg["database"],
-                custom_name=name,
-                ops_database=ops_database,
-            )
+            with session_scope() as session:
+                cluster = resolve_cluster(session, cfg, create=False)
 
-            logger.success(f"Generated label: {label}")
-
-            tables = planner.find_tables_by_group(database, group, ops_database)
-            planner.validate_tables_exist(database, cfg["database"], tables, group)
-
-            backup_command = planner.build_full_backup_command(
-                database,
-                group,
-                cfg["repository"],
-                label,
-                cfg["database"],
-                ops_database=ops_database,
-            )
-
-            if not backup_command:
-                logger.warning(
-                    f"No tables found in group '{group}' for database '{cfg['database']}' to backup"
+                label = labels.determine_backup_label(
+                    session, cluster.id, "full", cfg["database"], custom_name=name
                 )
-                sys.exit(1)
 
-            tables = planner.find_tables_by_group(database, group)
-            all_partitions = planner.get_all_partitions_for_tables(
-                database, cfg["database"], tables
-            )
+                logger.success(f"Generated label: {label}")
 
-            concurrency.reserve_job_slot(
-                database, scope="backup", label=label, ops_database=ops_database
-            )
+                tables = planner.find_tables_by_group(session, cluster.id, group)
+                planner.validate_tables_exist(database, cfg["database"], tables, group)
 
-            planner.record_backup_partitions(
-                database, label, all_partitions, ops_database=ops_database
-            )
+                backup_command = planner.build_full_backup_command(
+                    session, cluster.id, group, cfg["repository"], label, cfg["database"]
+                )
+
+                if not backup_command:
+                    logger.warning(
+                        f"No tables found in group '{group}' for database '{cfg['database']}' to backup"
+                    )
+                    sys.exit(1)
+
+                all_partitions = planner.get_all_partitions_for_tables(
+                    database, cfg["database"], tables
+                )
+
+                concurrency.reserve_job_slot(database, session, cluster.id, "backup", label)
+
+                planner.record_backup_partitions(session, cluster.id, label, all_partitions)
 
             logger.success("Job slot reserved")
             logger.info(f"Starting full backup for group '{group}'...")
-            result = executor.execute_backup(
-                database,
-                backup_command,
-                repository=cfg["repository"],
-                backup_type="full",
-                scope="backup",
-                database=cfg["database"],
-                ops_database=ops_database,
-            )
+            with session_scope() as session:
+                result = executor.execute_backup(
+                    database,
+                    session,
+                    cluster.id,
+                    backup_command,
+                    repository=cfg["repository"],
+                    backup_type="full",
+                    scope="backup",
+                    database=cfg["database"],
+                )
 
             if result["success"]:
                 logger.success(f"Backup completed successfully: {result['final_status']['state']}")
@@ -487,6 +515,9 @@ def backup_full(config, group, name):
 
     except exceptions.InvalidTablesInInventoryError as e:
         error_handler.handle_invalid_tables_in_inventory_error(e, config)
+        sys.exit(1)
+    except exceptions.ClusterNotInitializedError as e:
+        logger.error(str(e))
         sys.exit(1)
     except exceptions.ConcurrencyConflictError as e:
         error_handler.handle_concurrency_conflict_error(e, config)
@@ -564,19 +595,7 @@ def restore_command(config, target_label, group, table, rename_suffix, yes):
             tls_config=cfg.get("tls"),
         )
 
-        ops_database = config_module.get_ops_database(cfg)
-
         with database:
-            was_created = schema.ensure_ops_schema(database, ops_database=ops_database)
-            if was_created:
-                logger.warning(
-                    "ops schema was auto-created. Please run 'starrocks-br init' after populating config."
-                )
-                logger.warning(
-                    "Remember to populate the table_inventory table with your backup groups!"
-                )
-                sys.exit(1)  # Exit if schema was just created, requires user action
-
             healthy, message = health.check_cluster_health(database)
             if not healthy:
                 logger.error(f"Cluster health check failed: {message}")
@@ -590,21 +609,23 @@ def restore_command(config, target_label, group, table, rename_suffix, yes):
 
             logger.info(f"Finding restore sequence for target backup: {target_label}")
 
-            restore_pair = restore.find_restore_pair(
-                database, target_label, ops_database=ops_database
-            )
-            logger.success(f"Found restore sequence: {' -> '.join(restore_pair)}")
+            with session_scope() as session:
+                cluster = resolve_cluster(session, cfg, create=False)
 
-            logger.info("Determining tables to restore from backup manifest...")
+                restore_pair = restore.find_restore_pair(session, cluster.id, target_label)
+                logger.success(f"Found restore sequence: {' -> '.join(restore_pair)}")
 
-            tables_to_restore = restore.get_tables_from_backup(
-                database,
-                target_label,
-                group=group,
-                table=table,
-                database=cfg["database"] if table else None,
-                ops_database=ops_database,
-            )
+                logger.info("Determining tables to restore from backup manifest...")
+
+                tables_to_restore = restore.get_tables_from_backup(
+                    database,
+                    session,
+                    cluster.id,
+                    target_label,
+                    group=group,
+                    table=table,
+                    database=cfg["database"] if table else None,
+                )
 
             if not tables_to_restore:
                 raise exceptions.NoTablesFoundError(group=group, label=target_label)
@@ -614,15 +635,17 @@ def restore_command(config, target_label, group, table, rename_suffix, yes):
             )
 
             logger.info("Starting restore flow...")
-            result = restore.execute_restore_flow(
-                database,
-                cfg["repository"],
-                restore_pair,
-                tables_to_restore,
-                rename_suffix,
-                skip_confirmation=yes,
-                ops_database=ops_database,
-            )
+            with session_scope() as session:
+                result = restore.execute_restore_flow(
+                    database,
+                    session,
+                    cluster.id,
+                    cfg["repository"],
+                    restore_pair,
+                    tables_to_restore,
+                    rename_suffix,
+                    skip_confirmation=yes,
+                )
 
             if result["success"]:
                 logger.success(result["message"])
@@ -633,6 +656,9 @@ def restore_command(config, target_label, group, table, rename_suffix, yes):
 
     except exceptions.InvalidTableNameError as e:
         error_handler.handle_invalid_table_name_error(e)
+        sys.exit(1)
+    except exceptions.ClusterNotInitializedError as e:
+        logger.error(str(e))
         sys.exit(1)
     except exceptions.BackupLabelNotFoundError as e:
         error_handler.handle_backup_label_not_found_error(e, config)
@@ -745,16 +771,7 @@ def prune_command(config, group, keep_last, older_than, snapshot, snapshots, dry
             tls_config=cfg.get("tls"),
         )
 
-        ops_database = config_module.get_ops_database(cfg)
-
         with database:
-            was_created = schema.ensure_ops_schema(database, ops_database=ops_database)
-            if was_created:
-                logger.warning(
-                    "ops schema was auto-created. Please run 'starrocks-br init' after populating config."
-                )
-                sys.exit(1)
-
             healthy, message = health.check_cluster_health(database)
             if not healthy:
                 logger.error(f"Cluster health check failed: {message}")
@@ -786,9 +803,9 @@ def prune_command(config, group, keep_last, older_than, snapshot, snapshots, dry
             if group:
                 logger.info(f"Filtering by inventory group: {group}")
 
-            all_backups = prune.get_successful_backups(
-                database, cfg["repository"], group=group, ops_database=ops_database
-            )
+            with session_scope() as session:
+                cluster = resolve_cluster(session, cfg, create=False)
+                all_backups = prune.get_successful_backups(session, cluster.id, cfg["repository"], group=group)
 
             if not all_backups:
                 msg = f"No successful backups found in repository '{cfg['repository']}'"
@@ -844,14 +861,15 @@ def prune_command(config, group, keep_last, older_than, snapshot, snapshots, dry
             deleted_count = 0
             failed_count = 0
 
-            for snap in snapshots_to_delete:
-                try:
-                    prune.execute_drop_snapshot(database, cfg["repository"], snap["label"])
-                    prune.cleanup_backup_history(database, snap["label"], ops_database=ops_database)
-                    deleted_count += 1
-                except Exception as e:
-                    logger.error(f"Failed to delete snapshot '{snap['label']}': {e}")
-                    failed_count += 1
+            with session_scope() as session:
+                for snap in snapshots_to_delete:
+                    try:
+                        prune.execute_drop_snapshot(database, cfg["repository"], snap["label"])
+                        prune.cleanup_backup_history(session, cluster.id, snap["label"])
+                        deleted_count += 1
+                    except Exception as e:
+                        logger.error(f"Failed to delete snapshot '{snap['label']}': {e}")
+                        failed_count += 1
 
             logger.info("")
             logger.success(f"Deleted {deleted_count} snapshot(s)")
@@ -866,6 +884,9 @@ def prune_command(config, group, keep_last, older_than, snapshot, snapshots, dry
 
             sys.exit(0 if failed_count == 0 else 1)
 
+    except exceptions.ClusterNotInitializedError as e:
+        logger.error(str(e))
+        sys.exit(1)
     except exceptions.ConfigFileNotFoundError as e:
         error_handler.handle_config_file_not_found_error(e)
         sys.exit(1)

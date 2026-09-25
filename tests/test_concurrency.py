@@ -13,210 +13,221 @@
 # limitations under the License.
 
 from starrocks_br import concurrency, exceptions
+from starrocks_br.store.models import RunStatus
 
 
-def test_should_reserve_job_slot_when_no_active_conflict(mocker):
+def _add_run_status(session, cluster_id, scope, label, state="ACTIVE"):
+    session.add(RunStatus(cluster_id=cluster_id, scope=scope, label=label, state=state))
+    session.commit()
+
+
+def test_should_reserve_job_slot_when_no_active_conflict(sqlite_session, make_cluster, mocker):
+    cluster = make_cluster()
     db = mocker.Mock()
-    db.query.return_value = []
 
-    concurrency.reserve_job_slot(db, scope="backup", label="db_20251015_incremental")
+    concurrency.reserve_job_slot(db, sqlite_session, cluster.id, "backup", "db_20251015_incremental")
 
-    assert db.query.call_count == 1
-    assert "FROM ops.run_status" in db.query.call_args[0][0]
-    assert db.execute.call_count == 1
-    sql = db.execute.call_args[0][0]
-    assert "INSERT INTO ops.run_status" in sql or "UPSERT INTO ops.run_status" in sql
-    assert "ACTIVE" in sql
+    row = sqlite_session.query(RunStatus).filter_by(cluster_id=cluster.id).one()
+    assert row.scope == "backup"
+    assert row.label == "db_20251015_incremental"
+    assert row.state == "ACTIVE"
+    db.query.assert_not_called()
 
 
-def test_should_raise_when_active_conflict_exists(mocker):
+def test_should_raise_when_active_conflict_exists(sqlite_session, make_cluster, mocker):
+    cluster = make_cluster()
     db = mocker.Mock()
-    db.query.return_value = [("backup", "db_20251015_incremental", "ACTIVE")]
+    _add_run_status(sqlite_session, cluster.id, "backup", "db_20251015_incremental")
+    db.query.side_effect = [
+        [("some_db",)],
+        [("some_db", "db_20251015_incremental", "2024-01-01", "UPLOADING")],
+    ]  # SHOW DATABASES + SHOW BACKUP show the job is genuinely still running
 
     try:
-        concurrency.reserve_job_slot(db, scope="backup", label="db_20251015_incremental")
+        concurrency.reserve_job_slot(db, sqlite_session, cluster.id, "backup", "db_20251015_incremental")
         raise AssertionError("expected conflict")
     except exceptions.ConcurrencyConflictError as e:
         assert e.scope == "backup"
-        assert e.active_jobs == [("backup", "db_20251015_incremental", "ACTIVE")]
         assert e.active_labels == ["db_20251015_incremental"]
         error_msg = str(e)
         assert "Concurrency conflict" in error_msg
         assert "Another 'backup' job is already active" in error_msg
         assert "backup:db_20251015_incremental" in error_msg
-    assert db.execute.call_count == 0
+
+    assert sqlite_session.query(RunStatus).filter_by(cluster_id=cluster.id).count() == 1
 
 
-def test_should_update_state_when_completing_job_slot(mocker):
+def test_should_update_state_when_completing_job_slot(sqlite_session, make_cluster):
+    cluster = make_cluster()
+    _add_run_status(sqlite_session, cluster.id, "backup", "db_20251015_incremental")
+
+    concurrency.complete_job_slot(sqlite_session, cluster.id, "backup", "db_20251015_incremental", "FINISHED")
+
+    row = sqlite_session.query(RunStatus).filter_by(cluster_id=cluster.id).one()
+    assert row.state == "FINISHED"
+    assert row.finished_at is not None
+
+
+def test_complete_job_slot_is_a_noop_when_row_missing(sqlite_session, make_cluster):
+    cluster = make_cluster()
+
+    concurrency.complete_job_slot(sqlite_session, cluster.id, "backup", "missing", "FINISHED")
+
+    assert sqlite_session.query(RunStatus).filter_by(cluster_id=cluster.id).count() == 0
+
+
+def test_should_not_conflict_on_different_scope(sqlite_session, make_cluster, mocker):
+    cluster = make_cluster()
     db = mocker.Mock()
+    _add_run_status(sqlite_session, cluster.id, "restore", "some")
 
-    concurrency.complete_job_slot(
-        db, scope="backup", label="db_20251015_incremental", final_state="FINISHED"
-    )
+    concurrency.reserve_job_slot(db, sqlite_session, cluster.id, "backup", "L1")
 
-    assert db.execute.call_count == 1
-    sql = db.execute.call_args[0][0]
-    assert "UPDATE ops.run_status" in sql or "DELETE FROM ops.run_status" in sql
-    assert "FINISHED" in sql or "state='IDLE'" in sql
+    assert sqlite_session.query(RunStatus).filter_by(cluster_id=cluster.id, scope="backup").count() == 1
+    db.query.assert_not_called()
 
 
-def test_should_not_conflict_on_different_scope(mocker):
-    db = mocker.Mock()
-    db.query.return_value = [("restore", "some", "ACTIVE")]
-
-    concurrency.reserve_job_slot(db, scope="backup", label="L1")
-    assert db.execute.call_count == 1
-
-
-def test_should_cleanup_stale_backup_job_and_proceed(mocker):
+def test_should_cleanup_stale_backup_job_and_proceed(sqlite_session, make_cluster, mocker):
     """Test that stale backup jobs are automatically cleaned up and new job can proceed."""
+    cluster = make_cluster()
+    _add_run_status(sqlite_session, cluster.id, "backup", "stale_backup_label")
     db = mocker.Mock()
-
     db.query.side_effect = [
-        [("backup", "stale_backup_label", "ACTIVE")],
-        [("test_db",), ("ops",)],
+        [("test_db",)],
         [("test_db", "stale_backup_label", "2024-01-01", "FINISHED")],
     ]
 
-    concurrency.reserve_job_slot(db, scope="backup", label="new_backup_label")
+    concurrency.reserve_job_slot(db, sqlite_session, cluster.id, "backup", "new_backup_label")
 
-    assert db.query.call_count == 3
-
-    assert db.execute.call_count == 2
-
-    cleanup_sql = db.execute.call_args_list[0][0][0]
-    assert "UPDATE ops.run_status" in cleanup_sql
-    assert "state='CANCELLED'" in cleanup_sql
-    assert "stale_backup_label" in cleanup_sql
-
-    insert_sql = db.execute.call_args_list[1][0][0]
-    assert "INSERT INTO ops.run_status" in insert_sql
-    assert "new_backup_label" in insert_sql
-    assert "ACTIVE" in insert_sql
+    stale = sqlite_session.query(RunStatus).filter_by(cluster_id=cluster.id, label="stale_backup_label").one()
+    assert stale.state == "CANCELLED"
+    new = sqlite_session.query(RunStatus).filter_by(cluster_id=cluster.id, label="new_backup_label").one()
+    assert new.state == "ACTIVE"
 
 
-def test_should_raise_conflict_when_backup_job_is_still_active(mocker):
+def test_should_raise_conflict_when_backup_job_is_still_active(sqlite_session, make_cluster, mocker):
     """Test that real conflicts are still detected when backup job is actually running."""
+    cluster = make_cluster()
+    _add_run_status(sqlite_session, cluster.id, "backup", "active_backup_label")
     db = mocker.Mock()
-
     db.query.side_effect = [
-        [("backup", "active_backup_label", "ACTIVE")],
-        [("test_db",), ("ops",)],
+        [("test_db",)],
         [("test_db", "active_backup_label", "2024-01-01", "UPLOADING")],
     ]
 
     try:
-        concurrency.reserve_job_slot(db, scope="backup", label="new_backup_label")
+        concurrency.reserve_job_slot(db, sqlite_session, cluster.id, "backup", "new_backup_label")
         raise AssertionError("expected conflict")
     except exceptions.ConcurrencyConflictError as e:
         assert e.scope == "backup"
-        assert e.active_jobs == [("backup", "active_backup_label", "ACTIVE")]
         assert e.active_labels == ["active_backup_label"]
         error_msg = str(e)
         assert "Concurrency conflict" in error_msg
         assert "Another 'backup' job is already active" in error_msg
         assert "active_backup_label" in error_msg
 
-    assert db.query.call_count == 3
-    assert db.execute.call_count == 0
+    assert sqlite_session.query(RunStatus).filter_by(cluster_id=cluster.id, label="new_backup_label").count() == 0
 
 
-def test_should_cleanup_stale_job_when_not_found_in_show_backup(mocker):
+def test_should_cleanup_stale_job_when_not_found_in_show_backup(sqlite_session, make_cluster, mocker):
     """Test that jobs not found in SHOW BACKUP are considered stale."""
+    cluster = make_cluster()
+    _add_run_status(sqlite_session, cluster.id, "backup", "missing_backup_label")
     db = mocker.Mock()
-
     db.query.side_effect = [
-        [("backup", "missing_backup_label", "ACTIVE")],
-        [("test_db",), ("ops",)],
+        [("test_db",)],
         [],
     ]
 
-    concurrency.reserve_job_slot(db, scope="backup", label="new_backup_label")
+    concurrency.reserve_job_slot(db, sqlite_session, cluster.id, "backup", "new_backup_label")
 
-    assert db.query.call_count == 3
-
-    assert db.execute.call_count == 2
-
-    cleanup_sql = db.execute.call_args_list[0][0][0]
-    assert "UPDATE ops.run_status" in cleanup_sql
-    assert "state='CANCELLED'" in cleanup_sql
-    assert "missing_backup_label" in cleanup_sql
+    stale = sqlite_session.query(RunStatus).filter_by(cluster_id=cluster.id, label="missing_backup_label").one()
+    assert stale.state == "CANCELLED"
 
 
-def test_should_handle_multiple_databases_in_stale_check(mocker):
+def test_should_handle_multiple_databases_in_stale_check(sqlite_session, make_cluster, mocker):
     """Test that stale check works across multiple databases."""
+    cluster = make_cluster()
+    _add_run_status(sqlite_session, cluster.id, "backup", "stale_backup_label")
     db = mocker.Mock()
-
     db.query.side_effect = [
-        [("backup", "stale_backup_label", "ACTIVE")],
-        [("db1",), ("db2",), ("ops",)],
+        [("db1",), ("db2",)],
         [],
         [("db2", "stale_backup_label", "2024-01-01", "FINISHED")],
     ]
 
-    concurrency.reserve_job_slot(db, scope="backup", label="new_backup_label")
+    concurrency.reserve_job_slot(db, sqlite_session, cluster.id, "backup", "new_backup_label")
 
-    assert db.query.call_count == 4
+    assert db.query.call_count == 3
+    stale = sqlite_session.query(RunStatus).filter_by(cluster_id=cluster.id, label="stale_backup_label").one()
+    assert stale.state == "CANCELLED"
 
-    assert db.execute.call_count == 2
 
-
-def test_should_skip_system_databases_in_stale_check(mocker):
+def test_should_skip_system_databases_in_stale_check(sqlite_session, make_cluster, mocker):
     """Test that system databases are skipped during stale check."""
+    cluster = make_cluster()
+    _add_run_status(sqlite_session, cluster.id, "backup", "stale_backup_label")
     db = mocker.Mock()
-
     db.query.side_effect = [
-        [("backup", "stale_backup_label", "ACTIVE")],
-        [("information_schema",), ("mysql",), ("sys",), ("ops",), ("user_db",)],
+        [("information_schema",), ("mysql",), ("sys",), ("user_db",)],
         [("user_db", "stale_backup_label", "2024-01-01", "FINISHED")],
     ]
 
-    concurrency.reserve_job_slot(db, scope="backup", label="new_backup_label")
+    concurrency.reserve_job_slot(db, sqlite_session, cluster.id, "backup", "new_backup_label")
 
-    assert db.query.call_count == 3
+    assert db.query.call_count == 2
+    stale = sqlite_session.query(RunStatus).filter_by(cluster_id=cluster.id, label="stale_backup_label").one()
+    assert stale.state == "CANCELLED"
 
-    assert db.execute.call_count == 2
 
-
-def test_should_handle_non_backup_scope_conflicts(mocker):
+def test_should_handle_non_backup_scope_conflicts(sqlite_session, make_cluster, mocker):
     """Test that non-backup scopes still raise conflicts (no self-healing for them)."""
+    cluster = make_cluster()
+    _add_run_status(sqlite_session, cluster.id, "restore", "active_restore")
     db = mocker.Mock()
-    db.query.return_value = [("restore", "active_restore", "ACTIVE")]
 
     try:
-        concurrency.reserve_job_slot(db, scope="restore", label="new_restore")
+        concurrency.reserve_job_slot(db, sqlite_session, cluster.id, "restore", "new_restore")
         raise AssertionError("expected conflict")
     except exceptions.ConcurrencyConflictError as e:
         assert e.scope == "restore"
-        assert e.active_jobs == [("restore", "active_restore", "ACTIVE")]
         assert e.active_labels == ["active_restore"]
         error_msg = str(e)
         assert "Concurrency conflict" in error_msg
         assert "Another 'restore' job is already active" in error_msg
 
-    assert db.query.call_count == 1
-    assert db.execute.call_count == 0
+    db.query.assert_not_called()
+    assert sqlite_session.query(RunStatus).filter_by(cluster_id=cluster.id, label="new_restore").count() == 0
 
 
-def test_should_handle_exception_during_stale_check(mocker):
+def test_should_handle_exception_during_stale_check(sqlite_session, make_cluster, mocker):
     """Test that exceptions during stale check are handled gracefully."""
+    cluster = make_cluster()
+    _add_run_status(sqlite_session, cluster.id, "backup", "stale_backup_label")
     db = mocker.Mock()
-
-    db.query.side_effect = [
-        [("backup", "stale_backup_label", "ACTIVE")],
-        Exception("Database connection error"),
-    ]
+    db.query.side_effect = Exception("Database connection error")
 
     try:
-        concurrency.reserve_job_slot(db, scope="backup", label="new_backup_label")
+        concurrency.reserve_job_slot(db, sqlite_session, cluster.id, "backup", "new_backup_label")
         raise AssertionError("expected conflict")
     except exceptions.ConcurrencyConflictError as e:
         assert e.scope == "backup"
-        assert e.active_jobs == [("backup", "stale_backup_label", "ACTIVE")]
         assert e.active_labels == ["stale_backup_label"]
         error_msg = str(e)
         assert "Concurrency conflict" in error_msg
         assert "Another 'backup' job is already active" in error_msg
 
-    assert db.query.call_count == 2
-    assert db.execute.call_count == 0
+    assert sqlite_session.query(RunStatus).filter_by(cluster_id=cluster.id, label="new_backup_label").count() == 0
+
+
+def test_run_status_scoped_by_cluster(sqlite_session, make_cluster, mocker):
+    """An active job on one cluster must not conflict with another cluster's reservation."""
+    cluster_a = make_cluster("cluster-a")
+    cluster_b = make_cluster("cluster-b")
+    _add_run_status(sqlite_session, cluster_a.id, "backup", "shared-label")
+    db = mocker.Mock()
+
+    concurrency.reserve_job_slot(db, sqlite_session, cluster_b.id, "backup", "shared-label")
+
+    assert sqlite_session.query(RunStatus).filter_by(cluster_id=cluster_b.id).count() == 1
+    db.query.assert_not_called()
