@@ -1,17 +1,3 @@
-# Copyright 2025 deep-bi
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
 from starrocks_br import schema
 
 
@@ -235,6 +221,7 @@ def test_should_include_backup_partitions_in_initialization(mocker):
 
 def test_should_bootstrap_table_inventory_from_entries(mocker):
     db = mocker.Mock()
+    db.query.return_value = []
     entries = [
         ("daily_incremental", "sales_db", "fact_sales"),
         ("daily_incremental", "orders_db", "fact_orders"),
@@ -262,6 +249,7 @@ def test_should_not_bootstrap_table_inventory_when_entries_are_empty(mocker):
 
 def test_should_bootstrap_table_inventory_with_custom_ops_database(mocker):
     db = mocker.Mock()
+    db.query.return_value = []
     entries = [
         ("test_group", "test_db", "test_table"),
     ]
@@ -278,6 +266,7 @@ def test_should_bootstrap_table_inventory_with_custom_ops_database(mocker):
 
 def test_should_use_insert_ignore_for_idempotent_bootstrapping(mocker):
     db = mocker.Mock()
+    db.query.return_value = []
     entries = [
         ("test_group", "test_db", "test_table"),
     ]
@@ -290,6 +279,7 @@ def test_should_use_insert_ignore_for_idempotent_bootstrapping(mocker):
 
 def test_should_bootstrap_table_inventory_with_wildcards(mocker):
     db = mocker.Mock()
+    db.query.return_value = []
     entries = [
         ("full_backup", "sales_db", "*"),
         ("full_backup", "orders_db", "*"),
@@ -443,7 +433,7 @@ def test_bootstrap_should_warn_when_database_does_not_exist(mocker):
 
 def test_bootstrap_should_not_warn_when_database_exists(mocker):
     db = mocker.Mock()
-    db.query.return_value = [("existing_db",)]
+    db.query.side_effect = lambda sql: [("existing_db",)] if "SHOW DATABASES" in sql else []
     mock_logger = mocker.patch("starrocks_br.schema.logger")
 
     entries = [
@@ -480,11 +470,7 @@ def test_bootstrap_should_deduplicate_database_checks(mocker):
 
 def test_bootstrap_should_check_multiple_unique_databases(mocker):
     db = mocker.Mock()
-    db.query.side_effect = [
-        [("db1",)],
-        [("db2",)],
-        [],
-    ]
+    db.query.side_effect = lambda sql: []
 
     entries = [
         ("test_group", "db1", "table1"),
@@ -496,3 +482,23 @@ def test_bootstrap_should_check_multiple_unique_databases(mocker):
 
     show_db_calls = [call for call in db.query.call_args_list if "SHOW DATABASES" in str(call)]
     assert len(show_db_calls) == 3
+
+
+def test_bootstrap_table_inventory_safely_quotes_group_name_with_single_quote(mocker):
+    """A group name containing a single quote must not break the generated SQL (SQL-injection guard)."""
+    db = mocker.Mock()
+    db.query.return_value = []
+    entries = [
+        ("o'brien_group", "sales_db", "orders"),
+    ]
+
+    schema.bootstrap_table_inventory(db, entries, ops_database="ops")
+
+    insert_calls = [
+        call
+        for call in db.execute.call_args_list
+        if "INSERT INTO ops.table_inventory" in call[0][0]
+    ]
+    assert len(insert_calls) == 1
+    executed_sql = insert_calls[0][0][0]
+    assert "'o''brien_group'" in executed_sql

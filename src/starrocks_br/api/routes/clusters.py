@@ -1,17 +1,3 @@
-# Copyright 2025 deep-bi
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -21,17 +7,11 @@ from ...store.models import Cluster, Job, JobStatus, Schedule
 from ..auth import require_api_key
 from ..deps import get_db
 from ..schemas import ClusterCreate, ClusterRead, ClusterUpdate
+from ._cluster_connect import get_cluster_or_404 as _get_cluster_or_404
 
 router = APIRouter(
     prefix="/clusters", tags=["clusters"], dependencies=[Depends(require_api_key)]
 )
-
-
-def _get_cluster_or_404(db: Session, cluster_id: int) -> Cluster:
-    cluster = db.get(Cluster, cluster_id)
-    if cluster is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Cluster not found")
-    return cluster
 
 
 @router.post("", response_model=ClusterRead, status_code=status.HTTP_201_CREATED)

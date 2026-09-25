@@ -1,17 +1,3 @@
-# Copyright 2025 deep-bi
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
 """FastAPI application assembly.
 
 Fails fast (raises before the app is constructed) when required server-side
@@ -26,7 +12,7 @@ from ..jobs.backend import BackendRegistry, set_registry
 from ..jobs.thread_backend import ThreadBackend
 from ..store.crypto import ENCRYPTION_KEY_ENV_VAR
 from .config import API_KEY_ENV_VAR, get_api_key, get_default_backend, get_enabled_backends
-from .routes import clusters, health, jobs, repositories, schedules
+from .routes import clusters, health, inventory_groups, jobs, repositories, schedules
 
 _KNOWN_BACKEND_FACTORIES = {
     "thread": ThreadBackend,
@@ -88,4 +74,5 @@ def create_app(*, check_env: bool = True) -> FastAPI:
     app.include_router(jobs.router)
     app.include_router(schedules.router)
     app.include_router(repositories.router)
+    app.include_router(inventory_groups.router)
     return app

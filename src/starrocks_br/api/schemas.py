@@ -1,17 +1,3 @@
-# Copyright 2025 deep-bi
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
 """Request/response schemas for the API.
 
 Per specs/api-cluster-registry, Cluster response models never include the
@@ -147,3 +133,32 @@ class RepositoryRead(BaseModel):
     broker: str | None
     is_read_only: bool
     error: str | None
+
+
+class InventoryGroupSummary(BaseModel):
+    name: str
+    table_count: int
+
+
+class InventoryMembershipCreate(BaseModel):
+    database: str = Field(min_length=1, max_length=128)
+    table: str = Field(
+        min_length=1, max_length=128, description="Table name, or '*' for all tables in the database"
+    )
+
+
+class InventoryGroupCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=128)
+    tables: list[InventoryMembershipCreate] = Field(min_length=1)
+
+
+class InventoryMembershipRead(BaseModel):
+    database: str
+    table: str
+    created_at: str
+    updated_at: str
+
+
+class InventoryGroupRead(BaseModel):
+    name: str
+    tables: list[InventoryMembershipRead]

@@ -1,17 +1,3 @@
-# Copyright 2025 deep-bi
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
 import threading
 import time
 
@@ -30,6 +16,22 @@ def _create_cluster(api_client) -> int:
     return api_client.post("/clusters", json=CLUSTER_PAYLOAD).json()["id"]
 
 
+class _FakeDB:
+    def close(self):
+        pass
+
+
+def _mock_group_check(monkeypatch, exists=True):
+    """Bypass the synchronous group-existence check for backup_full/incremental submission."""
+    from starrocks_br import inventory_groups
+    from starrocks_br.api.routes import jobs as jobs_module
+
+    monkeypatch.setattr(jobs_module, "connect_or_503", lambda cluster: _FakeDB())
+    monkeypatch.setattr(
+        inventory_groups, "group_exists", lambda db, group, ops_database: exists
+    )
+
+
 def _wait_for_terminal(api_client, job_id, timeout=2.0):
     deadline = time.time() + timeout
     while time.time() < deadline:
@@ -43,6 +45,7 @@ def _wait_for_terminal(api_client, job_id, timeout=2.0):
 def test_submit_backup_full_returns_202_with_job(api_client, monkeypatch):
     from starrocks_br.jobs import handlers
 
+    _mock_group_check(monkeypatch)
     monkeypatch.setitem(
         handlers.JOB_HANDLERS, "backup_full", lambda cluster, params, on_progress=None: {"label": "x"}
     )
@@ -72,6 +75,7 @@ def test_submit_then_poll_to_terminal_state_success(api_client, monkeypatch):
     def handler(cluster, params, on_progress=None):
         return {"label": "done"}
 
+    _mock_group_check(monkeypatch)
     monkeypatch.setitem(handlers.JOB_HANDLERS, "backup_full", handler)
 
     cluster_id = _create_cluster(api_client)
@@ -94,6 +98,7 @@ def test_poll_reports_progress_mid_run_then_terminal(api_client, monkeypatch):
         release.wait(timeout=2)
         return {}
 
+    _mock_group_check(monkeypatch)
     monkeypatch.setitem(handlers.JOB_HANDLERS, "backup_full", handler)
 
     cluster_id = _create_cluster(api_client)
@@ -127,6 +132,7 @@ def test_no_progress_phase_reports_running_without_percentage(api_client, monkey
         release.wait(timeout=2)
         return {}
 
+    _mock_group_check(monkeypatch)
     monkeypatch.setitem(handlers.JOB_HANDLERS, "backup_full", handler)
 
     cluster_id = _create_cluster(api_client)
@@ -155,6 +161,7 @@ def test_submit_job_failure_is_reported(api_client, monkeypatch):
     def failing_handler(cluster, params, on_progress=None):
         raise RuntimeError("connection refused")
 
+    _mock_group_check(monkeypatch)
     monkeypatch.setitem(handlers.JOB_HANDLERS, "backup_full", failing_handler)
 
     cluster_id = _create_cluster(api_client)
@@ -169,6 +176,7 @@ def test_submit_job_failure_is_reported(api_client, monkeypatch):
 def test_backend_override_is_honored(api_client, monkeypatch):
     from starrocks_br.jobs import handlers
 
+    _mock_group_check(monkeypatch)
     monkeypatch.setitem(
         handlers.JOB_HANDLERS, "backup_full", lambda cluster, params, on_progress=None: {}
     )
@@ -182,7 +190,8 @@ def test_backend_override_is_honored(api_client, monkeypatch):
     assert response.json()["backend"] == "thread"
 
 
-def test_disabled_backend_is_rejected_with_422(api_client):
+def test_disabled_backend_is_rejected_with_422(api_client, monkeypatch):
+    _mock_group_check(monkeypatch)
     cluster_id = _create_cluster(api_client)
 
     response = api_client.post(
@@ -190,3 +199,32 @@ def test_disabled_backend_is_rejected_with_422(api_client):
     )
 
     assert response.status_code == 422
+
+
+def test_submit_backup_full_unknown_group_is_404(api_client, monkeypatch):
+    _mock_group_check(monkeypatch, exists=False)
+    cluster_id = _create_cluster(api_client)
+
+    response = api_client.post(f"/clusters/{cluster_id}/backups/full", json={"group": "no_such_group"})
+
+    assert response.status_code == 404
+
+
+def test_submit_backup_incremental_unknown_group_is_404(api_client, monkeypatch):
+    _mock_group_check(monkeypatch, exists=False)
+    cluster_id = _create_cluster(api_client)
+
+    response = api_client.post(
+        f"/clusters/{cluster_id}/backups/incremental", json={"group": "no_such_group"}
+    )
+
+    assert response.status_code == 404
+
+
+def test_submit_backup_full_missing_group_is_404(api_client, monkeypatch):
+    _mock_group_check(monkeypatch, exists=False)
+    cluster_id = _create_cluster(api_client)
+
+    response = api_client.post(f"/clusters/{cluster_id}/backups/full", json={})
+
+    assert response.status_code == 404

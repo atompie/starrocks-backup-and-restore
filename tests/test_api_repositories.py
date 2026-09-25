@@ -1,17 +1,3 @@
-# Copyright 2025 deep-bi
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
 from starrocks_br.repository import RepositoryNotFoundError
 
 CLUSTER_PAYLOAD = {
@@ -54,9 +40,9 @@ class FakeDB:
 
 
 def _patch_connect(monkeypatch, fake_db):
-    from starrocks_br.api.routes import repositories as repositories_module
+    from starrocks_br.api.routes import _cluster_connect
 
-    monkeypatch.setattr(repositories_module, "_connect", lambda cluster: fake_db)
+    monkeypatch.setattr(_cluster_connect, "connect", lambda cluster: fake_db)
 
 
 def test_repositories_router_registered_alongside_others(api_client):

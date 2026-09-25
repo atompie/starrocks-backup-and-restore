@@ -1,18 +1,4 @@
-# Copyright 2025 deep-bi
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
-from . import logger
+from . import inventory_groups, logger, utils
 
 
 def initialize_ops_schema(
@@ -106,7 +92,7 @@ def bootstrap_table_inventory(
     unique_databases = {database for _, database, _ in entries}
 
     for database_name in unique_databases:
-        result = db.query(f"SHOW DATABASES LIKE '{database_name}'")
+        result = db.query(f"SHOW DATABASES LIKE {utils.quote_value(database_name)}")
         if not result:
             logger.warning(
                 f"Database '{database_name}' does not exist. "
@@ -114,12 +100,11 @@ def bootstrap_table_inventory(
             )
 
     for group, database, table in entries:
-        sql = f"""
-            INSERT INTO {ops_database}.table_inventory
-            (inventory_group, database_name, table_name)
-            VALUES ('{group}', '{database}', '{table}')
-        """
-        db.execute(sql)
+        try:
+            inventory_groups.add_membership(db, group, database, table, ops_database=ops_database)
+        except inventory_groups.InventoryMembershipConflictError:
+            # Re-running init only adds new rows - an existing entry is a no-op.
+            continue
 
 
 def get_table_inventory_schema(ops_database: str = "ops") -> str:

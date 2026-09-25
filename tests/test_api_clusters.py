@@ -1,17 +1,3 @@
-# Copyright 2025 deep-bi
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
 CLUSTER_PAYLOAD = {
     "name": "prod-eu",
     "host": "sr.internal",
@@ -98,6 +84,8 @@ def test_delete_idle_cluster_succeeds(api_client):
 
 
 def test_delete_cluster_blocked_by_active_job(api_client, monkeypatch):
+    from starrocks_br import inventory_groups
+    from starrocks_br.api.routes import jobs as jobs_module
     from starrocks_br.jobs import handlers
 
     def slow_handler(cluster, params, on_progress=None):
@@ -106,7 +94,13 @@ def test_delete_cluster_blocked_by_active_job(api_client, monkeypatch):
         time.sleep(0.3)
         return {}
 
+    class _FakeDB:
+        def close(self):
+            pass
+
     monkeypatch.setitem(handlers.JOB_HANDLERS, "backup_full", slow_handler)
+    monkeypatch.setattr(jobs_module, "connect_or_503", lambda cluster: _FakeDB())
+    monkeypatch.setattr(inventory_groups, "group_exists", lambda db, group, ops_database: True)
 
     created = api_client.post("/clusters", json=CLUSTER_PAYLOAD).json()
     api_client.post(f"/clusters/{created['id']}/backups/full", json={"group": "g1"})

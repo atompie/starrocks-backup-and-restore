@@ -76,7 +76,9 @@ def _ensure_ready(database: db_module.StarRocksDB, cluster: Cluster) -> None:
 
 
 def run_backup_full(cluster: Cluster, params: dict[str, Any], on_progress: OnProgress = None) -> dict:
-    group = params["group"]
+    group = params.get("group")
+    if not group:
+        raise ValueError("'group' is required for backup_full")
     name = params.get("name")
 
     database = _connect(cluster)
@@ -136,7 +138,9 @@ def run_backup_full(cluster: Cluster, params: dict[str, Any], on_progress: OnPro
 def run_backup_incremental(
     cluster: Cluster, params: dict[str, Any], on_progress: OnProgress = None
 ) -> dict:
-    group = params["group"]
+    group = params.get("group")
+    if not group:
+        raise ValueError("'group' is required for backup_incremental")
     name = params.get("name")
     baseline_backup = params.get("baseline_backup")
 
