@@ -22,6 +22,19 @@ class ClusterCreate(BaseModel):
     default_backend: str = Field(default="thread", max_length=64)
 
 
+class ClusterVerifyRequest(BaseModel):
+    host: str = Field(min_length=1, max_length=255)
+    port: int = Field(default=9030, gt=0, le=65535)
+    user: str = Field(min_length=1, max_length=128)
+    password: str = Field(default="", description="StarRocks allows an empty password (e.g. local root).")
+    database: str | None = Field(default=None, min_length=1, max_length=128)
+
+
+class ClusterVerifyResponse(BaseModel):
+    success: bool
+    message: str
+
+
 class ClusterUpdate(BaseModel):
     host: str | None = Field(default=None, min_length=1, max_length=255)
     port: int | None = Field(default=None, gt=0, le=65535)

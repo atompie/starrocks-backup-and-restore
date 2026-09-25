@@ -26,8 +26,9 @@ class StarRocksDB:
         port: int,
         user: str,
         password: str,
-        database: str,
+        database: str | None,
         tls_config: dict[str, Any] | None = None,
+        connect_timeout: int | None = None,
     ):
         """Initialize database connection.
 
@@ -36,7 +37,8 @@ class StarRocksDB:
             port: Database port
             user: Database user
             password: Database password
-            database: Default database name
+            database: Default database name, or None to connect without selecting one
+            connect_timeout: Optional connection timeout in seconds
         """
         self.host = host
         self.port = port
@@ -45,6 +47,7 @@ class StarRocksDB:
         self.database = database
         self._connection = None
         self.tls_config = tls_config or {}
+        self.connect_timeout = connect_timeout
         self._timezone: str | None = None
 
     def connect(self) -> None:
@@ -56,6 +59,9 @@ class StarRocksDB:
             "password": self.password,
             "database": self.database,
         }
+
+        if self.connect_timeout is not None:
+            conn_args["connect_timeout"] = self.connect_timeout
 
         if self.tls_config.get("enabled"):
             ssl_args: dict[str, Any] = {

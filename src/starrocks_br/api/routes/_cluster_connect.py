@@ -12,6 +12,9 @@ from sqlalchemy.orm import Session
 from ... import db as db_module
 from ...store.crypto import decrypt_password
 from ...store.models import Cluster
+from ..schemas import ClusterVerifyResponse
+
+VERIFY_CONNECT_TIMEOUT_SECONDS = 5
 
 
 def get_cluster_or_404(db: Session, cluster_id: int) -> Cluster:
@@ -46,3 +49,40 @@ def connect_or_503(cluster: Cluster) -> db_module.StarRocksDB:
             detail=f"Could not connect to cluster '{cluster.name}': {e}",
         ) from e
     return database
+
+
+def verify_connection(
+    host: str,
+    port: int,
+    user: str,
+    password: str,
+    database: str | None,
+    *,
+    timeout: int = VERIFY_CONNECT_TIMEOUT_SECONDS,
+) -> ClusterVerifyResponse:
+    """Attempt a real connection and report success/failure without raising.
+
+    Reused by both `POST /clusters/verify` and `GET /cluster/{id}/verify` so
+    the two endpoints share one connection-testing code path. Unlike
+    `connect_or_503`, a failed connection here is an expected outcome, not
+    an error - it always returns a `ClusterVerifyResponse`, never a 503.
+    """
+    connection = db_module.StarRocksDB(
+        host=host,
+        port=port,
+        user=user,
+        password=password,
+        database=database,
+        connect_timeout=timeout,
+    )
+    try:
+        connection.connect()
+    except Exception as e:
+        message = str(e)
+        if password and password in message:
+            message = message.replace(password, "***")
+        return ClusterVerifyResponse(success=False, message=f"Connection failed: {message}")
+    else:
+        return ClusterVerifyResponse(success=True, message="Connection successful")
+    finally:
+        connection.close()
