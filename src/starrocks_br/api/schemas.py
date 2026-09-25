@@ -7,7 +7,7 @@ password or password_encrypted fields - only ClusterCreate/ClusterUpdate
 
 import datetime
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class ClusterCreate(BaseModel):
@@ -49,19 +49,59 @@ class ClusterRead(BaseModel):
     updated_at: datetime.datetime
 
 
-class JobSubmitRequest(BaseModel):
-    group: str | None = None
+class BackupFullRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    group: str = Field(min_length=1, max_length=128)
+    name: str | None = None
+    backend: str | None = None
+
+
+class BackupIncrementalRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    group: str = Field(min_length=1, max_length=128)
     name: str | None = None
     baseline_backup: str | None = None
-    target_label: str | None = None
+    backend: str | None = None
+
+
+class RestoreRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    target_label: str = Field(min_length=1)
+    group: str | None = None
     table: str | None = None
     rename_suffix: str = "_restored"
-    keep_last: int | None = None
+    backend: str | None = None
+
+    @model_validator(mode="after")
+    def _check_group_and_table_not_both_set(self) -> "RestoreRequest":
+        if self.group and self.table:
+            raise ValueError("Cannot specify both 'group' and 'table'")
+        return self
+
+
+class PruneRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    group: str | None = None
+    keep_last: int | None = Field(default=None, gt=0)
     older_than: str | None = None
     snapshot: str | None = None
     snapshots: str | None = None
     dry_run: bool = False
     backend: str | None = None
+
+    @model_validator(mode="after")
+    def _check_exactly_one_strategy(self) -> "PruneRequest":
+        specified = [v for v in (self.keep_last, self.older_than, self.snapshot, self.snapshots)
+                     if v is not None]
+        if len(specified) != 1:
+            raise ValueError(
+                "Exactly one of 'keep_last', 'older_than', 'snapshot', 'snapshots' must be provided"
+            )
+        return self
 
 
 class JobRead(BaseModel):

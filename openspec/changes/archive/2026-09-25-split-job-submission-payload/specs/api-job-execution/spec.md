@@ -1,10 +1,4 @@
-# api-job-execution Specification
-
-## Purpose
-
-Lets clients trigger backup, restore, and prune operations against a registered cluster as asynchronous jobs, observe their progress without blocking on the HTTP request, and lets operators choose (per job or by default) which execution backend runs the work so the same API contract can be served by an in-process thread today and by distributed workers later.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Submitting an operation returns immediately with a job
 The system SHALL accept requests to start a full backup, incremental backup, restore, or prune
@@ -37,6 +31,8 @@ creating the job, and SHALL respond with HTTP 404 without creating a job if it d
   group specified, or an empty one
 - **THEN** the system responds with HTTP 422 before any job is created, rather than accepting the
   request and failing asynchronously
+
+## ADDED Requirements
 
 ### Requirement: Each job-submission endpoint validates a request schema scoped to its own fields
 The system SHALL reject a job-submission request that includes a field not used by that specific
@@ -75,51 +71,3 @@ The system SHALL reject a prune request that specifies zero, or more than one, o
 - **WHEN** an authenticated client submits a prune request specifying more than one of
   `keep_last`, `older_than`, `snapshot`, `snapshots`
 - **THEN** the system responds with HTTP 422 and does not create a job
-
-### Requirement: Job status and progress can be polled
-The system SHALL expose an endpoint to retrieve a job's current status (PENDING, RUNNING, SUCCESS, FAILED), timestamps (created, started, finished), and, when the underlying StarRocks operation reports a numeric progress indicator, a progress value reflecting the most recently observed value.
-
-#### Scenario: Progress is available mid-operation
-- **WHEN** a client polls a job that is RUNNING and StarRocks currently reports a numeric progress percentage for that phase
-- **THEN** the system returns status RUNNING together with the most recently observed progress percentage
-
-#### Scenario: Progress is unavailable for a phase
-- **WHEN** a client polls a job that is RUNNING during a phase where StarRocks reports no numeric progress
-- **THEN** the system returns status RUNNING with started_at set and no progress percentage, rather than an error
-
-#### Scenario: Completed job reports final state
-- **WHEN** a client polls a job that has finished
-- **THEN** the system returns status SUCCESS or FAILED, with started_at and finished_at both set, and an error message when FAILED
-
-#### Scenario: Polling an unknown job
-- **WHEN** a client polls a job id that does not exist
-- **THEN** the system responds with HTTP 404
-
-### Requirement: Job execution backend is selectable with a configured default
-The system SHALL execute each submitted job using one of a set of registered execution backends, SHALL use a configured default backend when a request does not specify one, and SHALL allow a request to override the backend for that job as long as the requested backend is enabled on the server.
-
-#### Scenario: Default backend is used when none is specified
-- **WHEN** an authenticated client submits a job without specifying a backend
-- **THEN** the system executes the job using the server's configured default backend
-
-#### Scenario: Client overrides the backend for one job
-- **WHEN** an authenticated client submits a job specifying an execution backend that is enabled on the server
-- **THEN** the system executes that job using the specified backend instead of the default
-
-#### Scenario: Client requests a disabled backend
-- **WHEN** an authenticated client submits a job specifying an execution backend that is not enabled on the server
-- **THEN** the system rejects the request with a 422 validation error and does not create a job
-
-### Requirement: Multiple execution backends can be active simultaneously
-The system SHALL support more than one execution backend being enabled at the same time on a single server, with independent jobs concurrently executing on different backends.
-
-#### Scenario: Two jobs on two backends run concurrently
-- **WHEN** the server has two execution backends enabled and two jobs are submitted, each specifying a different enabled backend
-- **THEN** both jobs execute and report status/progress independently, regardless of which backend each was assigned to
-
-### Requirement: Job execution reuses existing backup/restore/prune behavior unchanged
-The system SHALL produce the same StarRocks-side outcome (backup labels, ops schema records, snapshot behavior) for a job submitted via the API as the equivalent existing CLI command produces, for any execution backend.
-
-#### Scenario: API-submitted full backup is indistinguishable from a CLI backup
-- **WHEN** a full backup is submitted via the API for a group that would otherwise be backed up via the CLI's `backup full` command
-- **THEN** the resulting snapshot label, `ops.backup_history` record, and repository snapshot match what the CLI command would have produced for the same inputs

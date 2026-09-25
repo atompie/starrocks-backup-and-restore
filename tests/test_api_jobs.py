@@ -221,10 +221,75 @@ def test_submit_backup_incremental_unknown_group_is_404(api_client, monkeypatch)
     assert response.status_code == 404
 
 
-def test_submit_backup_full_missing_group_is_404(api_client, monkeypatch):
+def test_submit_backup_full_missing_group_is_422(api_client, monkeypatch):
     _mock_group_check(monkeypatch, exists=False)
     cluster_id = _create_cluster(api_client)
 
     response = api_client.post(f"/clusters/{cluster_id}/backups/full", json={})
 
-    assert response.status_code == 404
+    assert response.status_code == 422
+
+
+def test_submit_backup_full_rejects_foreign_field_is_422(api_client, monkeypatch):
+    _mock_group_check(monkeypatch)
+    cluster_id = _create_cluster(api_client)
+
+    response = api_client.post(
+        f"/clusters/{cluster_id}/backups/full", json={"group": "g1", "keep_last": 5}
+    )
+
+    assert response.status_code == 422
+
+
+def test_submit_restore_both_group_and_table_is_422(api_client):
+    cluster_id = _create_cluster(api_client)
+
+    response = api_client.post(
+        f"/clusters/{cluster_id}/restores",
+        json={"target_label": "x", "group": "g1", "table": "t1"},
+    )
+
+    assert response.status_code == 422
+
+
+def test_submit_restore_neither_group_nor_table_succeeds(api_client, monkeypatch):
+    from starrocks_br.jobs import handlers
+
+    monkeypatch.setitem(
+        handlers.JOB_HANDLERS, "restore", lambda cluster, params, on_progress=None: {}
+    )
+
+    cluster_id = _create_cluster(api_client)
+    response = api_client.post(
+        f"/clusters/{cluster_id}/restores", json={"target_label": "x"}
+    )
+
+    assert response.status_code == 202
+
+
+def test_submit_prune_no_strategy_is_422(api_client):
+    cluster_id = _create_cluster(api_client)
+
+    response = api_client.post(f"/clusters/{cluster_id}/prunes", json={})
+
+    assert response.status_code == 422
+
+
+def test_submit_prune_two_strategies_is_422(api_client):
+    cluster_id = _create_cluster(api_client)
+
+    response = api_client.post(
+        f"/clusters/{cluster_id}/prunes", json={"keep_last": 3, "older_than": "7d"}
+    )
+
+    assert response.status_code == 422
+
+
+def test_submit_prune_extra_field_is_422(api_client):
+    cluster_id = _create_cluster(api_client)
+
+    response = api_client.post(
+        f"/clusters/{cluster_id}/prunes", json={"snapshot": "x", "table": "t"}
+    )
+
+    assert response.status_code == 422

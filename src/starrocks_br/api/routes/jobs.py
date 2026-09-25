@@ -1,6 +1,7 @@
 import json
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from ... import inventory_groups
@@ -8,7 +9,7 @@ from ...jobs.backend import UnknownBackendError, get_registry
 from ...store.models import Cluster, Job
 from ..auth import require_api_key
 from ..deps import get_db
-from ..schemas import JobRead, JobSubmitRequest
+from ..schemas import BackupFullRequest, BackupIncrementalRequest, JobRead, PruneRequest, RestoreRequest
 from ._cluster_connect import connect_or_503, get_cluster_or_404 as _get_cluster_or_404
 
 router = APIRouter(tags=["jobs"], dependencies=[Depends(require_api_key)])
@@ -51,29 +52,27 @@ def submit_job(
 
 
 def _submit(
-    db: Session, cluster_id: int, job_type: str, payload: JobSubmitRequest
+    db: Session, cluster_id: int, job_type: str, payload: BaseModel
 ) -> Job:
     cluster = _get_cluster_or_404(db, cluster_id)
-    params = payload.model_dump(exclude={"backend"}, exclude_none=True)
+    params = payload.model_dump(exclude={"backend"})
     return submit_job(db, cluster, job_type, params, payload.backend)
 
 
 def _submit_backup_job(
-    db: Session, cluster_id: int, job_type: str, payload: JobSubmitRequest
+    db: Session,
+    cluster_id: int,
+    job_type: str,
+    payload: BackupFullRequest | BackupIncrementalRequest,
 ) -> Job:
-    """Submit a backup_full/backup_incremental job, failing fast on a missing group.
+    """Submit a backup_full/backup_incremental job, failing fast on an unknown group.
 
     Per specs/api-job-execution "Submitting an operation returns immediately
-    with a job", a missing or unknown `group` is rejected synchronously with
-    404 before a job is ever created, instead of letting the job fail later
-    asynchronously.
+    with a job", a missing group is rejected with 422 by Pydantic before this
+    function runs; an unknown group is rejected synchronously with 404 before
+    a job is ever created, instead of letting the job fail later asynchronously.
     """
     cluster = _get_cluster_or_404(db, cluster_id)
-    if not payload.group:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="'group' is required",
-        )
 
     database = connect_or_503(cluster)
     try:
@@ -85,7 +84,7 @@ def _submit_backup_job(
     finally:
         database.close()
 
-    params = payload.model_dump(exclude={"backend"}, exclude_none=True)
+    params = payload.model_dump(exclude={"backend"})
     return submit_job(db, cluster, job_type, params, payload.backend)
 
 
@@ -95,7 +94,7 @@ def _submit_backup_job(
     status_code=status.HTTP_202_ACCEPTED,
 )
 def submit_backup_full(
-    cluster_id: int, payload: JobSubmitRequest, db: Session = Depends(get_db)
+    cluster_id: int, payload: BackupFullRequest, db: Session = Depends(get_db)
 ) -> Job:
     return _submit_backup_job(db, cluster_id, "backup_full", payload)
 
@@ -106,7 +105,7 @@ def submit_backup_full(
     status_code=status.HTTP_202_ACCEPTED,
 )
 def submit_backup_incremental(
-    cluster_id: int, payload: JobSubmitRequest, db: Session = Depends(get_db)
+    cluster_id: int, payload: BackupIncrementalRequest, db: Session = Depends(get_db)
 ) -> Job:
     return _submit_backup_job(db, cluster_id, "backup_incremental", payload)
 
@@ -117,7 +116,7 @@ def submit_backup_incremental(
     status_code=status.HTTP_202_ACCEPTED,
 )
 def submit_restore(
-    cluster_id: int, payload: JobSubmitRequest, db: Session = Depends(get_db)
+    cluster_id: int, payload: RestoreRequest, db: Session = Depends(get_db)
 ) -> Job:
     return _submit(db, cluster_id, "restore", payload)
 
@@ -128,7 +127,7 @@ def submit_restore(
     status_code=status.HTTP_202_ACCEPTED,
 )
 def submit_prune(
-    cluster_id: int, payload: JobSubmitRequest, db: Session = Depends(get_db)
+    cluster_id: int, payload: PruneRequest, db: Session = Depends(get_db)
 ) -> Job:
     return _submit(db, cluster_id, "prune", payload)
 
