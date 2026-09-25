@@ -89,7 +89,7 @@ def _submit_backup_job(
 
 
 @router.post(
-    "/clusters/{cluster_id}/backups/full",
+    "/cluster/{cluster_id}/backups/full",
     response_model=JobRead,
     status_code=status.HTTP_202_ACCEPTED,
 )
@@ -100,7 +100,7 @@ def submit_backup_full(
 
 
 @router.post(
-    "/clusters/{cluster_id}/backups/incremental",
+    "/cluster/{cluster_id}/backups/incremental",
     response_model=JobRead,
     status_code=status.HTTP_202_ACCEPTED,
 )
@@ -111,7 +111,7 @@ def submit_backup_incremental(
 
 
 @router.post(
-    "/clusters/{cluster_id}/restores",
+    "/cluster/{cluster_id}/restores",
     response_model=JobRead,
     status_code=status.HTTP_202_ACCEPTED,
 )
@@ -122,7 +122,7 @@ def submit_restore(
 
 
 @router.post(
-    "/clusters/{cluster_id}/prunes",
+    "/cluster/{cluster_id}/prunes",
     response_model=JobRead,
     status_code=status.HTTP_202_ACCEPTED,
 )
@@ -132,7 +132,7 @@ def submit_prune(
     return _submit(db, cluster_id, "prune", payload)
 
 
-@router.get("/jobs/{job_id}", response_model=JobRead)
+@router.get("/job/{job_id}", response_model=JobRead)
 def get_job(job_id: int, db: Session = Depends(get_db)) -> Job:
     job = db.get(Job, job_id)
     if job is None:

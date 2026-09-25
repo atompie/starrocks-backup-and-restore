@@ -27,14 +27,14 @@ CLUSTER_PAYLOAD = {
 
 
 def _create_cluster(api_client) -> int:
-    return api_client.post("/clusters", json=CLUSTER_PAYLOAD).json()["id"]
+    return api_client.post("/cluster", json=CLUSTER_PAYLOAD).json()["id"]
 
 
 def test_create_schedule_computes_next_run_at(api_client):
     cluster_id = _create_cluster(api_client)
 
     response = api_client.post(
-        "/schedules",
+        "/schedule",
         json={
             "cluster_id": cluster_id,
             "job_type": "backup_full",
@@ -51,7 +51,7 @@ def test_create_schedule_computes_next_run_at(api_client):
 
 def test_create_schedule_unknown_cluster_404(api_client):
     response = api_client.post(
-        "/schedules",
+        "/schedule",
         json={"cluster_id": 999, "job_type": "backup_full", "group_name": "g1", "cadence": "0 1 * * *"},
     )
     assert response.status_code == 404
@@ -61,7 +61,7 @@ def test_create_schedule_invalid_cadence_422(api_client):
     cluster_id = _create_cluster(api_client)
 
     response = api_client.post(
-        "/schedules",
+        "/schedule",
         json={
             "cluster_id": cluster_id,
             "job_type": "backup_full",
@@ -81,7 +81,7 @@ def test_disable_schedule_excludes_it_from_run_due(api_client, monkeypatch):
 
     cluster_id = _create_cluster(api_client)
     created = api_client.post(
-        "/schedules",
+        "/schedule",
         json={
             "cluster_id": cluster_id,
             "job_type": "backup_full",
@@ -90,7 +90,7 @@ def test_disable_schedule_excludes_it_from_run_due(api_client, monkeypatch):
         },
     ).json()
 
-    api_client.patch(f"/schedules/{created['id']}", json={"enabled": False})
+    api_client.patch(f"/schedule/{created['id']}", json={"enabled": False})
 
     response = api_client.post("/schedules/run-due")
 
@@ -100,7 +100,7 @@ def test_disable_schedule_excludes_it_from_run_due(api_client, monkeypatch):
 def test_delete_schedule_removes_it(api_client):
     cluster_id = _create_cluster(api_client)
     created = api_client.post(
-        "/schedules",
+        "/schedule",
         json={
             "cluster_id": cluster_id,
             "job_type": "backup_full",
@@ -109,10 +109,10 @@ def test_delete_schedule_removes_it(api_client):
         },
     ).json()
 
-    response = api_client.delete(f"/schedules/{created['id']}")
+    response = api_client.delete(f"/schedule/{created['id']}")
 
     assert response.status_code == 204
-    assert api_client.get(f"/schedules/{created['id']}").status_code == 404
+    assert api_client.get(f"/schedule/{created['id']}").status_code == 404
 
 
 def test_run_due_triggers_a_due_schedule(api_client, monkeypatch):
@@ -126,7 +126,7 @@ def test_run_due_triggers_a_due_schedule(api_client, monkeypatch):
 
     cluster_id = _create_cluster(api_client)
     created = api_client.post(
-        "/schedules",
+        "/schedule",
         json={
             "cluster_id": cluster_id,
             "job_type": "backup_full",
@@ -148,7 +148,7 @@ def test_run_due_triggers_a_due_schedule(api_client, monkeypatch):
     assert body["triggered_count"] == 1
     assert len(body["triggered_job_ids"]) == 1
 
-    updated = api_client.get(f"/schedules/{created['id']}").json()
+    updated = api_client.get(f"/schedule/{created['id']}").json()
     assert updated["last_run_job_id"] == body["triggered_job_ids"][0]
     assert updated["next_run_at"] > forced_past.isoformat()
 
@@ -156,7 +156,7 @@ def test_run_due_triggers_a_due_schedule(api_client, monkeypatch):
 def test_run_due_skips_not_yet_due_schedule(api_client):
     cluster_id = _create_cluster(api_client)
     api_client.post(
-        "/schedules",
+        "/schedule",
         json={
             "cluster_id": cluster_id,
             "job_type": "backup_full",
@@ -188,7 +188,7 @@ def test_run_due_is_idempotent_under_concurrent_calls(api_client, monkeypatch):
 
     cluster_id = _create_cluster(api_client)
     created = api_client.post(
-        "/schedules",
+        "/schedule",
         json={
             "cluster_id": cluster_id,
             "job_type": "backup_full",

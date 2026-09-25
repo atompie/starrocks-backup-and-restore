@@ -9,12 +9,15 @@ from ..deps import get_db
 from ..schemas import ClusterCreate, ClusterRead, ClusterUpdate
 from ._cluster_connect import get_cluster_or_404 as _get_cluster_or_404
 
-router = APIRouter(
+cluster_router = APIRouter(
+    prefix="/cluster", tags=["clusters"], dependencies=[Depends(require_api_key)]
+)
+clusters_router = APIRouter(
     prefix="/clusters", tags=["clusters"], dependencies=[Depends(require_api_key)]
 )
 
 
-@router.post("", response_model=ClusterRead, status_code=status.HTTP_201_CREATED)
+@cluster_router.post("", response_model=ClusterRead, status_code=status.HTTP_201_CREATED)
 def create_cluster(payload: ClusterCreate, db: Session = Depends(get_db)) -> Cluster:
     cluster = Cluster(
         name=payload.name,
@@ -40,17 +43,17 @@ def create_cluster(payload: ClusterCreate, db: Session = Depends(get_db)) -> Clu
     return cluster
 
 
-@router.get("", response_model=list[ClusterRead])
+@clusters_router.get("", response_model=list[ClusterRead])
 def list_clusters(db: Session = Depends(get_db)) -> list[Cluster]:
     return list(db.query(Cluster).order_by(Cluster.id).all())
 
 
-@router.get("/{cluster_id}", response_model=ClusterRead)
+@cluster_router.get("/{cluster_id}", response_model=ClusterRead)
 def get_cluster(cluster_id: int, db: Session = Depends(get_db)) -> Cluster:
     return _get_cluster_or_404(db, cluster_id)
 
 
-@router.patch("/{cluster_id}", response_model=ClusterRead)
+@cluster_router.patch("/{cluster_id}", response_model=ClusterRead)
 def update_cluster(
     cluster_id: int, payload: ClusterUpdate, db: Session = Depends(get_db)
 ) -> Cluster:
@@ -68,7 +71,7 @@ def update_cluster(
     return cluster
 
 
-@router.delete("/{cluster_id}", status_code=status.HTTP_204_NO_CONTENT)
+@cluster_router.delete("/{cluster_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_cluster(cluster_id: int, db: Session = Depends(get_db)) -> None:
     cluster = _get_cluster_or_404(db, cluster_id)
 

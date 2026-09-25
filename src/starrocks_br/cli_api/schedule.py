@@ -44,7 +44,7 @@ def schedule_add(api_url, api_key, cluster_id, job_type, group_name, cadence, ba
         response = request(
             client,
             "POST",
-            "/schedules",
+            "/schedule",
             json={
                 "cluster_id": cluster_id,
                 "job_type": job_type,
@@ -78,7 +78,7 @@ def schedule_list(api_url, api_key):
 def schedule_remove(api_url, api_key, schedule_id):
     """Delete a schedule by id."""
     with make_client(api_url, api_key) as client:
-        request(client, "DELETE", f"/schedules/{schedule_id}")
+        request(client, "DELETE", f"/schedule/{schedule_id}")
     logger.success(f"Removed schedule {schedule_id}")
 
 

@@ -16,7 +16,7 @@ CLUSTER_PAYLOAD = {
 
 
 def _create_cluster(api_client) -> int:
-    return api_client.post("/clusters", json=CLUSTER_PAYLOAD).json()["id"]
+    return api_client.post("/cluster", json=CLUSTER_PAYLOAD).json()["id"]
 
 
 class FakeDB:
@@ -54,7 +54,7 @@ def test_list_inventory_groups_success(api_client, monkeypatch):
     )
 
     cluster_id = _create_cluster(api_client)
-    response = api_client.get(f"/clusters/{cluster_id}/inventory-groups")
+    response = api_client.get(f"/cluster/{cluster_id}/inventory-groups")
 
     assert response.status_code == 200
     assert response.json() == [{"name": "prod", "table_count": 2}]
@@ -78,7 +78,7 @@ def test_create_inventory_group_success(api_client, monkeypatch):
 
     cluster_id = _create_cluster(api_client)
     response = api_client.post(
-        f"/clusters/{cluster_id}/inventory-groups",
+        f"/cluster/{cluster_id}/inventory-groups",
         json={"name": "prod", "tables": [{"database": "sales_db", "table": "*"}]},
     )
 
@@ -99,7 +99,7 @@ def test_create_inventory_group_duplicate_is_409(api_client, monkeypatch):
 
     cluster_id = _create_cluster(api_client)
     response = api_client.post(
-        f"/clusters/{cluster_id}/inventory-groups",
+        f"/cluster/{cluster_id}/inventory-groups",
         json={"name": "prod", "tables": [{"database": "sales_db", "table": "*"}]},
     )
 
@@ -109,7 +109,7 @@ def test_create_inventory_group_duplicate_is_409(api_client, monkeypatch):
 def test_create_inventory_group_requires_at_least_one_table(api_client):
     cluster_id = _create_cluster(api_client)
     response = api_client.post(
-        f"/clusters/{cluster_id}/inventory-groups",
+        f"/cluster/{cluster_id}/inventory-groups",
         json={"name": "prod", "tables": []},
     )
 
@@ -130,7 +130,7 @@ def test_get_inventory_group_success(api_client, monkeypatch):
     )
 
     cluster_id = _create_cluster(api_client)
-    response = api_client.get(f"/clusters/{cluster_id}/inventory-groups/prod")
+    response = api_client.get(f"/cluster/{cluster_id}/inventory-groups/prod")
 
     assert response.status_code == 200
     assert response.json()["name"] == "prod"
@@ -145,7 +145,7 @@ def test_get_unknown_inventory_group_is_404(api_client, monkeypatch):
     monkeypatch.setattr(inventory_groups_module, "get_group", lambda db, name, ops_database: [])
 
     cluster_id = _create_cluster(api_client)
-    response = api_client.get(f"/clusters/{cluster_id}/inventory-groups/unknown")
+    response = api_client.get(f"/cluster/{cluster_id}/inventory-groups/unknown")
 
     assert response.status_code == 404
 
@@ -174,7 +174,7 @@ def test_add_table_to_group_success(api_client, monkeypatch):
 
     cluster_id = _create_cluster(api_client)
     response = api_client.post(
-        f"/clusters/{cluster_id}/inventory-groups/prod/tables",
+        f"/cluster/{cluster_id}/inventory-groups/prod/tables",
         json={"database": "sales_db", "table": "orders"},
     )
 
@@ -200,7 +200,7 @@ def test_add_duplicate_table_to_group_is_409(api_client, monkeypatch):
 
     cluster_id = _create_cluster(api_client)
     response = api_client.post(
-        f"/clusters/{cluster_id}/inventory-groups/prod/tables",
+        f"/cluster/{cluster_id}/inventory-groups/prod/tables",
         json={"database": "sales_db", "table": "orders"},
     )
 
@@ -220,7 +220,7 @@ def test_remove_table_from_group_success(api_client, monkeypatch):
     )
 
     cluster_id = _create_cluster(api_client)
-    response = api_client.delete(f"/clusters/{cluster_id}/inventory-groups/prod/tables/sales_db/orders")
+    response = api_client.delete(f"/cluster/{cluster_id}/inventory-groups/prod/tables/sales_db/orders")
 
     assert response.status_code == 204
     assert removed == [("prod", "sales_db", "orders")]
@@ -238,7 +238,7 @@ def test_remove_nonexistent_table_from_group_is_404(api_client, monkeypatch):
     monkeypatch.setattr(inventory_groups_module, "remove_membership", _raise_not_found)
 
     cluster_id = _create_cluster(api_client)
-    response = api_client.delete(f"/clusters/{cluster_id}/inventory-groups/prod/tables/sales_db/orders")
+    response = api_client.delete(f"/cluster/{cluster_id}/inventory-groups/prod/tables/sales_db/orders")
 
     assert response.status_code == 404
 
@@ -256,7 +256,7 @@ def test_delete_inventory_group_success(api_client, monkeypatch):
     )
 
     cluster_id = _create_cluster(api_client)
-    response = api_client.delete(f"/clusters/{cluster_id}/inventory-groups/prod")
+    response = api_client.delete(f"/cluster/{cluster_id}/inventory-groups/prod")
 
     assert response.status_code == 204
     assert deleted == ["prod"]
@@ -274,13 +274,13 @@ def test_delete_nonexistent_inventory_group_is_404(api_client, monkeypatch):
     monkeypatch.setattr(inventory_groups_module, "delete_group", _raise_not_found)
 
     cluster_id = _create_cluster(api_client)
-    response = api_client.delete(f"/clusters/{cluster_id}/inventory-groups/unknown")
+    response = api_client.delete(f"/cluster/{cluster_id}/inventory-groups/unknown")
 
     assert response.status_code == 404
 
 
 def test_inventory_groups_against_unknown_cluster_is_404(api_client):
-    response = api_client.get("/clusters/999/inventory-groups")
+    response = api_client.get("/cluster/999/inventory-groups")
     assert response.status_code == 404
 
 
@@ -289,7 +289,7 @@ def test_inventory_groups_unreachable_cluster_is_503(api_client, monkeypatch):
     _patch_connect(monkeypatch, fake_db)
 
     cluster_id = _create_cluster(api_client)
-    response = api_client.get(f"/clusters/{cluster_id}/inventory-groups")
+    response = api_client.get(f"/cluster/{cluster_id}/inventory-groups")
 
     assert response.status_code == 503
     assert "connection refused" in response.json()["detail"].lower()

@@ -45,7 +45,7 @@ def repository_add(api_url, api_key, cluster_id, name, location, access_key, sec
         payload["region"] = region
 
     with make_client(api_url, api_key) as client:
-        request(client, "POST", f"/clusters/{cluster_id}/repositories", json=payload)
+        request(client, "POST", f"/cluster/{cluster_id}/repositories", json=payload)
     logger.success(f"Created repository '{name}' on cluster {cluster_id}")
 
 
@@ -55,7 +55,7 @@ def repository_add(api_url, api_key, cluster_id, name, location, access_key, sec
 def repository_list(api_url, api_key, cluster_id):
     """List repositories on a registered cluster."""
     with make_client(api_url, api_key) as client:
-        response = request(client, "GET", f"/clusters/{cluster_id}/repositories")
+        response = request(client, "GET", f"/cluster/{cluster_id}/repositories")
     for repo in response.json():
         status = f"error={repo['error']}" if repo.get("error") else "ok"
         logger.info(f"{repo['name']} - {repo['location']} ({status})")
@@ -68,5 +68,5 @@ def repository_list(api_url, api_key, cluster_id):
 def repository_remove(api_url, api_key, cluster_id, name):
     """Delete a repository from a registered cluster (must hold no snapshots)."""
     with make_client(api_url, api_key) as client:
-        request(client, "DELETE", f"/clusters/{cluster_id}/repositories/{name}")
+        request(client, "DELETE", f"/cluster/{cluster_id}/repositories/{name}")
     logger.success(f"Removed repository '{name}' from cluster {cluster_id}")

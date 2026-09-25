@@ -391,12 +391,12 @@ starrocks-br api cluster list
 ### Submit and poll a job
 
 ```bash
-curl -X POST http://localhost:8000/clusters/1/backups/full \
+curl -X POST http://localhost:8000/cluster/1/backups/full \
   -H "Authorization: Bearer $STARROCKS_BR_API_KEY" -H "Content-Type: application/json" \
   -d '{"group": "production"}'
 # -> 202 {"id": 1, "status": "PENDING", ...}
 
-curl http://localhost:8000/jobs/1 -H "Authorization: Bearer $STARROCKS_BR_API_KEY"
+curl http://localhost:8000/job/1 -H "Authorization: Bearer $STARROCKS_BR_API_KEY"
 # -> {"status": "RUNNING", "progress_pct": 42, ...} or {"status": "SUCCESS", ...}
 
 # or via the CLI (--wait polls until the job finishes)

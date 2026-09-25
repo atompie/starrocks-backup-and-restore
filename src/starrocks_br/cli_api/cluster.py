@@ -42,7 +42,7 @@ def cluster_add(
         response = request(
             client,
             "POST",
-            "/clusters",
+            "/cluster",
             json={
                 "name": name,
                 "host": host,
@@ -78,5 +78,5 @@ def cluster_list(api_url, api_key):
 def cluster_remove(api_url, api_key, cluster_id):
     """Remove a registered cluster by id."""
     with make_client(api_url, api_key) as client:
-        request(client, "DELETE", f"/clusters/{cluster_id}")
+        request(client, "DELETE", f"/cluster/{cluster_id}")
     logger.success(f"Removed cluster {cluster_id}")

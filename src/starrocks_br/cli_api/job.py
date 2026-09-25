@@ -93,7 +93,7 @@ def job_submit(
     payload = {k: v for k, v in payload.items() if v is not None}
 
     with make_client(api_url, api_key) as client:
-        response = request(client, "POST", f"/clusters/{cluster_id}/{_ENDPOINT_BY_TYPE[job_type]}", json=payload)
+        response = request(client, "POST", f"/cluster/{cluster_id}/{_ENDPOINT_BY_TYPE[job_type]}", json=payload)
         job = response.json()
         logger.success(f"Submitted job {job['id']} (status={job['status']})")
 
@@ -102,7 +102,7 @@ def job_submit(
 
         while job["status"] in ("PENDING", "RUNNING"):
             time.sleep(2)
-            job = request(client, "GET", f"/jobs/{job['id']}").json()
+            job = request(client, "GET", f"/job/{job['id']}").json()
             progress = f" progress={job['progress_pct']}%" if job["progress_pct"] is not None else ""
             logger.progress(f"Job {job['id']}: {job['status']}{progress}")
 
@@ -120,7 +120,7 @@ def job_submit(
 def job_status(api_url, api_key, job_id):
     """Show a job's current status and progress."""
     with make_client(api_url, api_key) as client:
-        job = request(client, "GET", f"/jobs/{job_id}").json()
+        job = request(client, "GET", f"/job/{job_id}").json()
 
     progress = f", progress={job['progress_pct']}%" if job["progress_pct"] is not None else ""
     logger.info(f"Job {job['id']}: {job['status']}{progress}")

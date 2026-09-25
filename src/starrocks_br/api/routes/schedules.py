@@ -35,7 +35,8 @@ from ..deps import get_db
 from ..schemas import RunDueResponse, ScheduleCreate, ScheduleRead, ScheduleUpdate
 from .jobs import submit_job
 
-router = APIRouter(prefix="/schedules", tags=["schedules"], dependencies=[Depends(require_api_key)])
+schedule_router = APIRouter(prefix="/schedule", tags=["schedules"], dependencies=[Depends(require_api_key)])
+schedules_router = APIRouter(prefix="/schedules", tags=["schedules"], dependencies=[Depends(require_api_key)])
 
 
 def _utcnow() -> datetime.datetime:
@@ -61,7 +62,7 @@ def _get_schedule_or_404(db: Session, schedule_id: int) -> Schedule:
     return schedule
 
 
-@router.post("", response_model=ScheduleRead, status_code=status.HTTP_201_CREATED)
+@schedule_router.post("", response_model=ScheduleRead, status_code=status.HTTP_201_CREATED)
 def create_schedule(payload: ScheduleCreate, db: Session = Depends(get_db)) -> Schedule:
     cluster = db.get(Cluster, payload.cluster_id)
     if cluster is None:
@@ -84,17 +85,17 @@ def create_schedule(payload: ScheduleCreate, db: Session = Depends(get_db)) -> S
     return schedule
 
 
-@router.get("", response_model=list[ScheduleRead])
+@schedules_router.get("", response_model=list[ScheduleRead])
 def list_schedules(db: Session = Depends(get_db)) -> list[Schedule]:
     return list(db.query(Schedule).order_by(Schedule.id).all())
 
 
-@router.get("/{schedule_id}", response_model=ScheduleRead)
+@schedule_router.get("/{schedule_id}", response_model=ScheduleRead)
 def get_schedule(schedule_id: int, db: Session = Depends(get_db)) -> Schedule:
     return _get_schedule_or_404(db, schedule_id)
 
 
-@router.patch("/{schedule_id}", response_model=ScheduleRead)
+@schedule_router.patch("/{schedule_id}", response_model=ScheduleRead)
 def update_schedule(
     schedule_id: int, payload: ScheduleUpdate, db: Session = Depends(get_db)
 ) -> Schedule:
@@ -113,13 +114,13 @@ def update_schedule(
     return schedule
 
 
-@router.delete("/{schedule_id}", status_code=status.HTTP_204_NO_CONTENT)
+@schedule_router.delete("/{schedule_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_schedule(schedule_id: int, db: Session = Depends(get_db)) -> None:
     schedule = _get_schedule_or_404(db, schedule_id)
     db.delete(schedule)
 
 
-@router.post("/run-due", response_model=RunDueResponse)
+@schedules_router.post("/run-due", response_model=RunDueResponse)
 def run_due(db: Session = Depends(get_db)) -> RunDueResponse:
     now = _utcnow()
     due_schedules = (

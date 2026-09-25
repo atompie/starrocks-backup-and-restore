@@ -10,7 +10,7 @@ CLUSTER_PAYLOAD = {
 
 
 def test_create_cluster_succeeds_and_hides_password(api_client):
-    response = api_client.post("/clusters", json=CLUSTER_PAYLOAD)
+    response = api_client.post("/cluster", json=CLUSTER_PAYLOAD)
 
     assert response.status_code == 201
     body = response.json()
@@ -20,8 +20,8 @@ def test_create_cluster_succeeds_and_hides_password(api_client):
 
 
 def test_create_cluster_duplicate_name_conflicts(api_client):
-    api_client.post("/clusters", json=CLUSTER_PAYLOAD)
-    response = api_client.post("/clusters", json=CLUSTER_PAYLOAD)
+    api_client.post("/cluster", json=CLUSTER_PAYLOAD)
+    response = api_client.post("/cluster", json=CLUSTER_PAYLOAD)
 
     assert response.status_code == 409
 
@@ -34,7 +34,7 @@ def test_create_cluster_allows_empty_password(api_client):
     """
     payload = dict(CLUSTER_PAYLOAD, name="empty-pw-cluster", password="")
 
-    response = api_client.post("/clusters", json=payload)
+    response = api_client.post("/cluster", json=payload)
 
     assert response.status_code == 201
 
@@ -43,44 +43,44 @@ def test_create_cluster_missing_field_is_422(api_client):
     incomplete = dict(CLUSTER_PAYLOAD)
     del incomplete["host"]
 
-    response = api_client.post("/clusters", json=incomplete)
+    response = api_client.post("/cluster", json=incomplete)
 
     assert response.status_code == 422
 
 
 def test_list_and_get_cluster_excludes_password(api_client):
-    created = api_client.post("/clusters", json=CLUSTER_PAYLOAD).json()
+    created = api_client.post("/cluster", json=CLUSTER_PAYLOAD).json()
 
     listing = api_client.get("/clusters").json()
     assert len(listing) == 1
     assert "password" not in listing[0]
 
-    fetched = api_client.get(f"/clusters/{created['id']}").json()
+    fetched = api_client.get(f"/cluster/{created['id']}").json()
     assert fetched["name"] == "prod-eu"
     assert "password" not in fetched
 
 
 def test_get_unknown_cluster_404(api_client):
-    response = api_client.get("/clusters/999")
+    response = api_client.get("/cluster/999")
     assert response.status_code == 404
 
 
 def test_update_cluster_changes_connection_fields(api_client):
-    created = api_client.post("/clusters", json=CLUSTER_PAYLOAD).json()
+    created = api_client.post("/cluster", json=CLUSTER_PAYLOAD).json()
 
-    response = api_client.patch(f"/clusters/{created['id']}", json={"host": "new-host"})
+    response = api_client.patch(f"/cluster/{created['id']}", json={"host": "new-host"})
 
     assert response.status_code == 200
     assert response.json()["host"] == "new-host"
 
 
 def test_delete_idle_cluster_succeeds(api_client):
-    created = api_client.post("/clusters", json=CLUSTER_PAYLOAD).json()
+    created = api_client.post("/cluster", json=CLUSTER_PAYLOAD).json()
 
-    response = api_client.delete(f"/clusters/{created['id']}")
+    response = api_client.delete(f"/cluster/{created['id']}")
 
     assert response.status_code == 204
-    assert api_client.get(f"/clusters/{created['id']}").status_code == 404
+    assert api_client.get(f"/cluster/{created['id']}").status_code == 404
 
 
 def test_delete_cluster_blocked_by_active_job(api_client, monkeypatch):
@@ -102,9 +102,9 @@ def test_delete_cluster_blocked_by_active_job(api_client, monkeypatch):
     monkeypatch.setattr(jobs_module, "connect_or_503", lambda cluster: _FakeDB())
     monkeypatch.setattr(inventory_groups, "group_exists", lambda db, group, ops_database: True)
 
-    created = api_client.post("/clusters", json=CLUSTER_PAYLOAD).json()
-    api_client.post(f"/clusters/{created['id']}/backups/full", json={"group": "g1"})
+    created = api_client.post("/cluster", json=CLUSTER_PAYLOAD).json()
+    api_client.post(f"/cluster/{created['id']}/backups/full", json={"group": "g1"})
 
-    response = api_client.delete(f"/clusters/{created['id']}")
+    response = api_client.delete(f"/cluster/{created['id']}")
 
     assert response.status_code == 409

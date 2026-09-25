@@ -70,9 +70,11 @@ def create_app(*, check_env: bool = True) -> FastAPI:
 
     app = FastAPI(title="starrocks-br API", version="1.0")
     app.include_router(health.router)
-    app.include_router(clusters.router)
+    app.include_router(clusters.cluster_router)
+    app.include_router(clusters.clusters_router)
     app.include_router(jobs.router)
-    app.include_router(schedules.router)
+    app.include_router(schedules.schedule_router)
+    app.include_router(schedules.schedules_router)
     app.include_router(repositories.router)
     app.include_router(inventory_groups.router)
     return app
