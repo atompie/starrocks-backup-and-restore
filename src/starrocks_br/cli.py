@@ -19,21 +19,7 @@ import click
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from . import (
-    concurrency,
-    db,
-    error_handler,
-    exceptions,
-    executor,
-    health,
-    inventory_groups,
-    labels,
-    logger,
-    planner,
-    prune,
-    repository,
-    restore,
-)
+from . import commands, db, error_handler, exceptions, inventory_groups, logger, repository
 from . import config as config_module
 from .store.crypto import encrypt_password
 from .store.models import Cluster
@@ -272,113 +258,51 @@ def backup_incremental(config, baseline_backup, group, name):
         cfg = config_module.load_config(config)
         config_module.validate_config(cfg)
 
-        database = db.StarRocksDB(
-            host=cfg["host"],
-            port=cfg["port"],
-            user=cfg["user"],
-            password=os.getenv("STARROCKS_PASSWORD"),
-            database=cfg["database"],
-            tls_config=cfg.get("tls"),
+        with session_scope() as session:
+            cluster = resolve_cluster(session, cfg, create=False)
+
+        def _on_progress(event: dict) -> None:
+            if event.get("event") == "baseline_specified":
+                logger.success(f"Using specified baseline backup: {event['baseline_backup']}")
+            elif event.get("event") == "baseline_resolved":
+                latest_backup = event.get("latest_backup")
+                if latest_backup:
+                    logger.success(
+                        f"Using latest full backup as baseline: {latest_backup['label']} ({latest_backup['backup_type']})"
+                    )
+                else:
+                    logger.warning(
+                        "No full backup found - this will be the first incremental backup"
+                    )
+
+        logger.info(f"Starting incremental backup for group '{group}'...")
+        result = commands.backup.run_backup_incremental(
+            cluster,
+            {"group": group, "name": name, "baseline_backup": baseline_backup},
+            on_progress=_on_progress,
         )
 
-        with database:
-            healthy, message = health.check_cluster_health(database)
-            if not healthy:
-                logger.error(f"Cluster health check failed: {message}")
-                sys.exit(1)
+        logger.success(f"Backup completed successfully: {result['final_status']['state']}")
+        sys.exit(0)
 
-            logger.success(f"Cluster health: {message}")
-
-            repository.ensure_repository(database, cfg["repository"])
-
-            logger.success(f"Repository '{cfg['repository']}' verified")
-
-            with session_scope() as session:
-                cluster = resolve_cluster(session, cfg, create=False)
-
-                label = labels.determine_backup_label(
-                    session, cluster.id, "incremental", cfg["database"], custom_name=name
-                )
-
-                logger.success(f"Generated label: {label}")
-
-                if baseline_backup:
-                    logger.success(f"Using specified baseline backup: {baseline_backup}")
-                else:
-                    latest_backup = planner.find_latest_full_backup(
-                        database, session, cluster.id, cfg["database"]
-                    )
-                    if latest_backup:
-                        logger.success(
-                            f"Using latest full backup as baseline: {latest_backup['label']} ({latest_backup['backup_type']})"
-                        )
-                    else:
-                        logger.warning(
-                            "No full backup found - this will be the first incremental backup"
-                        )
-
-                partitions = planner.find_recent_partitions(
-                    database,
-                    session,
-                    cluster.id,
-                    cfg["database"],
-                    baseline_backup_label=baseline_backup,
-                    group_name=group,
-                )
-
-                if not partitions:
-                    logger.warning("No partitions found to backup")
-                    sys.exit(1)
-
-                logger.success(f"Found {len(partitions)} partition(s) to backup")
-
-                backup_command = planner.build_incremental_backup_command(
-                    partitions, cfg["repository"], label, cfg["database"]
-                )
-
-                concurrency.reserve_job_slot(database, session, cluster.id, "backup", label)
-
-                planner.record_backup_partitions(session, cluster.id, label, partitions)
-
-            logger.success("Job slot reserved")
-            logger.info(f"Starting incremental backup for group '{group}'...")
-            with session_scope() as session:
-                result = executor.execute_backup(
-                    database,
-                    session,
-                    cluster.id,
-                    backup_command,
-                    repository=cfg["repository"],
-                    backup_type="incremental",
-                    scope="backup",
-                    database=cfg["database"],
-                )
-
-            if result["success"]:
-                logger.success(f"Backup completed successfully: {result['final_status']['state']}")
-                sys.exit(0)
-            else:
-                error_details = result.get("error_details")
-                if error_details and error_details.get("error_type") == "snapshot_exists":
-                    _handle_snapshot_exists_error(
-                        error_details,
-                        label,
-                        config,
-                        cfg["repository"],
-                        "incremental",
-                        group,
-                        baseline_backup,
-                    )
-                    sys.exit(1)
-
-                state = result.get("final_status", {}).get("state", "UNKNOWN")
-                if state == "LOST":
-                    logger.critical("Backup tracking lost!")
-                    logger.warning("Another backup operation started during ours.")
-                    logger.tip("Enable run_status concurrency checks to prevent this.")
-                logger.error(f"{result['error_message']}")
-                sys.exit(1)
-
+    except exceptions.SnapshotAlreadyExistsError as e:
+        _handle_snapshot_exists_error(
+            {"snapshot_name": e.snapshot_name},
+            e.snapshot_name,
+            config,
+            cfg["repository"],
+            "incremental",
+            group,
+            baseline_backup,
+        )
+        sys.exit(1)
+    except exceptions.BackupExecutionError as e:
+        if e.final_status.get("state") == "LOST":
+            logger.critical("Backup tracking lost!")
+            logger.warning("Another backup operation started during ours.")
+            logger.tip("Enable run_status concurrency checks to prevent this.")
+        logger.error(str(e))
+        sys.exit(1)
     except exceptions.ClusterNotInitializedError as e:
         logger.error(str(e))
         sys.exit(1)
@@ -429,90 +353,27 @@ def backup_full(config, group, name):
         cfg = config_module.load_config(config)
         config_module.validate_config(cfg)
 
-        database = db.StarRocksDB(
-            host=cfg["host"],
-            port=cfg["port"],
-            user=cfg["user"],
-            password=os.getenv("STARROCKS_PASSWORD"),
-            database=cfg["database"],
-            tls_config=cfg.get("tls"),
+        with session_scope() as session:
+            cluster = resolve_cluster(session, cfg, create=False)
+
+        logger.info(f"Starting full backup for group '{group}'...")
+        result = commands.backup.run_backup_full(cluster, {"group": group, "name": name})
+
+        logger.success(f"Backup completed successfully: {result['final_status']['state']}")
+        sys.exit(0)
+
+    except exceptions.SnapshotAlreadyExistsError as e:
+        _handle_snapshot_exists_error(
+            {"snapshot_name": e.snapshot_name}, e.snapshot_name, config, cfg["repository"], "full", group
         )
-
-        with database:
-            healthy, message = health.check_cluster_health(database)
-            if not healthy:
-                logger.error(f"Cluster health check failed: {message}")
-                sys.exit(1)
-
-            logger.success(f"Cluster health: {message}")
-
-            repository.ensure_repository(database, cfg["repository"])
-
-            logger.success(f"Repository '{cfg['repository']}' verified")
-
-            with session_scope() as session:
-                cluster = resolve_cluster(session, cfg, create=False)
-
-                label = labels.determine_backup_label(
-                    session, cluster.id, "full", cfg["database"], custom_name=name
-                )
-
-                logger.success(f"Generated label: {label}")
-
-                tables = planner.find_tables_by_group(session, cluster.id, group)
-                planner.validate_tables_exist(database, cfg["database"], tables, group)
-
-                backup_command = planner.build_full_backup_command(
-                    session, cluster.id, group, cfg["repository"], label, cfg["database"]
-                )
-
-                if not backup_command:
-                    logger.warning(
-                        f"No tables found in group '{group}' for database '{cfg['database']}' to backup"
-                    )
-                    sys.exit(1)
-
-                all_partitions = planner.get_all_partitions_for_tables(
-                    database, cfg["database"], tables
-                )
-
-                concurrency.reserve_job_slot(database, session, cluster.id, "backup", label)
-
-                planner.record_backup_partitions(session, cluster.id, label, all_partitions)
-
-            logger.success("Job slot reserved")
-            logger.info(f"Starting full backup for group '{group}'...")
-            with session_scope() as session:
-                result = executor.execute_backup(
-                    database,
-                    session,
-                    cluster.id,
-                    backup_command,
-                    repository=cfg["repository"],
-                    backup_type="full",
-                    scope="backup",
-                    database=cfg["database"],
-                )
-
-            if result["success"]:
-                logger.success(f"Backup completed successfully: {result['final_status']['state']}")
-                sys.exit(0)
-            else:
-                error_details = result.get("error_details")
-                if error_details and error_details.get("error_type") == "snapshot_exists":
-                    _handle_snapshot_exists_error(
-                        error_details, label, config, cfg["repository"], "full", group
-                    )
-                    sys.exit(1)
-
-                state = result.get("final_status", {}).get("state", "UNKNOWN")
-                if state == "LOST":
-                    logger.critical("Backup tracking lost!")
-                    logger.warning("Another backup operation started during ours.")
-                    logger.tip("Enable run_status concurrency checks to prevent this.")
-                logger.error(f"{result['error_message']}")
-                sys.exit(1)
-
+        sys.exit(1)
+    except exceptions.BackupExecutionError as e:
+        if e.final_status.get("state") == "LOST":
+            logger.critical("Backup tracking lost!")
+            logger.warning("Another backup operation started during ours.")
+            logger.tip("Enable run_status concurrency checks to prevent this.")
+        logger.error(str(e))
+        sys.exit(1)
     except exceptions.InvalidTablesInInventoryError as e:
         error_handler.handle_invalid_tables_in_inventory_error(e, config)
         sys.exit(1)
@@ -586,74 +447,27 @@ def restore_command(config, target_label, group, table, rename_suffix, yes):
         cfg = config_module.load_config(config)
         config_module.validate_config(cfg)
 
-        database = db.StarRocksDB(
-            host=cfg["host"],
-            port=cfg["port"],
-            user=cfg["user"],
-            password=os.getenv("STARROCKS_PASSWORD"),
-            database=cfg["database"],
-            tls_config=cfg.get("tls"),
+        with session_scope() as session:
+            cluster = resolve_cluster(session, cfg, create=False)
+
+        logger.info(f"Finding restore sequence for target backup: {target_label}")
+        result = commands.restore.run_restore(
+            cluster,
+            {
+                "target_label": target_label,
+                "group": group,
+                "table": table,
+                "rename_suffix": rename_suffix,
+            },
+            skip_confirmation=yes,
         )
 
-        with database:
-            healthy, message = health.check_cluster_health(database)
-            if not healthy:
-                logger.error(f"Cluster health check failed: {message}")
-                sys.exit(1)
+        logger.success(result["message"])
+        sys.exit(0)
 
-            logger.success(f"Cluster health: {message}")
-
-            repository.ensure_repository(database, cfg["repository"])
-
-            logger.success(f"Repository '{cfg['repository']}' verified")
-
-            logger.info(f"Finding restore sequence for target backup: {target_label}")
-
-            with session_scope() as session:
-                cluster = resolve_cluster(session, cfg, create=False)
-
-                restore_pair = restore.find_restore_pair(session, cluster.id, target_label)
-                logger.success(f"Found restore sequence: {' -> '.join(restore_pair)}")
-
-                logger.info("Determining tables to restore from backup manifest...")
-
-                tables_to_restore = restore.get_tables_from_backup(
-                    database,
-                    session,
-                    cluster.id,
-                    target_label,
-                    group=group,
-                    table=table,
-                    database=cfg["database"] if table else None,
-                )
-
-            if not tables_to_restore:
-                raise exceptions.NoTablesFoundError(group=group, label=target_label)
-
-            logger.success(
-                f"Found {len(tables_to_restore)} table(s) to restore: {', '.join(tables_to_restore)}"
-            )
-
-            logger.info("Starting restore flow...")
-            with session_scope() as session:
-                result = restore.execute_restore_flow(
-                    database,
-                    session,
-                    cluster.id,
-                    cfg["repository"],
-                    restore_pair,
-                    tables_to_restore,
-                    rename_suffix,
-                    skip_confirmation=yes,
-                )
-
-            if result["success"]:
-                logger.success(result["message"])
-                sys.exit(0)
-            else:
-                logger.error(f"Restore failed: {result['error_message']}")
-                sys.exit(1)
-
+    except exceptions.RestoreExecutionError as e:
+        logger.error(f"Restore failed: {e}")
+        sys.exit(1)
     except exceptions.InvalidTableNameError as e:
         error_handler.handle_invalid_table_name_error(e)
         sys.exit(1)
@@ -762,127 +576,84 @@ def prune_command(config, group, keep_last, older_than, snapshot, snapshots, dry
         cfg = config_module.load_config(config)
         config_module.validate_config(cfg)
 
-        database = db.StarRocksDB(
-            host=cfg["host"],
-            port=cfg["port"],
-            user=cfg["user"],
-            password=os.getenv("STARROCKS_PASSWORD"),
-            database=cfg["database"],
-            tls_config=cfg.get("tls"),
-        )
-
-        with database:
-            healthy, message = health.check_cluster_health(database)
-            if not healthy:
-                logger.error(f"Cluster health check failed: {message}")
-                sys.exit(1)
-
-            logger.success(f"Cluster health: {message}")
-
-            repository.ensure_repository(database, cfg["repository"])
-            logger.success(f"Repository '{cfg['repository']}' verified")
-
-            if keep_last:
-                strategy = "keep_last"
-                strategy_kwargs = {"count": keep_last}
-                logger.info(f"Pruning strategy: Keep last {keep_last} backup(s)")
-            elif older_than:
-                strategy = "older_than"
-                strategy_kwargs = {"timestamp": older_than}
-                logger.info(f"Pruning strategy: Delete backups older than {older_than}")
-            elif snapshot:
-                strategy = "specific"
-                strategy_kwargs = {"snapshot": snapshot}
-                logger.info(f"Pruning strategy: Delete specific snapshot '{snapshot}'")
-            elif snapshots:
-                strategy = "multiple"
-                snapshot_list = [s.strip() for s in snapshots.split(",")]
-                strategy_kwargs = {"snapshots": snapshot_list}
-                logger.info(f"Pruning strategy: Delete {len(snapshot_list)} specific snapshot(s)")
-
-            if group:
-                logger.info(f"Filtering by inventory group: {group}")
-
-            with session_scope() as session:
-                cluster = resolve_cluster(session, cfg, create=False)
-                all_backups = prune.get_successful_backups(session, cluster.id, cfg["repository"], group=group)
-
-            if not all_backups:
-                msg = f"No successful backups found in repository '{cfg['repository']}'"
-                if group:
-                    msg += f" for inventory group '{group}'"
-                logger.info(msg)
-                sys.exit(0)
-
-            logger.info(f"Found {len(all_backups)} total backup(s) in repository")
-
-            if strategy in ["specific", "multiple"]:
-                snapshots_to_verify = (
-                    [snapshot] if strategy == "specific" else strategy_kwargs["snapshots"]
-                )
-                for snap in snapshots_to_verify:
-                    prune.verify_snapshot_exists(database, cfg["repository"], snap)
-
-            snapshots_to_delete = prune.filter_snapshots_to_delete(
-                all_backups, strategy, **strategy_kwargs
+        if keep_last:
+            logger.info(f"Pruning strategy: Keep last {keep_last} backup(s)")
+        elif older_than:
+            logger.info(f"Pruning strategy: Delete backups older than {older_than}")
+        elif snapshot:
+            logger.info(f"Pruning strategy: Delete specific snapshot '{snapshot}'")
+        elif snapshots:
+            logger.info(
+                f"Pruning strategy: Delete {len(snapshots.split(','))} specific snapshot(s)"
             )
 
-            if not snapshots_to_delete:
-                logger.success("No snapshots to delete based on the specified criteria")
-                sys.exit(0)
+        if group:
+            logger.info(f"Filtering by inventory group: {group}")
 
+        with session_scope() as session:
+            cluster = resolve_cluster(session, cfg, create=False)
+
+        params = {
+            "group": group,
+            "keep_last": keep_last,
+            "older_than": older_than,
+            "snapshot": snapshot,
+            "snapshots": snapshots,
+        }
+
+        # Plan first (dry_run=True is side-effect-free) so we know what would be
+        # deleted before honoring --dry-run or prompting for confirmation; the
+        # actual deletion below re-runs the same planning step for real.
+        plan = commands.prune.run_prune(cluster, {**params, "dry_run": True})
+
+        if "would_delete" not in plan:
+            msg = f"No successful backups found in repository '{cfg['repository']}'"
+            if group:
+                msg += f" for inventory group '{group}'"
+            logger.info(msg)
+            sys.exit(0)
+
+        snapshots_to_delete = plan["would_delete"]
+
+        if not snapshots_to_delete:
+            logger.success("No snapshots to delete based on the specified criteria")
+            sys.exit(0)
+
+        logger.info("")
+        logger.info(f"Snapshots to delete: {len(snapshots_to_delete)}")
+        for label in snapshots_to_delete:
+            logger.info(f"  - {label}")
+
+        if keep_last:
+            logger.info(f"Snapshots to keep: {plan['kept_count']} (most recent)")
+
+        if dry_run:
             logger.info("")
-            logger.info(f"Snapshots to delete: {len(snapshots_to_delete)}")
-            for snap in snapshots_to_delete:
-                logger.info(f"  - {snap['label']} (finished: {snap['finished_at']})")
+            logger.warning("DRY RUN MODE - No snapshots will be deleted")
+            logger.info(f"Would delete {len(snapshots_to_delete)} snapshot(s)")
+            sys.exit(0)
 
-            if keep_last:
-                kept_count = len(all_backups) - len(snapshots_to_delete)
-                logger.info(f"Snapshots to keep: {kept_count} (most recent)")
-
-            if dry_run:
-                logger.info("")
-                logger.warning("DRY RUN MODE - No snapshots will be deleted")
-                logger.info(f"Would delete {len(snapshots_to_delete)} snapshot(s)")
-                sys.exit(0)
-
-            if not yes:
-                logger.info("")
-                logger.warning(
-                    f"This will permanently delete {len(snapshots_to_delete)} snapshot(s) from the repository"
-                )
-                confirm = click.confirm("Do you want to proceed?", default=False)
-                if not confirm:
-                    logger.info("Prune operation cancelled by user")
-                    sys.exit(1)
-
+        if not yes:
             logger.info("")
-            logger.info("Starting snapshot deletion...")
-            deleted_count = 0
-            failed_count = 0
+            logger.warning(
+                f"This will permanently delete {len(snapshots_to_delete)} snapshot(s) from the repository"
+            )
+            confirm = click.confirm("Do you want to proceed?", default=False)
+            if not confirm:
+                logger.info("Prune operation cancelled by user")
+                sys.exit(1)
 
-            with session_scope() as session:
-                for snap in snapshots_to_delete:
-                    try:
-                        prune.execute_drop_snapshot(database, cfg["repository"], snap["label"])
-                        prune.cleanup_backup_history(session, cluster.id, snap["label"])
-                        deleted_count += 1
-                    except Exception as e:
-                        logger.error(f"Failed to delete snapshot '{snap['label']}': {e}")
-                        failed_count += 1
+        logger.info("")
+        logger.info("Starting snapshot deletion...")
+        result = commands.prune.run_prune(cluster, {**params, "dry_run": False})
 
-            logger.info("")
-            logger.success(f"Deleted {deleted_count} snapshot(s)")
+        logger.info("")
+        logger.success(f"Deleted {len(result['deleted'])} snapshot(s)")
 
-            if failed_count > 0:
-                logger.warning(f"Failed to delete {failed_count} snapshot(s)")
+        if keep_last:
+            logger.success(f"Kept {result['kept_count']} most recent backup(s)")
 
-            if keep_last:
-                logger.success(
-                    f"Kept {len(all_backups) - len(snapshots_to_delete)} most recent backup(s)"
-                )
-
-            sys.exit(0 if failed_count == 0 else 1)
+        sys.exit(0)
 
     except exceptions.ClusterNotInitializedError as e:
         logger.error(str(e))

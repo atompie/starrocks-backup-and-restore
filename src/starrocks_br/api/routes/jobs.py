@@ -1,54 +1,23 @@
-import json
-
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from ... import inventory_groups
-from ...jobs.backend import UnknownBackendError, get_registry
-from ...store.models import Cluster, Job
+from ...commands.jobs import submit_job
+from ...jobs.backend import UnknownBackendError
+from ...store.models import Job
 from ..auth import require_api_key
 from ..deps import get_db
-from ..schemas import BackupFullRequest, BackupIncrementalRequest, JobRead, PruneRequest, RestoreRequest
+from ..schemas import (
+    BackupFullRequest,
+    BackupIncrementalRequest,
+    JobRead,
+    PruneRequest,
+    RestoreRequest,
+)
 from ._cluster_connect import get_cluster_or_404 as _get_cluster_or_404
 
 router = APIRouter(tags=["jobs"], dependencies=[Depends(require_api_key)])
-
-
-def submit_job(
-    db: Session,
-    cluster: Cluster,
-    job_type: str,
-    params: dict,
-    requested_backend: str | None,
-) -> Job:
-    """Create a Job row and enqueue it on the resolved backend.
-
-    Shared by direct job-submission routes and the schedules run-due route,
-    per specs/api-scheduling "submits a job through the same job-submission
-    path used by direct API job submission".
-    """
-    registry = get_registry()
-    try:
-        backend_name = registry.resolve(requested_backend, cluster.default_backend)
-    except UnknownBackendError as e:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(e)) from e
-
-    job = Job(
-        cluster_id=cluster.id,
-        job_type=job_type,
-        params_json=json.dumps(params),
-        backend=backend_name,
-    )
-    db.add(job)
-    db.flush()
-    db.refresh(job)
-    # Commit now (not just flush): the enqueued backend may run the job in a
-    # separate thread/connection immediately, which must see this row.
-    db.commit()
-
-    registry.get(backend_name).enqueue(job.id)
-    return job
 
 
 def _submit(
@@ -56,7 +25,10 @@ def _submit(
 ) -> Job:
     cluster = _get_cluster_or_404(db, cluster_id)
     params = payload.model_dump(exclude={"backend"})
-    return submit_job(db, cluster, job_type, params, payload.backend)
+    try:
+        return submit_job(db, cluster, job_type, params, payload.backend)
+    except UnknownBackendError as e:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(e)) from e
 
 
 def _submit_backup_job(
@@ -81,7 +53,10 @@ def _submit_backup_job(
         )
 
     params = payload.model_dump(exclude={"backend"})
-    return submit_job(db, cluster, job_type, params, payload.backend)
+    try:
+        return submit_job(db, cluster, job_type, params, payload.backend)
+    except UnknownBackendError as e:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(e)) from e
 
 
 @router.post(

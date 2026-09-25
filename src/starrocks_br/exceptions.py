@@ -145,3 +145,54 @@ class InvalidTablesInInventoryError(StarRocksBRError):
             )
         else:
             super().__init__(f"Invalid tables for database '{database}': {tables_str}")
+
+
+class SnapshotAlreadyExistsError(StarRocksBRError):
+    def __init__(self, snapshot_name: str):
+        self.snapshot_name = snapshot_name
+        super().__init__(f"Snapshot '{snapshot_name}' already exists in repository")
+
+
+class BackupExecutionError(StarRocksBRError):
+    def __init__(self, message: str, final_status: dict | None = None):
+        self.final_status = final_status or {}
+        super().__init__(message)
+
+
+class ClusterHasActiveJobError(StarRocksBRError):
+    def __init__(self, cluster_id: int):
+        self.cluster_id = cluster_id
+        super().__init__("Cluster has a job in PENDING or RUNNING state; cannot delete")
+
+
+class ClusterHasEnabledScheduleError(StarRocksBRError):
+    def __init__(self, cluster_id: int):
+        self.cluster_id = cluster_id
+        super().__init__(
+            "Cluster has an enabled schedule; disable or delete it before removing the cluster"
+        )
+
+
+class RepositoryAlreadyExistsError(StarRocksBRError):
+    def __init__(self, name: str, cluster_name: str):
+        self.name = name
+        self.cluster_name = cluster_name
+        super().__init__(f"Repository '{name}' already exists on cluster '{cluster_name}'")
+
+
+class RepositoryStillHasSnapshotsError(StarRocksBRError):
+    def __init__(self, name: str):
+        self.name = name
+        super().__init__(f"Repository '{name}' still holds snapshot data; cannot delete")
+
+
+class RestoreExecutionError(StarRocksBRError):
+    def __init__(self, message: str):
+        super().__init__(message)
+
+
+class InvalidCadenceError(StarRocksBRError):
+    def __init__(self, cadence: str, reason: str):
+        self.cadence = cadence
+        self.reason = reason
+        super().__init__(f"Invalid cadence expression '{cadence}': {reason}")

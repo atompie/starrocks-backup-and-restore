@@ -543,7 +543,7 @@ def test_prune_cleanup_history_after_deletion(
     assert call_args[0][2] == "backup_20240101"
 
 
-def test_prune_partial_failure_continues_deletion(
+def test_prune_batch_aborts_on_first_failure(
     config_file,
     mock_db,
     mock_resolved_cluster,
@@ -552,7 +552,10 @@ def test_prune_partial_failure_continues_deletion(
     setup_password_env,
     mocker,
 ):
-    """Test that prune continues deleting other snapshots even if one fails."""
+    """Prune aborts the whole batch at the first delete failure (see
+    openspec/changes/establish-command-layer proposal.md's disclosed behavior
+    change: this used to continue past a failure and is now consistent with
+    the job/API path, which always aborted on first failure)."""
     runner = CliRunner()
 
     mock_snapshots = [
@@ -586,12 +589,13 @@ def test_prune_partial_failure_continues_deletion(
     )
     mocker.patch("starrocks_br.prune.cleanup_backup_history")
 
-    runner.invoke(
+    result = runner.invoke(
         cli.prune_command,
         ["--config", config_file, "--snapshots", "backup1,backup2,backup3", "--yes"],
     )
 
-    assert mock_execute.call_count == 3
+    assert result.exit_code == 1
+    assert mock_execute.call_count == 2
 
 
 def test_prune_with_group_filter_keep_last(

@@ -123,6 +123,16 @@ def mock_resolved_cluster(mocker):
     using this fixture should mock every ops-table-touching function they
     exercise directly (labels/planner/concurrency/executor/restore/prune), as
     before - only the "is this cluster registered" step is faked here.
+
+    Also mocks `commands._shared.decrypt_password`: `cli.py`'s adapters now
+    call `commands.backup`/`commands.restore`/`commands.prune`, which connect
+    via `commands._shared.connect(cluster)` - that decrypts
+    `cluster.password_encrypted` for real. This fixture's `password_encrypted`
+    is a plain placeholder string, not real Fernet ciphertext, so decryption
+    must be faked the same way `mock_db` fakes the StarRocksDB connection
+    itself (this was always implicitly required in production too, since
+    `resolve_cluster` already calls the matching `encrypt_password` on every
+    invocation - tests just never exercised the real round-trip before).
     """
     from contextlib import contextmanager
 
@@ -146,6 +156,7 @@ def mock_resolved_cluster(mocker):
 
     mocker.patch("starrocks_br.cli.session_scope", _scope)
     mocker.patch("starrocks_br.cli.resolve_cluster", return_value=fake_cluster)
+    mocker.patch("starrocks_br.commands._shared.decrypt_password", return_value="test_password")
     return fake_cluster
 
 

@@ -2,11 +2,19 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from ... import exceptions
+from ...commands.clusters import delete_cluster as _delete_cluster_command
 from ...store.crypto import EncryptionKeyMissingError, decrypt_password, encrypt_password
-from ...store.models import Cluster, Job, JobStatus, Schedule
+from ...store.models import Cluster
 from ..auth import require_api_key
 from ..deps import get_db
-from ..schemas import ClusterCreate, ClusterRead, ClusterUpdate, ClusterVerifyRequest, ClusterVerifyResponse
+from ..schemas import (
+    ClusterCreate,
+    ClusterRead,
+    ClusterUpdate,
+    ClusterVerifyRequest,
+    ClusterVerifyResponse,
+)
 from ._cluster_connect import get_cluster_or_404 as _get_cluster_or_404
 from ._cluster_connect import verify_connection as _verify_connection
 
@@ -102,29 +110,9 @@ def update_cluster(
 def delete_cluster(cluster_id: int, db: Session = Depends(get_db)) -> None:
     cluster = _get_cluster_or_404(db, cluster_id)
 
-    active_job = (
-        db.query(Job)
-        .filter(
-            Job.cluster_id == cluster_id,
-            Job.status.in_([JobStatus.PENDING.value, JobStatus.RUNNING.value]),
-        )
-        .first()
-    )
-    if active_job is not None:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Cluster has a job in PENDING or RUNNING state; cannot delete",
-        )
-
-    enabled_schedule = (
-        db.query(Schedule)
-        .filter(Schedule.cluster_id == cluster_id, Schedule.enabled.is_(True))
-        .first()
-    )
-    if enabled_schedule is not None:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Cluster has an enabled schedule; disable or delete it before removing the cluster",
-        )
-
-    db.delete(cluster)
+    try:
+        _delete_cluster_command(db, cluster)
+    except exceptions.ClusterHasActiveJobError as e:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e)) from e
+    except exceptions.ClusterHasEnabledScheduleError as e:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e)) from e

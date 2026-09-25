@@ -24,16 +24,16 @@ per occurrence without a separate lock table.
 
 import datetime
 
-from croniter import CroniterBadCronError, croniter
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import update
 from sqlalchemy.orm import Session
 
+from ... import exceptions
+from ...commands.schedules import compute_next_run_at, run_due_schedules
+from ...jobs.backend import UnknownBackendError
 from ...store.models import Cluster, Schedule
 from ..auth import require_api_key
 from ..deps import get_db
 from ..schemas import RunDueResponse, ScheduleCreate, ScheduleRead, ScheduleUpdate
-from .jobs import submit_job
 
 schedule_router = APIRouter(prefix="/schedule", tags=["schedules"], dependencies=[Depends(require_api_key)])
 schedules_router = APIRouter(prefix="/schedules", tags=["schedules"], dependencies=[Depends(require_api_key)])
@@ -44,15 +44,10 @@ def _utcnow() -> datetime.datetime:
 
 
 def _compute_next_run_at(cadence: str, after: datetime.datetime | None = None) -> datetime.datetime:
-    base = after or _utcnow()
     try:
-        itr = croniter(cadence, base)
-        return itr.get_next(datetime.datetime)
-    except (CroniterBadCronError, ValueError) as e:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail=f"Invalid cadence expression '{cadence}': {e}",
-        ) from e
+        return compute_next_run_at(cadence, after)
+    except exceptions.InvalidCadenceError as e:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(e)) from e
 
 
 def _get_schedule_or_404(db: Session, schedule_id: int) -> Schedule:
@@ -122,39 +117,10 @@ def delete_schedule(schedule_id: int, db: Session = Depends(get_db)) -> None:
 
 @schedules_router.post("/run-due", response_model=RunDueResponse)
 def run_due(db: Session = Depends(get_db)) -> RunDueResponse:
-    now = _utcnow()
-    due_schedules = (
-        db.query(Schedule)
-        .filter(Schedule.enabled.is_(True), Schedule.next_run_at <= now)
-        .all()
-    )
-
-    triggered_job_ids: list[int] = []
-
-    for schedule in due_schedules:
-        previously_due_at = schedule.next_run_at
-        new_next_run_at = _compute_next_run_at(schedule.cadence, after=now)
-
-        result = db.execute(
-            update(Schedule)
-            .where(Schedule.id == schedule.id, Schedule.next_run_at == previously_due_at)
-            .values(next_run_at=new_next_run_at)
-        )
-        if result.rowcount == 0:
-            # Another concurrent run-due call already advanced this schedule
-            # past this due occurrence - skip to stay idempotent.
-            continue
-
-        cluster = db.get(Cluster, schedule.cluster_id)
-        job = submit_job(
-            db,
-            cluster,
-            schedule.job_type,
-            {"group": schedule.group_name},
-            schedule.backend,
-        )
-        schedule.last_run_job_id = job.id
-        triggered_job_ids.append(job.id)
-
-    db.flush()
-    return RunDueResponse(triggered_job_ids=triggered_job_ids, triggered_count=len(triggered_job_ids))
+    try:
+        triggered_job_ids, triggered_count = run_due_schedules(db, _utcnow())
+    except exceptions.InvalidCadenceError as e:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(e)) from e
+    except UnknownBackendError as e:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(e)) from e
+    return RunDueResponse(triggered_job_ids=triggered_job_ids, triggered_count=triggered_count)

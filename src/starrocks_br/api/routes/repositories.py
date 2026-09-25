@@ -10,7 +10,8 @@ the cluster reuses the same `_connect`/`decrypt_password` pattern as
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
-from ... import repository, s3_verify
+from ... import exceptions, repository, s3_verify
+from ...commands import repositories as repository_commands
 from ..auth import require_api_key
 from ..deps import get_db
 from ..schemas import (
@@ -59,39 +60,18 @@ def create_repository(
 
     database = _connect_or_503(cluster)
     try:
-        command = repository.build_create_s3_repository_command(
-            name=payload.name,
-            location=payload.location,
-            access_key=payload.access_key,
-            secret_key=payload.secret_key,
-            endpoint=payload.endpoint,
-            region=payload.region,
+        return repository_commands.create_repository(
+            database,
+            cluster.name,
+            payload.name,
+            payload.location,
+            payload.access_key,
+            payload.secret_key,
+            payload.endpoint,
+            payload.region,
         )
-        try:
-            database.execute(command)
-        except Exception as e:
-            # StarRocks' actual wording is "already exist" (verified against a
-            # live cluster during the manual smoke test), not "already exists".
-            if "already exist" in str(e).lower():
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail=f"Repository '{payload.name}' already exists on cluster '{cluster.name}'",
-                ) from e
-            raise
-
-        for repo in repository.list_repositories(database):
-            if repo["name"] == payload.name:
-                return repo
-
-        # StarRocks accepted the CREATE REPOSITORY statement but does not
-        # (yet) list it back - report what we know without guessing fields.
-        return {
-            "name": payload.name,
-            "location": payload.location,
-            "broker": None,
-            "is_read_only": False,
-            "error": None,
-        }
+    except exceptions.RepositoryAlreadyExistsError as e:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e)) from e
     finally:
         database.close()
 
@@ -102,18 +82,13 @@ def delete_repository(cluster_id: int, name: str, db: Session = Depends(get_db))
 
     database = _connect_or_503(cluster)
     try:
-        try:
-            if repository.has_snapshots(database, name):
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail=f"Repository '{name}' still holds snapshot data; cannot delete",
-                )
-        except repository.RepositoryNotFoundError as e:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Repository '{name}' not found on cluster '{cluster.name}'",
-            ) from e
-
-        repository.drop_repository(database, name)
+        repository_commands.delete_repository(database, name)
+    except exceptions.RepositoryStillHasSnapshotsError as e:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e)) from e
+    except repository.RepositoryNotFoundError as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Repository '{name}' not found on cluster '{cluster.name}'",
+        ) from e
     finally:
         database.close()
