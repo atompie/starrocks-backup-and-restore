@@ -103,6 +103,20 @@ def make_cluster(sqlite_session):
 
 
 @pytest.fixture
+def make_group(sqlite_session):
+    """Factory fixture: persist a minimal InventoryGroup row and return its id."""
+    from starrocks_br.store.models import InventoryGroup
+
+    def _make(cluster_id: int, name: str = "prod") -> int:
+        group = InventoryGroup(cluster_id=cluster_id, name=name)
+        sqlite_session.add(group)
+        sqlite_session.commit()
+        return group.id
+
+    return _make
+
+
+@pytest.fixture
 def mock_db(mocker):
     """Create a mocked StarRocksDB instance with context manager support."""
     mock = mocker.Mock()

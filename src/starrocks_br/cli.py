@@ -260,6 +260,7 @@ def backup_incremental(config, baseline_backup, group, name):
 
         with session_scope() as session:
             cluster = resolve_cluster(session, cfg, create=False)
+            group_id = inventory_groups.get_group_id_by_name(session, cluster.id, group)
 
         def _on_progress(event: dict) -> None:
             if event.get("event") == "baseline_specified":
@@ -278,7 +279,7 @@ def backup_incremental(config, baseline_backup, group, name):
         logger.info(f"Starting incremental backup for group '{group}'...")
         result = commands.backup.run_backup_incremental(
             cluster,
-            {"group": group, "name": name, "baseline_backup": baseline_backup},
+            {"group_id": group_id, "name": name, "baseline_backup": baseline_backup},
             on_progress=_on_progress,
         )
 
@@ -314,6 +315,9 @@ def backup_incremental(config, baseline_backup, group, name):
         sys.exit(1)
     except exceptions.NoFullBackupFoundError as e:
         error_handler.handle_no_full_backup_found_error(e, config, group)
+        sys.exit(1)
+    except inventory_groups.InventoryGroupNotFoundError as e:
+        logger.error(str(e))
         sys.exit(1)
     except exceptions.ConfigFileNotFoundError as e:
         error_handler.handle_config_file_not_found_error(e)
@@ -355,9 +359,10 @@ def backup_full(config, group, name):
 
         with session_scope() as session:
             cluster = resolve_cluster(session, cfg, create=False)
+            group_id = inventory_groups.get_group_id_by_name(session, cluster.id, group)
 
         logger.info(f"Starting full backup for group '{group}'...")
-        result = commands.backup.run_backup_full(cluster, {"group": group, "name": name})
+        result = commands.backup.run_backup_full(cluster, {"group_id": group_id, "name": name})
 
         logger.success(f"Backup completed successfully: {result['final_status']['state']}")
         sys.exit(0)
@@ -382,6 +387,9 @@ def backup_full(config, group, name):
         sys.exit(1)
     except exceptions.ConcurrencyConflictError as e:
         error_handler.handle_concurrency_conflict_error(e, config)
+        sys.exit(1)
+    except inventory_groups.InventoryGroupNotFoundError as e:
+        logger.error(str(e))
         sys.exit(1)
     except exceptions.ConfigFileNotFoundError as e:
         error_handler.handle_config_file_not_found_error(e)
@@ -449,13 +457,14 @@ def restore_command(config, target_label, group, table, rename_suffix, yes):
 
         with session_scope() as session:
             cluster = resolve_cluster(session, cfg, create=False)
+            group_id = inventory_groups.get_group_id_by_name(session, cluster.id, group) if group else None
 
         logger.info(f"Finding restore sequence for target backup: {target_label}")
         result = commands.restore.run_restore(
             cluster,
             {
                 "target_label": target_label,
-                "group": group,
+                "group_id": group_id,
                 "table": table,
                 "rename_suffix": rename_suffix,
             },
@@ -485,6 +494,9 @@ def restore_command(config, target_label, group, table, rename_suffix, yes):
         sys.exit(1)
     except exceptions.NoTablesFoundError as e:
         error_handler.handle_no_tables_found_error(e, config, target_label)
+        sys.exit(1)
+    except inventory_groups.InventoryGroupNotFoundError as e:
+        logger.error(str(e))
         sys.exit(1)
     except exceptions.SnapshotNotFoundError as e:
         error_handler.handle_snapshot_not_found_error(e, config)
@@ -592,9 +604,10 @@ def prune_command(config, group, keep_last, older_than, snapshot, snapshots, dry
 
         with session_scope() as session:
             cluster = resolve_cluster(session, cfg, create=False)
+            group_id = inventory_groups.get_group_id_by_name(session, cluster.id, group) if group else None
 
         params = {
-            "group": group,
+            "group_id": group_id,
             "keep_last": keep_last,
             "older_than": older_than,
             "snapshot": snapshot,
@@ -656,6 +669,9 @@ def prune_command(config, group, keep_last, older_than, snapshot, snapshots, dry
         sys.exit(0)
 
     except exceptions.ClusterNotInitializedError as e:
+        logger.error(str(e))
+        sys.exit(1)
+    except inventory_groups.InventoryGroupNotFoundError as e:
         logger.error(str(e))
         sys.exit(1)
     except exceptions.ConfigFileNotFoundError as e:

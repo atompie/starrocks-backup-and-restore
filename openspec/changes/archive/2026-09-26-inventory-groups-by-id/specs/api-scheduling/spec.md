@@ -1,10 +1,4 @@
-# api-scheduling Specification
-
-## Purpose
-
-Lets operators define recurring backup schedules per cluster/group through the API instead of maintaining external cron entries by hand, and lets a lightweight periodic trigger (cron, Kubernetes CronJob) ask the server to run whatever is due.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Define a recurring backup schedule
 The system SHALL allow an authenticated client to create a schedule against a registered cluster identified by a cluster id in the request path, specifying job type (full or incremental backup), an inventory group id, a cadence (cron expression or equivalent interval), and an optional execution backend override, SHALL reject creation with HTTP 404 if the inventory group id does not exist on that cluster, and SHALL persist it in the metadata store.

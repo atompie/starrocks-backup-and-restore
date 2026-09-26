@@ -1,13 +1,4 @@
-# api-inventory-groups Specification
-
-## Purpose
-
-Lets operators create, discover, inspect, and delete inventory groups (named sets of
-database/table memberships that scope backup, restore, and prune operations) on a registered
-cluster through the API, instead of hand-writing SQL against `table_inventory` or relying on a
-one-shot config bootstrap.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Inventory groups can be listed
 The system SHALL allow an authenticated client to list all inventory groups that currently exist

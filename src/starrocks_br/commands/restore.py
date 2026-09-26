@@ -23,12 +23,12 @@ def run_restore(
     skip_confirmation: bool = True,
 ) -> dict:
     target_label = params["target_label"]
-    group = params.get("group")
+    group = params.get("group_id")
     table = params.get("table")
     rename_suffix = params.get("rename_suffix") or "_restored"
 
     if group and table:
-        raise ValueError("Cannot specify both 'group' and 'table'")
+        raise ValueError("Cannot specify both 'group_id' and 'table'")
 
     database = connect(cluster)
     with database:

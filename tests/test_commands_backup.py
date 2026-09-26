@@ -70,7 +70,7 @@ def test_run_backup_full_builds_same_command_as_cli(
         return_value={"success": True, "final_status": {"state": "FINISHED"}},
     )
 
-    result = backup.run_backup_full(cluster, {"group": "production"})
+    result = backup.run_backup_full(cluster, {"group_id": 42})
 
     assert result == {"label": "test_db_20251016_full", "final_status": {"state": "FINISHED"}}
     execute_backup.assert_called_once()
@@ -88,7 +88,7 @@ def test_run_backup_full_raises_on_unhealthy_cluster(
     cluster, mock_decrypt, mock_db, fake_session, mock_unhealthy_cluster
 ):
     with pytest.raises(RuntimeError, match="health check failed"):
-        backup.run_backup_full(cluster, {"group": "production"})
+        backup.run_backup_full(cluster, {"group_id": 42})
 
 
 def test_run_backup_full_propagates_snapshot_exists_as_domain_exception(
@@ -111,7 +111,7 @@ def test_run_backup_full_propagates_snapshot_exists_as_domain_exception(
     )
 
     with pytest.raises(exceptions.SnapshotAlreadyExistsError) as excinfo:
-        backup.run_backup_full(cluster, {"group": "production"})
+        backup.run_backup_full(cluster, {"group_id": 42})
     assert excinfo.value.snapshot_name == "lbl"
 
 
@@ -131,7 +131,7 @@ def test_run_backup_full_propagates_other_execute_backup_failure_as_domain_excep
     )
 
     with pytest.raises(exceptions.BackupExecutionError, match="boom"):
-        backup.run_backup_full(cluster, {"group": "production"})
+        backup.run_backup_full(cluster, {"group_id": 42})
 
 
 def test_run_backup_incremental_passes_baseline_and_progress_callback(
@@ -154,17 +154,17 @@ def test_run_backup_incremental_passes_baseline_and_progress_callback(
 
     progress_cb = mocker.Mock()
     backup.run_backup_incremental(
-        cluster, {"group": "production", "baseline_backup": "base_lbl"}, on_progress=progress_cb
+        cluster, {"group_id": 42, "baseline_backup": "base_lbl"}, on_progress=progress_cb
     )
 
     assert execute_backup.call_args.kwargs["on_progress"] is progress_cb
 
 
 def test_run_backup_full_raises_clear_error_when_group_missing(cluster, mock_decrypt):
-    with pytest.raises(ValueError, match="'group' is required"):
+    with pytest.raises(ValueError, match="'group_id' is required"):
         backup.run_backup_full(cluster, {})
 
 
 def test_run_backup_incremental_raises_clear_error_when_group_missing(cluster, mock_decrypt):
-    with pytest.raises(ValueError, match="'group' is required"):
+    with pytest.raises(ValueError, match="'group_id' is required"):
         backup.run_backup_incremental(cluster, {})

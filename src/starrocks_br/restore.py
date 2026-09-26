@@ -395,7 +395,7 @@ def get_tables_from_backup(
     session: Session,
     cluster_id: int,
     label: str,
-    group: str | None = None,
+    group: int | None = None,
     table: str | None = None,
     database: str | None = None,
 ) -> list[str]:
@@ -406,7 +406,7 @@ def get_tables_from_backup(
         session: SQLite metastore session
         cluster_id: Cluster this backup manifest belongs to
         label: Backup label
-        group: Optional inventory group to filter tables
+        group: Optional inventory group id to filter tables
         table: Optional table name to filter (single table, database comes from database parameter)
         database: Database name (required if table is specified)
 
@@ -449,7 +449,7 @@ def get_tables_from_backup(
     if group:
         group_rows = session.execute(
             select(TableInventory.database_name, TableInventory.table_name).where(
-                TableInventory.cluster_id == cluster_id, TableInventory.inventory_group == group
+                TableInventory.cluster_id == cluster_id, TableInventory.inventory_group_id == group
             )
         ).all()
         if not group_rows:

@@ -106,6 +106,8 @@ def test_cluster_add_prints_created_id(runner, monkeypatch):
 
 def test_job_submit_without_wait_returns_immediately(runner, monkeypatch):
     def handler(request):
+        if request.method == "GET":
+            return httpx.Response(200, json=[{"id": 1, "name": "g1", "table_count": 2}])
         return httpx.Response(202, json={"id": 5, "status": "PENDING"})
 
     _install_mock_transport(monkeypatch, handler)
@@ -120,10 +122,53 @@ def test_job_submit_without_wait_returns_immediately(runner, monkeypatch):
     assert "Submitted job 5" in result.output
 
 
+def test_job_submit_resolves_group_name_to_id_in_payload(runner, monkeypatch):
+    captured = {}
+
+    def handler(request):
+        if request.method == "GET":
+            return httpx.Response(200, json=[{"id": 1, "name": "g1", "table_count": 2}])
+        captured["body"] = request.read()
+        return httpx.Response(202, json={"id": 5, "status": "PENDING"})
+
+    _install_mock_transport(monkeypatch, handler)
+    monkeypatch.setenv(client_module.API_URL_ENV_VAR, "http://testserver")
+    monkeypatch.setenv(client_module.API_KEY_ENV_VAR, "test-key")
+
+    result = runner.invoke(
+        cli.cli, ["api", "job", "submit", "--cluster", "1", "--type", "backup-full", "--group", "g1"]
+    )
+
+    assert result.exit_code == 0
+    assert b'"group_id":1' in captured["body"]
+    assert b"g1" not in captured["body"]
+
+
+def test_job_submit_with_unresolvable_group_name_fails_clearly(runner, monkeypatch):
+    def handler(request):
+        if request.method == "GET":
+            return httpx.Response(200, json=[{"id": 1, "name": "g1", "table_count": 2}])
+        raise AssertionError("job submission should not happen when the group name is unresolvable")
+
+    _install_mock_transport(monkeypatch, handler)
+    monkeypatch.setenv(client_module.API_URL_ENV_VAR, "http://testserver")
+    monkeypatch.setenv(client_module.API_KEY_ENV_VAR, "test-key")
+
+    result = runner.invoke(
+        cli.cli,
+        ["api", "job", "submit", "--cluster", "1", "--type", "backup-full", "--group", "no_such_group"],
+    )
+
+    assert result.exit_code != 0
+    assert "not found" in result.output.lower()
+
+
 def test_job_submit_with_wait_polls_until_terminal_and_fails_on_failure(runner, monkeypatch):
     calls = {"n": 0}
 
     def handler(request):
+        if request.method == "GET" and request.url.path.endswith("/inventory-groups"):
+            return httpx.Response(200, json=[{"id": 1, "name": "g1", "table_count": 2}])
         if request.method == "POST":
             return httpx.Response(202, json={"id": 5, "status": "PENDING"})
         calls["n"] += 1
@@ -145,6 +190,72 @@ def test_job_submit_with_wait_polls_until_terminal_and_fails_on_failure(runner, 
 
     assert result.exit_code == 1
     assert "failed" in result.output.lower()
+
+
+def test_schedule_add_resolves_group_name_to_id(runner, monkeypatch):
+    captured = {}
+
+    def handler(request):
+        if request.method == "GET":
+            return httpx.Response(200, json=[{"id": 3, "name": "g1", "table_count": 1}])
+        captured["body"] = request.read()
+        return httpx.Response(201, json={"id": 9, "next_run_at": "2026-01-01T00:00:00Z"})
+
+    _install_mock_transport(monkeypatch, handler)
+    monkeypatch.setenv(client_module.API_URL_ENV_VAR, "http://testserver")
+    monkeypatch.setenv(client_module.API_KEY_ENV_VAR, "test-key")
+
+    result = runner.invoke(
+        cli.cli,
+        [
+            "api",
+            "schedule",
+            "add",
+            "--cluster",
+            "1",
+            "--type",
+            "backup_full",
+            "--group",
+            "g1",
+            "--cadence",
+            "0 1 * * *",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "Created schedule 9" in result.output
+    assert b'"inventory_group_id":3' in captured["body"]
+
+
+def test_schedule_add_with_unresolvable_group_name_fails_clearly(runner, monkeypatch):
+    def handler(request):
+        if request.method == "GET":
+            return httpx.Response(200, json=[{"id": 3, "name": "g1", "table_count": 1}])
+        raise AssertionError("schedule creation should not happen when the group name is unresolvable")
+
+    _install_mock_transport(monkeypatch, handler)
+    monkeypatch.setenv(client_module.API_URL_ENV_VAR, "http://testserver")
+    monkeypatch.setenv(client_module.API_KEY_ENV_VAR, "test-key")
+
+    result = runner.invoke(
+        cli.cli,
+        [
+            "api",
+            "schedule",
+            "add",
+            "--cluster",
+            "1",
+            "--type",
+            "backup_full",
+            "--group",
+            "no_such_group",
+            "--cadence",
+            "0 1 * * *",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "not found" in result.output.lower()
 
 
 def test_schedule_run_due_reports_triggered_count(runner, monkeypatch):

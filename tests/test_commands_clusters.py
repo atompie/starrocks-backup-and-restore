@@ -4,7 +4,7 @@ import pytest
 
 from starrocks_br import exceptions
 from starrocks_br.commands.clusters import delete_cluster
-from starrocks_br.store.models import Base, Cluster, Job, Schedule
+from starrocks_br.store.models import Base, Cluster, InventoryGroup, Job, Schedule
 from starrocks_br.store.session import get_engine, session_scope
 
 
@@ -49,11 +49,14 @@ def test_delete_cluster_blocked_by_active_job(sqlite_store):
 def test_delete_cluster_blocked_by_enabled_schedule(sqlite_store):
     with session_scope() as session:
         cluster = _make_cluster(session)
+        group = InventoryGroup(cluster_id=cluster.id, name="g1")
+        session.add(group)
+        session.flush()
         session.add(
             Schedule(
                 cluster_id=cluster.id,
                 job_type="backup_full",
-                group_name="g1",
+                inventory_group_id=group.id,
                 cadence="0 0 * * *",
                 backend="thread",
                 enabled=True,

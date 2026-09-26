@@ -24,6 +24,7 @@ from starrocks_br.store.models import (
     BackupPartition,
     Base,
     Cluster,
+    InventoryGroup,
     Job,
     RestoreHistory,
     RunStatus,
@@ -104,7 +105,7 @@ def test_schedule_requires_existing_cluster(session):
     schedule = Schedule(
         cluster_id=999,
         job_type="backup_full",
-        group_name="g1",
+        inventory_group_id=1,
         cadence="0 1 * * *",
         next_run_at=datetime.datetime.now(datetime.timezone.utc),
     )
@@ -117,11 +118,14 @@ def test_schedule_links_to_cluster(session):
     cluster = _make_cluster()
     session.add(cluster)
     session.commit()
+    group = InventoryGroup(cluster_id=cluster.id, name="g1")
+    session.add(group)
+    session.commit()
 
     schedule = Schedule(
         cluster_id=cluster.id,
         job_type="backup_full",
-        group_name="g1",
+        inventory_group_id=group.id,
         cadence="0 1 * * *",
         next_run_at=datetime.datetime.now(datetime.timezone.utc),
     )
@@ -136,14 +140,17 @@ def test_table_inventory_uniqueness_per_cluster(session):
     cluster = _make_cluster()
     session.add(cluster)
     session.commit()
+    group = InventoryGroup(cluster_id=cluster.id, name="g1")
+    session.add(group)
+    session.commit()
 
     session.add(
-        TableInventory(cluster_id=cluster.id, inventory_group="g1", database_name="db1", table_name="t1")
+        TableInventory(cluster_id=cluster.id, inventory_group_id=group.id, database_name="db1", table_name="t1")
     )
     session.commit()
 
     session.add(
-        TableInventory(cluster_id=cluster.id, inventory_group="g1", database_name="db1", table_name="t1")
+        TableInventory(cluster_id=cluster.id, inventory_group_id=group.id, database_name="db1", table_name="t1")
     )
     with pytest.raises(IntegrityError):
         session.commit()
@@ -239,26 +246,37 @@ def test_ops_tables_are_not_unique_across_different_clusters(session):
     cluster_b = _make_cluster("cluster-b")
     session.add_all([cluster_a, cluster_b])
     session.commit()
+    group_a = InventoryGroup(cluster_id=cluster_a.id, name="g1")
+    group_b = InventoryGroup(cluster_id=cluster_b.id, name="g1")
+    session.add_all([group_a, group_b])
+    session.commit()
 
     session.add(
-        TableInventory(cluster_id=cluster_a.id, inventory_group="g1", database_name="db1", table_name="t1")
+        TableInventory(cluster_id=cluster_a.id, inventory_group_id=group_a.id, database_name="db1", table_name="t1")
     )
     session.add(
-        TableInventory(cluster_id=cluster_b.id, inventory_group="g1", database_name="db1", table_name="t1")
+        TableInventory(cluster_id=cluster_b.id, inventory_group_id=group_b.id, database_name="db1", table_name="t1")
     )
     session.commit()  # must not raise
 
 
-def test_deleting_cluster_cascades_to_all_five_ops_tables(session):
+def test_deleting_cluster_cascades_to_all_ops_tables(session):
     """Validates PRAGMA foreign_keys=ON wiring in store/session.py, not just the model
-    declarations - if this fails, suspect the pragma event hook first."""
+    declarations - if this fails, suspect the pragma event hook first. Also covers the
+    two-level cascade: cluster -> inventory_groups -> table_inventory."""
     cluster = _make_cluster()
     session.add(cluster)
     session.commit()
     cluster_id = cluster.id
     now = datetime.datetime.now(datetime.timezone.utc)
+    group = InventoryGroup(cluster_id=cluster_id, name="g1")
+    session.add(group)
+    session.commit()
+    group_id = group.id
 
-    session.add(TableInventory(cluster_id=cluster_id, inventory_group="g1", database_name="db1", table_name="t1"))
+    session.add(
+        TableInventory(cluster_id=cluster_id, inventory_group_id=group_id, database_name="db1", table_name="t1")
+    )
     session.add(
         BackupHistory(
             cluster_id=cluster_id, label="lbl1", backup_type="full", status="FINISHED",
@@ -288,3 +306,4 @@ def test_deleting_cluster_cascades_to_all_five_ops_tables(session):
     assert session.query(RestoreHistory).filter_by(cluster_id=cluster_id).count() == 0
     assert session.query(RunStatus).filter_by(cluster_id=cluster_id).count() == 0
     assert session.query(BackupPartition).filter_by(cluster_id=cluster_id).count() == 0
+    assert session.query(InventoryGroup).filter_by(cluster_id=cluster_id).count() == 0

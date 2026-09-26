@@ -14,7 +14,7 @@
 
 from click.testing import CliRunner
 
-from starrocks_br import cli
+from starrocks_br import cli, inventory_groups
 
 
 def test_prune_keep_last_success(
@@ -799,3 +799,31 @@ def test_prune_group_not_found(
     )
 
     assert result.exit_code == 0
+
+
+def test_prune_with_unresolvable_group_name_fails_clearly(
+    config_file,
+    mock_db,
+    mock_resolved_cluster,
+    mock_healthy_cluster,
+    mock_repo_exists,
+    setup_password_env,
+    mocker,
+):
+    """An unresolvable --group name fails before any backups are queried."""
+    runner = CliRunner()
+
+    mocker.patch(
+        "starrocks_br.inventory_groups.get_group_id_by_name",
+        side_effect=inventory_groups.InventoryGroupNotFoundError("Inventory group 'no_such_group' not found"),
+    )
+    get_backups = mocker.patch("starrocks_br.prune.get_successful_backups")
+
+    result = runner.invoke(
+        cli.prune_command,
+        ["--config", config_file, "--group", "no_such_group", "--keep-last", "5", "--yes"],
+    )
+
+    assert result.exit_code != 0
+    assert "not found" in result.output.lower()
+    get_backups.assert_not_called()

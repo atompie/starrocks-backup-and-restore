@@ -102,7 +102,9 @@ class Schedule(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     cluster_id: Mapped[int] = mapped_column(ForeignKey("clusters.id"), nullable=False, index=True)
     job_type: Mapped[str] = mapped_column(String(32), nullable=False)
-    group_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    inventory_group_id: Mapped[int] = mapped_column(
+        ForeignKey("inventory_groups.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
     cadence: Mapped[str] = mapped_column(String(128), nullable=False)
     backend: Mapped[str | None] = mapped_column(String(64), nullable=True)
     enabled: Mapped[bool] = mapped_column(default=True, nullable=False)
@@ -116,18 +118,37 @@ class Schedule(Base):
     cluster: Mapped["Cluster"] = relationship(back_populates="schedules")
 
 
+class InventoryGroup(Base):
+    __tablename__ = "inventory_groups"
+    __table_args__ = (UniqueConstraint("cluster_id", "name", name="uq_inventory_groups_cluster_name"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    cluster_id: Mapped[int] = mapped_column(ForeignKey("clusters.id", ondelete="CASCADE"), nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(128), nullable=False)
+    created_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    updated_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
+    )
+
+
 class TableInventory(Base):
     __tablename__ = "table_inventory"
     __table_args__ = (
         UniqueConstraint(
-            "cluster_id", "inventory_group", "database_name", "table_name", name="uq_table_inventory_membership"
+            "cluster_id",
+            "inventory_group_id",
+            "database_name",
+            "table_name",
+            name="uq_table_inventory_membership",
         ),
-        Index("ix_table_inventory_cluster_group", "cluster_id", "inventory_group"),
+        Index("ix_table_inventory_cluster_group", "cluster_id", "inventory_group_id"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     cluster_id: Mapped[int] = mapped_column(ForeignKey("clusters.id", ondelete="CASCADE"), nullable=False, index=True)
-    inventory_group: Mapped[str] = mapped_column(String(128), nullable=False)
+    inventory_group_id: Mapped[int] = mapped_column(
+        ForeignKey("inventory_groups.id", ondelete="CASCADE"), nullable=False
+    )
     database_name: Mapped[str] = mapped_column(String(128), nullable=False)
     table_name: Mapped[str] = mapped_column(String(128), nullable=False)
     created_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)

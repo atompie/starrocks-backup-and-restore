@@ -14,7 +14,7 @@
 
 from click.testing import CliRunner
 
-from starrocks_br import cli
+from starrocks_br import cli, inventory_groups
 
 
 def test_backup_incremental_success(
@@ -159,6 +159,79 @@ def test_backup_full_success(
 
     assert result.exit_code == 0
     assert "Backup completed successfully" in result.output
+
+
+def test_backup_full_resolves_group_name_to_id(
+    config_file,
+    mock_db,
+    mock_resolved_cluster,
+    mock_healthy_cluster,
+    mock_repo_exists,
+    mock_validate_tables_exist,
+    setup_password_env,
+    mocker,
+):
+    """The CLI keeps taking --group <name> but resolves it to an id before calling the command layer."""
+    runner = CliRunner()
+
+    resolve_mock = mocker.patch(
+        "starrocks_br.inventory_groups.get_group_id_by_name", return_value=42
+    )
+    mocker.patch(
+        "starrocks_br.planner.build_full_backup_command",
+        return_value="BACKUP DATABASE test_db SNAPSHOT test_db_20251016_full TO test_repo",
+    )
+    find_tables_mock = mocker.patch(
+        "starrocks_br.planner.find_tables_by_group",
+        return_value=[{"database": "test_db", "table": "dim_customers"}],
+    )
+    mocker.patch("starrocks_br.planner.get_all_partitions_for_tables", return_value=[])
+    mocker.patch("starrocks_br.labels.determine_backup_label", return_value="test_db_20251016_full")
+    mocker.patch("starrocks_br.concurrency.reserve_job_slot")
+    mocker.patch("starrocks_br.planner.record_backup_partitions")
+    mocker.patch(
+        "starrocks_br.executor.execute_backup",
+        return_value={
+            "success": True,
+            "final_status": {"state": "FINISHED"},
+            "error_message": None,
+        },
+    )
+
+    result = runner.invoke(
+        cli.backup_full, ["--config", config_file, "--group", "weekly_dimensions"]
+    )
+
+    assert result.exit_code == 0
+    resolve_mock.assert_called_once_with(mocker.ANY, mocker.ANY, "weekly_dimensions")
+    assert find_tables_mock.call_args[0][-1] == 42
+
+
+def test_backup_full_with_unresolvable_group_name_fails_clearly(
+    config_file,
+    mock_db,
+    mock_resolved_cluster,
+    mock_healthy_cluster,
+    mock_repo_exists,
+    setup_password_env,
+    mocker,
+):
+    """An unresolvable --group name fails before any job is created, with a clear error."""
+    runner = CliRunner()
+
+    mocker.patch(
+        "starrocks_br.inventory_groups.get_group_id_by_name",
+        side_effect=inventory_groups.InventoryGroupNotFoundError("Inventory group 'no_such_group' not found"),
+    )
+    execute_backup = mocker.patch("starrocks_br.executor.execute_backup")
+
+    result = runner.invoke(
+        cli.backup_full, ["--config", config_file, "--group", "no_such_group"]
+    )
+
+    assert result.exit_code != 0
+    assert "not found" in result.output.lower()
+    execute_backup.assert_not_called()
 
 
 def test_backup_reserves_slot_before_recording_partitions(

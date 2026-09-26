@@ -21,7 +21,7 @@ def _mock_group_check(monkeypatch, exists=True):
     from starrocks_br import inventory_groups
 
     monkeypatch.setattr(
-        inventory_groups, "group_exists", lambda db, cluster_id, group: exists
+        inventory_groups, "group_exists", lambda db, cluster_id, group_id: exists
     )
 
 
@@ -44,7 +44,7 @@ def test_submit_backup_full_returns_202_with_job(api_client, monkeypatch):
     )
 
     cluster_id = _create_cluster(api_client)
-    response = api_client.post(f"/cluster/{cluster_id}/backups/full", json={"group": "g1"})
+    response = api_client.post(f"/cluster/{cluster_id}/backups/full", json={"group_id": 1})
 
     assert response.status_code == 202
     body = response.json()
@@ -54,7 +54,7 @@ def test_submit_backup_full_returns_202_with_job(api_client, monkeypatch):
 
 
 def test_submit_job_against_unknown_cluster_is_404(api_client):
-    response = api_client.post("/cluster/999/backups/full", json={"group": "g1"})
+    response = api_client.post("/cluster/999/backups/full", json={"group_id": 1})
     assert response.status_code == 404
 
 
@@ -72,7 +72,7 @@ def test_submit_then_poll_to_terminal_state_success(api_client, monkeypatch):
     monkeypatch.setitem(handlers.JOB_HANDLERS, "backup_full", handler)
 
     cluster_id = _create_cluster(api_client)
-    submitted = api_client.post(f"/cluster/{cluster_id}/backups/full", json={"group": "g1"}).json()
+    submitted = api_client.post(f"/cluster/{cluster_id}/backups/full", json={"group_id": 1}).json()
 
     final = _wait_for_terminal(api_client, submitted["id"])
 
@@ -95,7 +95,7 @@ def test_poll_reports_progress_mid_run_then_terminal(api_client, monkeypatch):
     monkeypatch.setitem(handlers.JOB_HANDLERS, "backup_full", handler)
 
     cluster_id = _create_cluster(api_client)
-    submitted = api_client.post(f"/cluster/{cluster_id}/backups/full", json={"group": "g1"}).json()
+    submitted = api_client.post(f"/cluster/{cluster_id}/backups/full", json={"group_id": 1}).json()
 
     deadline = time.time() + 2
     seen_progress = None
@@ -129,7 +129,7 @@ def test_no_progress_phase_reports_running_without_percentage(api_client, monkey
     monkeypatch.setitem(handlers.JOB_HANDLERS, "backup_full", handler)
 
     cluster_id = _create_cluster(api_client)
-    submitted = api_client.post(f"/cluster/{cluster_id}/backups/full", json={"group": "g1"}).json()
+    submitted = api_client.post(f"/cluster/{cluster_id}/backups/full", json={"group_id": 1}).json()
 
     deadline = time.time() + 2
     seen_running = None
@@ -158,7 +158,7 @@ def test_submit_job_failure_is_reported(api_client, monkeypatch):
     monkeypatch.setitem(handlers.JOB_HANDLERS, "backup_full", failing_handler)
 
     cluster_id = _create_cluster(api_client)
-    submitted = api_client.post(f"/cluster/{cluster_id}/backups/full", json={"group": "g1"}).json()
+    submitted = api_client.post(f"/cluster/{cluster_id}/backups/full", json={"group_id": 1}).json()
 
     final = _wait_for_terminal(api_client, submitted["id"])
 
@@ -176,7 +176,7 @@ def test_backend_override_is_honored(api_client, monkeypatch):
 
     cluster_id = _create_cluster(api_client)
     response = api_client.post(
-        f"/cluster/{cluster_id}/backups/full", json={"group": "g1", "backend": "thread"}
+        f"/cluster/{cluster_id}/backups/full", json={"group_id": 1, "backend": "thread"}
     )
 
     assert response.status_code == 202
@@ -188,7 +188,7 @@ def test_disabled_backend_is_rejected_with_422(api_client, monkeypatch):
     cluster_id = _create_cluster(api_client)
 
     response = api_client.post(
-        f"/cluster/{cluster_id}/backups/full", json={"group": "g1", "backend": "kafka"}
+        f"/cluster/{cluster_id}/backups/full", json={"group_id": 1, "backend": "kafka"}
     )
 
     assert response.status_code == 422
@@ -198,7 +198,7 @@ def test_submit_backup_full_unknown_group_is_404(api_client, monkeypatch):
     _mock_group_check(monkeypatch, exists=False)
     cluster_id = _create_cluster(api_client)
 
-    response = api_client.post(f"/cluster/{cluster_id}/backups/full", json={"group": "no_such_group"})
+    response = api_client.post(f"/cluster/{cluster_id}/backups/full", json={"group_id": 999})
 
     assert response.status_code == 404
 
@@ -208,7 +208,7 @@ def test_submit_backup_incremental_unknown_group_is_404(api_client, monkeypatch)
     cluster_id = _create_cluster(api_client)
 
     response = api_client.post(
-        f"/cluster/{cluster_id}/backups/incremental", json={"group": "no_such_group"}
+        f"/cluster/{cluster_id}/backups/incremental", json={"group_id": 999}
     )
 
     assert response.status_code == 404
@@ -228,7 +228,7 @@ def test_submit_backup_full_rejects_foreign_field_is_422(api_client, monkeypatch
     cluster_id = _create_cluster(api_client)
 
     response = api_client.post(
-        f"/cluster/{cluster_id}/backups/full", json={"group": "g1", "keep_last": 5}
+        f"/cluster/{cluster_id}/backups/full", json={"group_id": 1, "keep_last": 5}
     )
 
     assert response.status_code == 422
@@ -239,7 +239,7 @@ def test_submit_restore_both_group_and_table_is_422(api_client):
 
     response = api_client.post(
         f"/cluster/{cluster_id}/restores",
-        json={"target_label": "x", "group": "g1", "table": "t1"},
+        json={"target_label": "x", "group_id": 1, "table": "t1"},
     )
 
     assert response.status_code == 422

@@ -27,7 +27,7 @@ import datetime
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
-from ... import exceptions
+from ... import exceptions, inventory_groups
 from ...commands.schedules import compute_next_run_at, run_due_schedules
 from ...jobs.backend import UnknownBackendError
 from ...store.models import Schedule
@@ -63,12 +63,18 @@ def _get_schedule_or_404(db: Session, cluster_id: int, schedule_id: int) -> Sche
 def create_schedule(cluster_id: int, payload: ScheduleCreate, db: Session = Depends(get_db)) -> Schedule:
     get_cluster_or_404(db, cluster_id)
 
+    if not inventory_groups.group_exists(db, cluster_id, payload.inventory_group_id):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Inventory group id {payload.inventory_group_id} not found on this cluster",
+        )
+
     next_run_at = _compute_next_run_at(payload.cadence)
 
     schedule = Schedule(
         cluster_id=cluster_id,
         job_type=payload.job_type,
-        group_name=payload.group_name,
+        inventory_group_id=payload.inventory_group_id,
         cadence=payload.cadence,
         backend=payload.backend,
         enabled=payload.enabled,
@@ -102,6 +108,13 @@ def update_schedule(
     schedule = _get_schedule_or_404(db, cluster_id, schedule_id)
 
     updates = payload.model_dump(exclude_unset=True)
+    if "inventory_group_id" in updates and not inventory_groups.group_exists(
+        db, cluster_id, updates["inventory_group_id"]
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Inventory group id {updates['inventory_group_id']} not found on this cluster",
+        )
     cadence_changed = "cadence" in updates
     for field, value in updates.items():
         setattr(schedule, field, value)

@@ -4,7 +4,7 @@ import pytest
 
 from starrocks_br import exceptions
 from starrocks_br.commands.schedules import compute_next_run_at, run_due_schedules
-from starrocks_br.store.models import Base, Cluster, Job, Schedule
+from starrocks_br.store.models import Base, Cluster, InventoryGroup, Job, Schedule
 from starrocks_br.store.session import get_engine, session_scope
 
 
@@ -29,6 +29,13 @@ def _make_cluster(session) -> Cluster:
     return cluster
 
 
+def _make_group(session, cluster: Cluster, name: str = "g1") -> InventoryGroup:
+    group = InventoryGroup(cluster_id=cluster.id, name=name)
+    session.add(group)
+    session.flush()
+    return group
+
+
 def _make_job(session, cluster: Cluster) -> Job:
     job = Job(cluster_id=cluster.id, job_type="backup_full", backend="thread", params_json="{}")
     session.add(job)
@@ -48,13 +55,14 @@ def test_compute_next_run_at_raises_invalid_cadence_error():
 def test_run_due_schedules_triggers_due_schedule_and_advances_next_run_at(sqlite_store, mocker):
     with session_scope() as session:
         cluster = _make_cluster(session)
+        group = _make_group(session, cluster)
         job = _make_job(session, cluster)
         submit_job = mocker.patch("starrocks_br.commands.schedules.submit_job", return_value=job)
 
         schedule = Schedule(
             cluster_id=cluster.id,
             job_type="backup_full",
-            group_name="g1",
+            inventory_group_id=group.id,
             cadence="* * * * *",
             backend="thread",
             enabled=True,
@@ -73,7 +81,7 @@ def test_run_due_schedules_triggers_due_schedule_and_advances_next_run_at(sqlite
         args = submit_job.call_args.args
         assert args[1].id == cluster.id
         assert args[2] == "backup_full"
-        assert args[3] == {"group": "g1"}
+        assert args[3] == {"group_id": group.id}
         assert args[4] == "thread"
 
 
@@ -82,11 +90,12 @@ def test_run_due_schedules_skips_not_yet_due_schedule(sqlite_store, mocker):
 
     with session_scope() as session:
         cluster = _make_cluster(session)
+        group = _make_group(session, cluster)
         session.add(
             Schedule(
                 cluster_id=cluster.id,
                 job_type="backup_full",
-                group_name="g1",
+                inventory_group_id=group.id,
                 cadence="* * * * *",
                 backend="thread",
                 enabled=True,
@@ -106,6 +115,7 @@ def test_run_due_schedules_is_idempotent_when_already_advanced(sqlite_store, moc
     """Simulates a concurrent run-due call already having advanced the row."""
     with session_scope() as session:
         cluster = _make_cluster(session)
+        group = _make_group(session, cluster)
         job = _make_job(session, cluster)
         submit_job = mocker.patch("starrocks_br.commands.schedules.submit_job", return_value=job)
 
@@ -113,7 +123,7 @@ def test_run_due_schedules_is_idempotent_when_already_advanced(sqlite_store, moc
         schedule = Schedule(
             cluster_id=cluster.id,
             job_type="backup_full",
-            group_name="g1",
+            inventory_group_id=group.id,
             cadence="* * * * *",
             backend="thread",
             enabled=True,

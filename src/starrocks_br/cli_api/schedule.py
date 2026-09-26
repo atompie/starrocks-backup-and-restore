@@ -23,7 +23,7 @@ import sys
 import click
 
 from .. import logger
-from .client import add_common_api_options, make_client, request
+from .client import add_common_api_options, make_client, request, resolve_group_id
 
 
 @click.group("schedule")
@@ -41,13 +41,14 @@ def schedule_group():
 def schedule_add(api_url, api_key, cluster_id, job_type, group_name, cadence, backend):
     """Create a recurring backup schedule."""
     with make_client(api_url, api_key) as client:
+        group_id = resolve_group_id(client, cluster_id, group_name)
         response = request(
             client,
             "POST",
             f"/cluster/{cluster_id}/schedules",
             json={
                 "job_type": job_type,
-                "group_name": group_name,
+                "inventory_group_id": group_id,
                 "cadence": cadence,
                 "backend": backend,
             },
@@ -67,7 +68,7 @@ def schedule_list(api_url, api_key, cluster_id):
         state = "enabled" if schedule["enabled"] else "disabled"
         logger.info(
             f"[{schedule['id']}] cluster={schedule['cluster_id']} {schedule['job_type']} "
-            f"group={schedule['group_name']} cadence='{schedule['cadence']}' "
+            f"group_id={schedule['inventory_group_id']} cadence='{schedule['cadence']}' "
             f"next_run_at={schedule['next_run_at']} ({state})"
         )
 

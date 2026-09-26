@@ -44,9 +44,9 @@ def _add_backup_history(session, cluster_id, label, backup_type, finished_at, st
     session.commit()
 
 
-def _add_inventory(session, cluster_id, group, database, table):
+def _add_inventory(session, cluster_id, group_id, database, table):
     session.add(
-        TableInventory(cluster_id=cluster_id, inventory_group=group, database_name=database, table_name=table)
+        TableInventory(cluster_id=cluster_id, inventory_group_id=group_id, database_name=database, table_name=table)
     )
     session.commit()
 
@@ -86,13 +86,16 @@ def test_find_latest_full_backup_scoped_by_cluster(db_with_timezone, sqlite_sess
     assert result is None
 
 
-def test_should_find_partitions_with_specific_baseline_backup(db_with_timezone, sqlite_session, make_cluster):
+def test_should_find_partitions_with_specific_baseline_backup(
+    db_with_timezone, sqlite_session, make_cluster, make_group
+):
     """Test finding partitions with a specific baseline backup."""
     cluster = make_cluster()
+    group_id = make_group(cluster.id, "daily_incremental")
     _add_backup_history(
         sqlite_session, cluster.id, "sales_db_20251010_full", "full", dt.datetime(2025, 10, 10, 10, 0, 0)
     )
-    _add_inventory(sqlite_session, cluster.id, "daily_incremental", "sales_db", "fact_sales")
+    _add_inventory(sqlite_session, cluster.id, group_id, "sales_db", "fact_sales")
     db_with_timezone.query.side_effect = [
         [
             (
@@ -111,7 +114,7 @@ def test_should_find_partitions_with_specific_baseline_backup(db_with_timezone, 
         cluster.id,
         "sales_db",
         "sales_db_20251010_full",
-        group_name="daily_incremental",
+        group_id=group_id,
     )
 
     assert len(partitions) == 1
@@ -133,7 +136,7 @@ def test_should_fail_when_no_full_backup_found(mocker, db_with_timezone, sqlite_
 
     with pytest.raises(exceptions.NoFullBackupFoundError) as exc_info:
         planner.find_recent_partitions(
-            db_with_timezone, sqlite_session, cluster.id, "test_db", group_name="daily_incremental"
+            db_with_timezone, sqlite_session, cluster.id, "test_db", group_id=1
         )
 
     assert exc_info.value.database == "test_db"
@@ -150,15 +153,18 @@ def test_should_fail_when_invalid_baseline_backup(db_with_timezone, sqlite_sessi
             cluster.id,
             "test_db",
             "invalid_backup",
-            group_name="daily_incremental",
+            group_id=1,
         )
 
 
-def test_should_find_partitions_updated_since_latest_full_backup(mocker, db_with_timezone, sqlite_session, make_cluster):
+def test_should_find_partitions_updated_since_latest_full_backup(
+    mocker, db_with_timezone, sqlite_session, make_cluster, make_group
+):
     """Test finding partitions updated since the latest full backup."""
     cluster = make_cluster()
-    _add_inventory(sqlite_session, cluster.id, "daily_incremental", "sales_db", "fact_sales")
-    _add_inventory(sqlite_session, cluster.id, "daily_incremental", "orders_db", "fact_orders")
+    group_id = make_group(cluster.id, "daily_incremental")
+    _add_inventory(sqlite_session, cluster.id, group_id, "sales_db", "fact_sales")
+    _add_inventory(sqlite_session, cluster.id, group_id, "orders_db", "fact_orders")
     db_with_timezone.query.side_effect = [
         [
             (
@@ -188,7 +194,7 @@ def test_should_find_partitions_updated_since_latest_full_backup(mocker, db_with
     )
 
     partitions = planner.find_recent_partitions(
-        db_with_timezone, sqlite_session, cluster.id, "sales_db", group_name="daily_incremental"
+        db_with_timezone, sqlite_session, cluster.id, "sales_db", group_id=group_id
     )
 
     assert len(partitions) == 2
@@ -237,10 +243,11 @@ def test_should_handle_single_partition():
     assert "TO `repo`" in command
 
 
-def test_should_format_date_correctly_in_query(mocker, db_with_timezone, sqlite_session, make_cluster):
+def test_should_format_date_correctly_in_query(mocker, db_with_timezone, sqlite_session, make_cluster, make_group):
     """Test that the query uses the correct baseline time format and SHOW PARTITIONS command."""
     cluster = make_cluster()
-    _add_inventory(sqlite_session, cluster.id, "daily_incremental", "sales_db", "fact_sales")
+    group_id = make_group(cluster.id, "daily_incremental")
+    _add_inventory(sqlite_session, cluster.id, group_id, "sales_db", "fact_sales")
     db_with_timezone.query.side_effect = [
         [],
     ]
@@ -255,21 +262,22 @@ def test_should_format_date_correctly_in_query(mocker, db_with_timezone, sqlite_
     )
 
     planner.find_recent_partitions(
-        db_with_timezone, sqlite_session, cluster.id, "sales_db", group_name="daily_incremental"
+        db_with_timezone, sqlite_session, cluster.id, "sales_db", group_id=group_id
     )
 
     partitions_query = db_with_timezone.query.call_args_list[0][0][0]
     assert "SHOW PARTITIONS FROM `sales_db`.`fact_sales`" in partitions_query
 
 
-def test_should_build_full_backup_command_with_wildcard(sqlite_session, make_cluster):
+def test_should_build_full_backup_command_with_wildcard(sqlite_session, make_cluster, make_group):
     """Test building full backup command when group contains wildcard."""
     cluster = make_cluster()
-    _add_inventory(sqlite_session, cluster.id, "monthly_full", "sales_db", "*")
-    _add_inventory(sqlite_session, cluster.id, "monthly_full", "sales_db", "dim_customers")
+    group_id = make_group(cluster.id, "monthly_full")
+    _add_inventory(sqlite_session, cluster.id, group_id, "sales_db", "*")
+    _add_inventory(sqlite_session, cluster.id, group_id, "sales_db", "dim_customers")
 
     command = planner.build_full_backup_command(
-        sqlite_session, cluster.id, "monthly_full", "my_repo", "sales_db_20251015_full", "sales_db"
+        sqlite_session, cluster.id, group_id, "my_repo", "sales_db_20251015_full", "sales_db"
     )
 
     expected = """BACKUP DATABASE `sales_db` SNAPSHOT `sales_db_20251015_full`
@@ -277,14 +285,15 @@ def test_should_build_full_backup_command_with_wildcard(sqlite_session, make_clu
     assert command == expected
 
 
-def test_should_build_full_backup_command_with_specific_tables(sqlite_session, make_cluster):
+def test_should_build_full_backup_command_with_specific_tables(sqlite_session, make_cluster, make_group):
     """Test building full backup command with specific tables."""
     cluster = make_cluster()
-    _add_inventory(sqlite_session, cluster.id, "weekly_dimensions", "sales_db", "dim_customers")
-    _add_inventory(sqlite_session, cluster.id, "weekly_dimensions", "sales_db", "dim_products")
+    group_id = make_group(cluster.id, "weekly_dimensions")
+    _add_inventory(sqlite_session, cluster.id, group_id, "sales_db", "dim_customers")
+    _add_inventory(sqlite_session, cluster.id, group_id, "sales_db", "dim_products")
 
     command = planner.build_full_backup_command(
-        sqlite_session, cluster.id, "weekly_dimensions", "my_repo", "weekly_backup_20251015", "sales_db"
+        sqlite_session, cluster.id, group_id, "my_repo", "weekly_backup_20251015", "sales_db"
     )
 
     expected = """BACKUP DATABASE `sales_db` SNAPSHOT `weekly_backup_20251015`
@@ -298,29 +307,31 @@ def test_should_return_empty_command_when_no_tables_in_group(sqlite_session, mak
     """Test that build_full_backup_command returns empty when no tables in group."""
     cluster = make_cluster()
 
-    command = planner.build_full_backup_command(sqlite_session, cluster.id, "empty_group", "repo", "label", "test_db")
+    command = planner.build_full_backup_command(sqlite_session, cluster.id, 999, "repo", "label", "test_db")
 
     assert command == ""
 
 
-def test_should_return_empty_command_when_no_tables_for_database(sqlite_session, make_cluster):
+def test_should_return_empty_command_when_no_tables_for_database(sqlite_session, make_cluster, make_group):
     """Test that build_full_backup_command returns empty when no tables for specific database."""
     cluster = make_cluster()
-    _add_inventory(sqlite_session, cluster.id, "group", "other_db", "table1")
+    group_id = make_group(cluster.id, "group")
+    _add_inventory(sqlite_session, cluster.id, group_id, "other_db", "table1")
 
-    command = planner.build_full_backup_command(sqlite_session, cluster.id, "group", "repo", "label", "test_db")
+    command = planner.build_full_backup_command(sqlite_session, cluster.id, group_id, "repo", "label", "test_db")
 
     assert command == ""
 
 
-def test_should_find_tables_by_group(sqlite_session, make_cluster):
+def test_should_find_tables_by_group(sqlite_session, make_cluster, make_group):
     """Test finding tables by inventory group."""
     cluster = make_cluster()
-    _add_inventory(sqlite_session, cluster.id, "daily_incremental", "sales_db", "fact_sales")
-    _add_inventory(sqlite_session, cluster.id, "daily_incremental", "sales_db", "dim_customers")
-    _add_inventory(sqlite_session, cluster.id, "daily_incremental", "orders_db", "fact_orders")
+    group_id = make_group(cluster.id, "daily_incremental")
+    _add_inventory(sqlite_session, cluster.id, group_id, "sales_db", "fact_sales")
+    _add_inventory(sqlite_session, cluster.id, group_id, "sales_db", "dim_customers")
+    _add_inventory(sqlite_session, cluster.id, group_id, "orders_db", "fact_orders")
 
-    tables = planner.find_tables_by_group(sqlite_session, cluster.id, "daily_incremental")
+    tables = planner.find_tables_by_group(sqlite_session, cluster.id, group_id)
 
     assert len(tables) == 3
     assert {"database": "sales_db", "table": "fact_sales"} in tables
@@ -328,13 +339,14 @@ def test_should_find_tables_by_group(sqlite_session, make_cluster):
     assert {"database": "orders_db", "table": "fact_orders"} in tables
 
 
-def test_should_find_tables_by_group_with_wildcard(sqlite_session, make_cluster):
+def test_should_find_tables_by_group_with_wildcard(sqlite_session, make_cluster, make_group):
     """Test finding tables by group including wildcard entries."""
     cluster = make_cluster()
-    _add_inventory(sqlite_session, cluster.id, "monthly_full", "sales_db", "*")
-    _add_inventory(sqlite_session, cluster.id, "monthly_full", "orders_db", "fact_orders")
+    group_id = make_group(cluster.id, "monthly_full")
+    _add_inventory(sqlite_session, cluster.id, group_id, "sales_db", "*")
+    _add_inventory(sqlite_session, cluster.id, group_id, "orders_db", "fact_orders")
 
-    tables = planner.find_tables_by_group(sqlite_session, cluster.id, "monthly_full")
+    tables = planner.find_tables_by_group(sqlite_session, cluster.id, group_id)
 
     assert len(tables) == 2
     assert {"database": "sales_db", "table": "*"} in tables
@@ -345,26 +357,30 @@ def test_should_return_empty_list_when_group_not_found(sqlite_session, make_clus
     """Test that find_tables_by_group returns empty list when group not found."""
     cluster = make_cluster()
 
-    tables = planner.find_tables_by_group(sqlite_session, cluster.id, "nonexistent_group")
+    tables = planner.find_tables_by_group(sqlite_session, cluster.id, 999)
 
     assert len(tables) == 0
 
 
-def test_find_tables_by_group_scoped_by_cluster(sqlite_session, make_cluster):
+def test_find_tables_by_group_scoped_by_cluster(sqlite_session, make_cluster, make_group):
     """A table-inventory row on another cluster must not leak into this cluster's group lookup."""
     cluster_a = make_cluster("cluster-a")
     cluster_b = make_cluster("cluster-b")
-    _add_inventory(sqlite_session, cluster_a.id, "daily_incremental", "sales_db", "fact_sales")
+    group_id = make_group(cluster_a.id, "daily_incremental")
+    _add_inventory(sqlite_session, cluster_a.id, group_id, "sales_db", "fact_sales")
 
-    tables = planner.find_tables_by_group(sqlite_session, cluster_b.id, "daily_incremental")
+    tables = planner.find_tables_by_group(sqlite_session, cluster_b.id, group_id)
 
     assert tables == []
 
 
-def test_should_find_recent_partitions_with_group_filtering(mocker, db_with_timezone, sqlite_session, make_cluster):
+def test_should_find_recent_partitions_with_group_filtering(
+    mocker, db_with_timezone, sqlite_session, make_cluster, make_group
+):
     """Test finding recent partitions filtered by inventory group."""
     cluster = make_cluster()
-    _add_inventory(sqlite_session, cluster.id, "daily_incremental", "sales_db", "fact_sales")
+    group_id = make_group(cluster.id, "daily_incremental")
+    _add_inventory(sqlite_session, cluster.id, group_id, "sales_db", "fact_sales")
     db_with_timezone.query.side_effect = [
         [
             (
@@ -387,7 +403,7 @@ def test_should_find_recent_partitions_with_group_filtering(mocker, db_with_time
     )
 
     partitions = planner.find_recent_partitions(
-        db_with_timezone, sqlite_session, cluster.id, "sales_db", group_name="daily_incremental"
+        db_with_timezone, sqlite_session, cluster.id, "sales_db", group_id=group_id
     )
 
     assert len(partitions) == 1
@@ -399,10 +415,13 @@ def test_should_find_recent_partitions_with_group_filtering(mocker, db_with_time
     assert db_with_timezone.query.call_count == 1
 
 
-def test_should_handle_no_recent_partitions_with_group_filtering(mocker, db_with_timezone, sqlite_session, make_cluster):
+def test_should_handle_no_recent_partitions_with_group_filtering(
+    mocker, db_with_timezone, sqlite_session, make_cluster, make_group
+):
     """Test handling when no recent partitions exist for group tables."""
     cluster = make_cluster()
-    _add_inventory(sqlite_session, cluster.id, "daily_incremental", "sales_db", "fact_sales")
+    group_id = make_group(cluster.id, "daily_incremental")
+    _add_inventory(sqlite_session, cluster.id, group_id, "sales_db", "fact_sales")
     db_with_timezone.query.side_effect = [
         [
             (
@@ -425,7 +444,7 @@ def test_should_handle_no_recent_partitions_with_group_filtering(mocker, db_with
     )
 
     partitions = planner.find_recent_partitions(
-        db_with_timezone, sqlite_session, cluster.id, "sales_db", group_name="daily_incremental"
+        db_with_timezone, sqlite_session, cluster.id, "sales_db", group_id=group_id
     )
 
     assert len(partitions) == 0
@@ -446,7 +465,7 @@ def test_should_return_empty_partitions_when_no_group_tables(mocker, db_with_tim
     )
 
     partitions = planner.find_recent_partitions(
-        db_with_timezone, sqlite_session, cluster.id, "test_db", group_name="empty_group"
+        db_with_timezone, sqlite_session, cluster.id, "test_db", group_id=999
     )
 
     assert len(partitions) == 0
@@ -583,10 +602,13 @@ def test_should_return_empty_list_when_no_tables_for_database_in_get_all_partiti
     db_with_timezone.query.assert_not_called()
 
 
-def test_find_recent_partitions_handles_wildcard_group(mocker, db_with_timezone, sqlite_session, make_cluster):
+def test_find_recent_partitions_handles_wildcard_group(
+    mocker, db_with_timezone, sqlite_session, make_cluster, make_group
+):
     """Test that find_recent_partitions correctly handles wildcard table groups."""
     cluster = make_cluster()
-    _add_inventory(sqlite_session, cluster.id, "monthly_full", "sales_db", "*")
+    group_id = make_group(cluster.id, "monthly_full")
+    _add_inventory(sqlite_session, cluster.id, group_id, "sales_db", "*")
     db_with_timezone.query.side_effect = [
         [("fact_sales",), ("dim_customers",)],
         [
@@ -619,7 +641,7 @@ def test_find_recent_partitions_handles_wildcard_group(mocker, db_with_timezone,
     )
 
     partitions = planner.find_recent_partitions(
-        db_with_timezone, sqlite_session, cluster.id, "sales_db", group_name="monthly_full"
+        db_with_timezone, sqlite_session, cluster.id, "sales_db", group_id=group_id
     )
 
     assert len(partitions) == 2
@@ -644,12 +666,15 @@ def test_find_recent_partitions_handles_wildcard_group(mocker, db_with_timezone,
     assert "SHOW PARTITIONS FROM `sales_db`.`dim_customers`" in show_partitions_query_2
 
 
-def test_find_recent_partitions_with_multiple_tables_mixed_timestamps(mocker, db_with_timezone, sqlite_session, make_cluster):
+def test_find_recent_partitions_with_multiple_tables_mixed_timestamps(
+    mocker, db_with_timezone, sqlite_session, make_cluster, make_group
+):
     """Test finding recent partitions across multiple tables with mixed old and new partitions."""
     cluster = make_cluster()
-    _add_inventory(sqlite_session, cluster.id, "daily_incremental", "sales_db", "fact_sales")
-    _add_inventory(sqlite_session, cluster.id, "daily_incremental", "sales_db", "fact_orders")
-    _add_inventory(sqlite_session, cluster.id, "daily_incremental", "sales_db", "dim_products")
+    group_id = make_group(cluster.id, "daily_incremental")
+    _add_inventory(sqlite_session, cluster.id, group_id, "sales_db", "fact_sales")
+    _add_inventory(sqlite_session, cluster.id, group_id, "sales_db", "fact_orders")
+    _add_inventory(sqlite_session, cluster.id, group_id, "sales_db", "dim_products")
     # find_tables_by_group orders rows by (database_name, table_name), so with all
     # three tables in "sales_db" the SHOW PARTITIONS calls happen alphabetically:
     # dim_products, fact_orders, fact_sales.
@@ -724,7 +749,7 @@ def test_find_recent_partitions_with_multiple_tables_mixed_timestamps(mocker, db
     )
 
     partitions = planner.find_recent_partitions(
-        db_with_timezone, sqlite_session, cluster.id, "sales_db", group_name="daily_incremental"
+        db_with_timezone, sqlite_session, cluster.id, "sales_db", group_id=group_id
     )
 
     # Should only include partitions with timestamps after 2025-10-10 10:00:00

@@ -99,7 +99,7 @@ class NoPartitionsFoundError(StarRocksBRError):
 
 
 class NoTablesFoundError(StarRocksBRError):
-    def __init__(self, group: str = None, label: str = None):
+    def __init__(self, group: int | None = None, label: str = None):
         self.group = group
         self.label = label
         if group and label:
@@ -134,7 +134,7 @@ class NoFullBackupFoundError(StarRocksBRError):
 
 
 class InvalidTablesInInventoryError(StarRocksBRError):
-    def __init__(self, database: str, invalid_tables: list[str], group: str = None):
+    def __init__(self, database: str, invalid_tables: list[str], group: int | None = None):
         self.database = database
         self.invalid_tables = invalid_tables
         self.group = group

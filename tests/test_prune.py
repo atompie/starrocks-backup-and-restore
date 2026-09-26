@@ -19,7 +19,7 @@ import datetime as dt
 import pytest
 
 from starrocks_br import prune
-from starrocks_br.store.models import BackupHistory, BackupPartition, TableInventory
+from starrocks_br.store.models import BackupHistory, BackupPartition, InventoryGroup, TableInventory
 
 
 def _add_backup_history(session, cluster_id, label, finished_at, repository="test_repo", status="FINISHED"):
@@ -69,18 +69,25 @@ class TestGetSuccessfulBackups:
                     partition_name="p1",
                 )
             )
+        group = InventoryGroup(cluster_id=cluster.id, name="prod_group")
+        sqlite_session.add(group)
+        sqlite_session.commit()
         sqlite_session.add(
             TableInventory(
-                cluster_id=cluster.id, inventory_group="prod_group", database_name="sales_db", table_name="orders"
+                cluster_id=cluster.id, inventory_group_id=group.id, database_name="sales_db", table_name="orders"
             )
         )
         sqlite_session.commit()
 
-        result = prune.get_successful_backups(sqlite_session, cluster.id, "test_repo", group="prod_group")
+        result = prune.get_successful_backups(sqlite_session, cluster.id, "test_repo", group=group.id)
 
         assert len(result) == 2
-        assert result[0] == {"label": "backup1", "finished_at": str(dt.datetime(2024, 1, 1)), "inventory_group": "prod_group"}
-        assert result[1]["inventory_group"] == "prod_group"
+        assert result[0] == {
+            "label": "backup1",
+            "finished_at": str(dt.datetime(2024, 1, 1)),
+            "inventory_group_id": group.id,
+        }
+        assert result[1]["inventory_group_id"] == group.id
 
     def test_get_backups_empty_result(self, sqlite_session, make_cluster):
         """Test getting backups when none exist."""

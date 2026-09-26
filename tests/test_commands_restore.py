@@ -41,7 +41,7 @@ def fake_session(mocker):
 
 def test_run_restore_rejects_group_and_table_together(cluster, mock_decrypt):
     with pytest.raises(ValueError, match="Cannot specify both"):
-        restore_command.run_restore(cluster, {"target_label": "lbl", "group": "g", "table": "t"})
+        restore_command.run_restore(cluster, {"target_label": "lbl", "group_id": 42, "table": "t"})
 
 
 def test_run_restore_delegates_to_execute_restore_flow(
@@ -89,7 +89,7 @@ def test_run_restore_raises_no_tables_found_error_when_backup_has_no_matching_ta
     mocker.patch("starrocks_br.restore.get_tables_from_backup", return_value=[])
 
     with pytest.raises(exceptions.NoTablesFoundError):
-        restore_command.run_restore(cluster, {"target_label": "full_lbl", "group": "g"})
+        restore_command.run_restore(cluster, {"target_label": "full_lbl", "group_id": 42})
 
 
 def test_run_restore_raises_restore_execution_error_on_flow_failure(

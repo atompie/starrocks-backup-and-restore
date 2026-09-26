@@ -18,7 +18,7 @@ import time
 import click
 
 from .. import logger
-from .client import add_common_api_options, make_client, request
+from .client import add_common_api_options, make_client, request, resolve_group_id
 
 _ENDPOINT_BY_TYPE = {
     "backup-full": "backups/full",
@@ -76,23 +76,25 @@ def job_submit(
     wait,
 ):
     """Submit a backup/restore/prune job against a registered cluster."""
-    payload = {
-        "group": group,
-        "name": name,
-        "baseline_backup": baseline_backup,
-        "target_label": target_label,
-        "table": table,
-        "rename_suffix": rename_suffix,
-        "keep_last": keep_last,
-        "older_than": older_than,
-        "snapshot": snapshot,
-        "snapshots": snapshots,
-        "dry_run": dry_run,
-        "backend": backend,
-    }
-    payload = {k: v for k, v in payload.items() if v is not None}
-
     with make_client(api_url, api_key) as client:
+        group_id = resolve_group_id(client, cluster_id, group) if group else None
+
+        payload = {
+            "group_id": group_id,
+            "name": name,
+            "baseline_backup": baseline_backup,
+            "target_label": target_label,
+            "table": table,
+            "rename_suffix": rename_suffix,
+            "keep_last": keep_last,
+            "older_than": older_than,
+            "snapshot": snapshot,
+            "snapshots": snapshots,
+            "dry_run": dry_run,
+            "backend": backend,
+        }
+        payload = {k: v for k, v in payload.items() if v is not None}
+
         response = request(client, "POST", f"/cluster/{cluster_id}/{_ENDPOINT_BY_TYPE[job_type]}", json=payload)
         job = response.json()
         logger.success(f"Submitted job {job['id']} (status={job['status']})")

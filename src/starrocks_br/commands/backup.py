@@ -33,9 +33,9 @@ def _raise_for_backup_failure(result: dict) -> None:
 
 
 def run_backup_full(cluster: Cluster, params: dict[str, Any], on_progress: OnProgress = None) -> dict:
-    group = params.get("group")
+    group = params.get("group_id")
     if not group:
-        raise ValueError("'group' is required for backup_full")
+        raise ValueError("'group_id' is required for backup_full")
     name = params.get("name")
 
     database = connect(cluster)
@@ -85,9 +85,9 @@ def run_backup_full(cluster: Cluster, params: dict[str, Any], on_progress: OnPro
 def run_backup_incremental(
     cluster: Cluster, params: dict[str, Any], on_progress: OnProgress = None
 ) -> dict:
-    group = params.get("group")
+    group = params.get("group_id")
     if not group:
-        raise ValueError("'group' is required for backup_incremental")
+        raise ValueError("'group_id' is required for backup_incremental")
     name = params.get("name")
     baseline_backup = params.get("baseline_backup")
 
@@ -116,7 +116,7 @@ def run_backup_incremental(
                 cluster.id,
                 cluster.database,
                 baseline_backup_label=baseline_backup,
-                group_name=group,
+                group_id=group,
             )
             if not partitions:
                 raise RuntimeError("No partitions found to backup")

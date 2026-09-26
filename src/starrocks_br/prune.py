@@ -22,7 +22,7 @@ from .store.models import BackupHistory, BackupPartition, TableInventory
 
 
 def get_successful_backups(
-    session: Session, cluster_id: int, repository: str, group: str = None
+    session: Session, cluster_id: int, repository: str, group: int | None = None
 ) -> list[dict]:
     """Get all successful backups from backup_history, optionally filtered by group.
 
@@ -30,16 +30,16 @@ def get_successful_backups(
         session: SQLite metastore session
         cluster_id: Cluster this backup history belongs to
         repository: Repository name to filter by
-        group: Optional inventory group to filter by
+        group: Optional inventory group id to filter by
 
     Returns:
-        List of backup records as dicts with keys: label, finished_at, inventory_group (if group filtering is used)
+        List of backup records as dicts with keys: label, finished_at, inventory_group_id (if group filtering is used)
     """
     results = []
 
     if group:
         rows = session.execute(
-            select(BackupHistory.label, BackupHistory.finished_at, TableInventory.inventory_group)
+            select(BackupHistory.label, BackupHistory.finished_at, TableInventory.inventory_group_id)
             .distinct()
             .join(BackupPartition, BackupPartition.label == BackupHistory.label)
             .join(
@@ -55,12 +55,14 @@ def get_successful_backups(
                 BackupPartition.cluster_id == cluster_id,
                 BackupHistory.repository == repository,
                 BackupHistory.status == "FINISHED",
-                TableInventory.inventory_group == group,
+                TableInventory.inventory_group_id == group,
             )
             .order_by(BackupHistory.finished_at.asc())
         ).all()
-        for label, finished_at, inventory_group in rows:
-            results.append({"label": label, "finished_at": str(finished_at), "inventory_group": inventory_group})
+        for label, finished_at, inventory_group_id in rows:
+            results.append(
+                {"label": label, "finished_at": str(finished_at), "inventory_group_id": inventory_group_id}
+            )
     else:
         rows = session.execute(
             select(BackupHistory.label, BackupHistory.finished_at)

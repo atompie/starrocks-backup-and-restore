@@ -61,7 +61,7 @@ def find_latest_full_backup(db, session: Session, cluster_id: int, database: str
     return {"label": row.label, "backup_type": row.backup_type, "finished_at": finished_at}
 
 
-def find_tables_by_group(session: Session, cluster_id: int, group_name: str) -> list[dict[str, str]]:
+def find_tables_by_group(session: Session, cluster_id: int, group_id: int) -> list[dict[str, str]]:
     """Find tables belonging to a specific inventory group.
 
     Returns list of dictionaries with keys: database, table.
@@ -69,14 +69,14 @@ def find_tables_by_group(session: Session, cluster_id: int, group_name: str) -> 
     """
     rows = session.scalars(
         select(TableInventory)
-        .where(TableInventory.cluster_id == cluster_id, TableInventory.inventory_group == group_name)
+        .where(TableInventory.cluster_id == cluster_id, TableInventory.inventory_group_id == group_id)
         .order_by(TableInventory.database_name, TableInventory.table_name)
     )
     return [{"database": row.database_name, "table": row.table_name} for row in rows]
 
 
 def validate_tables_exist(
-    db, database: str, tables: list[dict[str, str]], group: str = None
+    db, database: str, tables: list[dict[str, str]], group: int | None = None
 ) -> None:
     """Validate that tables in the inventory actually exist in the database.
 
@@ -84,7 +84,7 @@ def validate_tables_exist(
         db: Database connection
         database: Database name to validate tables against
         tables: List of tables with keys: database, table
-        group: Optional inventory group name for better error messages
+        group: Optional inventory group id for better error messages
 
     Raises:
         InvalidTablesInInventoryError: If any tables don't exist in the database
@@ -118,7 +118,7 @@ def find_recent_partitions(
     database: str,
     baseline_backup_label: str | None = None,
     *,
-    group_name: str,
+    group_id: int,
 ) -> list[dict[str, str]]:
     """Find partitions updated since baseline for tables in the given inventory group.
 
@@ -128,7 +128,7 @@ def find_recent_partitions(
         cluster_id: Cluster this backup history/table inventory belongs to
         database: Database name (StarRocks database scope for backup)
         baseline_backup_label: Optional specific backup label to use as baseline.
-        group_name: Inventory group whose tables will be considered
+        group_id: Id of the inventory group whose tables will be considered
 
     Returns list of dictionaries with keys: database, table, partition_name.
     Only partitions of tables within the specified database are returned.
@@ -161,7 +161,7 @@ def find_recent_partitions(
 
     baseline_dt = timezone.parse_datetime_with_tz(baseline_time_str, cluster_tz)
 
-    group_tables = find_tables_by_group(session, cluster_id, group_name)
+    group_tables = find_tables_by_group(session, cluster_id, group_id)
 
     if not group_tables:
         return []
@@ -265,7 +265,7 @@ def build_incremental_backup_command(
 
 
 def build_full_backup_command(
-    session: Session, cluster_id: int, group_name: str, repository: str, label: str, database: str
+    session: Session, cluster_id: int, group_id: int, repository: str, label: str, database: str
 ) -> str:
     """Build BACKUP command for an inventory group.
 
@@ -273,7 +273,7 @@ def build_full_backup_command(
     simple BACKUP DATABASE command. Otherwise, generate ON (TABLE ...) list for
     the specific tables within the database.
     """
-    tables = find_tables_by_group(session, cluster_id, group_name)
+    tables = find_tables_by_group(session, cluster_id, group_id)
 
     db_entries = [t for t in tables if t["database"] == database]
     if not db_entries:

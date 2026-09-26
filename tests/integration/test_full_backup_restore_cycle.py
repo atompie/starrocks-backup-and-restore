@@ -118,11 +118,12 @@ def test_full_backup_then_restore_recovers_dropped_database(api_client, sr_admin
         json={"name": seeded_database["group"], "tables": [{"database": database, "table": "*"}]},
     )
     assert group_resp.status_code == 201, group_resp.text
+    group_id = group_resp.json()["id"]
 
     # 4. Run a full backup.
     backup_resp = api_client.post(
         f"/cluster/{cluster_id}/backups/full",
-        json={"group": seeded_database["group"], "name": seeded_database["backup_label"]},
+        json={"group_id": group_id, "name": seeded_database["backup_label"]},
     )
     assert backup_resp.status_code == 202, backup_resp.text
     backup_job = _wait_for_job(api_client, backup_resp.json()["id"])
@@ -146,7 +147,7 @@ def test_full_backup_then_restore_recovers_dropped_database(api_client, sr_admin
     # 6. Restore from the full backup.
     restore_resp = api_client.post(
         f"/cluster/{cluster_id}/restores",
-        json={"target_label": seeded_database["backup_label"], "group": seeded_database["group"]},
+        json={"target_label": seeded_database["backup_label"], "group_id": group_id},
     )
     assert restore_resp.status_code == 202, restore_resp.text
     restore_job = _wait_for_job(api_client, restore_resp.json()["id"])

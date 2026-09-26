@@ -17,7 +17,7 @@ OnProgress = Callable[[dict], None] | None
 def run_prune(cluster: Cluster, params: dict[str, Any], on_progress: OnProgress = None) -> dict:
     del on_progress  # prune has no long-running per-snapshot progress to report
 
-    group = params.get("group")
+    group = params.get("group_id")
     keep_last = params.get("keep_last")
     older_than = params.get("older_than")
     snapshot = params.get("snapshot")

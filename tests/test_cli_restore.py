@@ -14,7 +14,7 @@
 
 from click.testing import CliRunner
 
-from starrocks_br import cli
+from starrocks_br import cli, inventory_groups
 
 
 def test_restore_success(
@@ -96,6 +96,9 @@ def test_restore_with_group_filter(
     runner = CliRunner()
 
     mocker.patch("starrocks_br.restore.find_restore_pair", return_value=["test_backup"])
+    mocker.patch(
+        "starrocks_br.inventory_groups.get_group_id_by_name", return_value=42
+    )
     get_tables_mock = mocker.patch(
         "starrocks_br.restore.get_tables_from_backup", return_value=["test_db.fact_table"]
     )
@@ -123,7 +126,43 @@ def test_restore_with_group_filter(
 
     assert result.exit_code == 0
     assert "Restore completed successfully" in result.output
-    assert get_tables_mock.call_args[1]["group"] == "daily_incremental"
+    assert get_tables_mock.call_args[1]["group"] == 42
+
+
+def test_restore_with_unresolvable_group_name_fails_clearly(
+    config_file,
+    mock_db,
+    mock_resolved_cluster,
+    mock_healthy_cluster,
+    mock_repo_exists,
+    setup_password_env,
+    mocker,
+):
+    """An unresolvable --group name fails before any restore is attempted."""
+    runner = CliRunner()
+
+    mocker.patch(
+        "starrocks_br.inventory_groups.get_group_id_by_name",
+        side_effect=inventory_groups.InventoryGroupNotFoundError("Inventory group 'no_such_group' not found"),
+    )
+    execute_flow = mocker.patch("starrocks_br.restore.execute_restore_flow")
+
+    result = runner.invoke(
+        cli.cli,
+        [
+            "restore",
+            "--config",
+            config_file,
+            "--target-label",
+            "test_backup",
+            "--group",
+            "no_such_group",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "not found" in result.output.lower()
+    execute_flow.assert_not_called()
 
 
 def test_restore_with_table_filter(

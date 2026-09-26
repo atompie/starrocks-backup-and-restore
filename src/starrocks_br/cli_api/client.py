@@ -75,6 +75,21 @@ def request(client: httpx.Client, method: str, path: str, **kwargs) -> httpx.Res
     return response
 
 
+def resolve_group_id(client: httpx.Client, cluster_id: int, name: str) -> int:
+    """Resolve an inventory group name to its id, scoped to `cluster_id`.
+
+    The API is id-keyed throughout (per specs/api-inventory-groups), so the
+    CLI - which still takes a human-readable `--group <name>` - lists the
+    cluster's groups and matches by name client-side rather than the API
+    exposing a name-based lookup route.
+    """
+    response = request(client, "GET", f"/cluster/{cluster_id}/inventory-groups")
+    for group in response.json():
+        if group["name"] == name:
+            return group["id"]
+    raise ApiClientError(f"Inventory group '{name}' not found on cluster {cluster_id}")
+
+
 common_api_options = [
     click.option("--api-url", help=f"API server URL. Defaults to {API_URL_ENV_VAR}."),
     click.option("--api-key", help=f"API key. Defaults to {API_KEY_ENV_VAR}."),

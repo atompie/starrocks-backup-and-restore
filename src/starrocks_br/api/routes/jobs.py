@@ -46,10 +46,10 @@ def _submit_backup_job(
     """
     cluster = _get_cluster_or_404(db, cluster_id)
 
-    if not inventory_groups.group_exists(db, cluster_id, payload.group):
+    if not inventory_groups.group_exists(db, cluster_id, payload.group_id):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Inventory group '{payload.group}' not found on cluster '{cluster.name}'",
+            detail=f"Inventory group id {payload.group_id} not found on cluster '{cluster.name}'",
         )
 
     params = payload.model_dump(exclude={"backend"})

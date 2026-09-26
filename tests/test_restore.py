@@ -53,9 +53,11 @@ def _add_backup_partition(session, cluster_id, label, database_name, table_name,
     session.commit()
 
 
-def _add_table_inventory(session, cluster_id, group, database_name, table_name):
+def _add_table_inventory(session, cluster_id, group_id, database_name, table_name):
     session.add(
-        TableInventory(cluster_id=cluster_id, inventory_group=group, database_name=database_name, table_name=table_name)
+        TableInventory(
+            cluster_id=cluster_id, inventory_group_id=group_id, database_name=database_name, table_name=table_name
+        )
     )
     session.commit()
 
@@ -982,18 +984,19 @@ def test_should_get_tables_from_backup_without_group_filter(mocker, sqlite_sessi
     db.query.assert_not_called()
 
 
-def test_should_get_tables_from_backup_with_group_filter(sqlite_session, make_cluster, mocker):
+def test_should_get_tables_from_backup_with_group_filter(sqlite_session, make_cluster, make_group, mocker):
     """Test getting tables from backup with group filtering."""
     db = mocker.Mock()
     cluster = make_cluster()
+    group_id = make_group(cluster.id, "daily_incremental")
     _add_backup_partition(sqlite_session, cluster.id, "sales_db_20251015_full", "sales_db", "fact_sales")
     _add_backup_partition(sqlite_session, cluster.id, "sales_db_20251015_full", "sales_db", "dim_customers")
     _add_backup_partition(sqlite_session, cluster.id, "sales_db_20251015_full", "orders_db", "fact_orders")
-    _add_table_inventory(sqlite_session, cluster.id, "daily_incremental", "sales_db", "fact_sales")
-    _add_table_inventory(sqlite_session, cluster.id, "daily_incremental", "sales_db", "dim_customers")
+    _add_table_inventory(sqlite_session, cluster.id, group_id, "sales_db", "fact_sales")
+    _add_table_inventory(sqlite_session, cluster.id, group_id, "sales_db", "dim_customers")
 
     result = restore.get_tables_from_backup(
-        db, sqlite_session, cluster.id, "sales_db_20251015_full", group="daily_incremental"
+        db, sqlite_session, cluster.id, "sales_db_20251015_full", group=group_id
     )
 
     assert sorted(result) == ["sales_db.dim_customers", "sales_db.fact_sales"]
@@ -1016,24 +1019,25 @@ def test_should_return_empty_list_when_group_has_no_tables(sqlite_session, make_
     _add_backup_partition(sqlite_session, cluster.id, "sales_db_20251015_full", "sales_db", "fact_sales")
 
     result = restore.get_tables_from_backup(
-        db, sqlite_session, cluster.id, "sales_db_20251015_full", group="empty_group"
+        db, sqlite_session, cluster.id, "sales_db_20251015_full", group=999
     )
 
     assert result == []
 
 
-def test_should_get_tables_from_backup_with_wildcard_group_filter(sqlite_session, make_cluster, mocker):
+def test_should_get_tables_from_backup_with_wildcard_group_filter(sqlite_session, make_cluster, make_group, mocker):
     """Test getting tables from backup with group filtering that includes wildcard entries."""
     db = mocker.Mock()
     db.query.return_value = [("fact_sales",), ("dim_customers",)]  # SHOW TABLES FROM sales_db
     cluster = make_cluster()
+    group_id = make_group(cluster.id, "full_database")
     _add_backup_partition(sqlite_session, cluster.id, "sales_db_20251015_full", "sales_db", "fact_sales")
     _add_backup_partition(sqlite_session, cluster.id, "sales_db_20251015_full", "sales_db", "dim_customers")
     _add_backup_partition(sqlite_session, cluster.id, "sales_db_20251015_full", "orders_db", "fact_orders")
-    _add_table_inventory(sqlite_session, cluster.id, "full_database", "sales_db", "*")
+    _add_table_inventory(sqlite_session, cluster.id, group_id, "sales_db", "*")
 
     result = restore.get_tables_from_backup(
-        db, sqlite_session, cluster.id, "sales_db_20251015_full", group="full_database"
+        db, sqlite_session, cluster.id, "sales_db_20251015_full", group=group_id
     )
 
     assert sorted(result) == ["sales_db.dim_customers", "sales_db.fact_sales"]
@@ -1089,7 +1093,7 @@ def test_should_raise_value_error_when_table_and_group_both_specified(sqlite_ses
             sqlite_session,
             cluster.id,
             "sales_db_20251015_full",
-            group="daily_incremental",
+            group=1,
             table="fact_sales",
             database="sales_db",
         )

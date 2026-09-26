@@ -1,15 +1,17 @@
 """Inventory group routes, scoped to a registered cluster.
 
 Per specs/api-inventory-groups, inventory group listing/creation/membership
-management read and write this tool's own SQLite metastore (table_inventory,
-scoped by cluster_id) - no StarRocks connection is needed for these routes at
-all since the move-ops-tables-to-sqlite change.
+management read and write this tool's own SQLite metastore (inventory_groups
+and table_inventory, scoped by cluster_id) - no StarRocks connection is
+needed for these routes at all since the move-ops-tables-to-sqlite change.
+Groups are created with a name but identified everywhere else by id.
 """
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from ... import inventory_groups
+from ...store.models import InventoryGroup
 from ..auth import require_api_key
 from ..deps import get_db
 from ..schemas import (
@@ -43,56 +45,60 @@ def create_inventory_group(
 ) -> dict:
     cluster = get_cluster_or_404(db, cluster_id)
 
-    if inventory_groups.group_exists(db, cluster_id, payload.name):
+    entries = [(table.database, table.table) for table in payload.tables]
+    try:
+        created = inventory_groups.create_group(db, cluster_id, payload.name, entries)
+    except inventory_groups.InventoryGroupAlreadyExistsError as e:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"Inventory group '{payload.name}' already exists on cluster '{cluster.name}'",
-        )
-
-    entries = [(table.database, table.table) for table in payload.tables]
-    inventory_groups.add_memberships_bulk(db, cluster_id, payload.name, entries)
+        ) from e
 
     return {
-        "name": payload.name,
-        "tables": inventory_groups.get_group(db, cluster_id, payload.name),
+        "id": created["id"],
+        "name": created["name"],
+        "tables": inventory_groups.get_group(db, cluster_id, created["id"]),
     }
 
 
 @router.get(
-    "/cluster/{cluster_id}/inventory-groups/{group_name}",
+    "/cluster/{cluster_id}/inventory-groups/{group_id}",
     response_model=InventoryGroupRead,
 )
-def get_inventory_group(cluster_id: int, group_name: str, db: Session = Depends(get_db)) -> dict:
+def get_inventory_group(cluster_id: int, group_id: int, db: Session = Depends(get_db)) -> dict:
     cluster = get_cluster_or_404(db, cluster_id)
 
-    tables = inventory_groups.get_group(db, cluster_id, group_name)
-    if not tables:
+    try:
+        tables = inventory_groups.get_group(db, cluster_id, group_id)
+    except inventory_groups.InventoryGroupNotFoundError as e:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Inventory group '{group_name}' not found on cluster '{cluster.name}'",
-        )
-    return {"name": group_name, "tables": tables}
+            detail=f"Inventory group id {group_id} not found on cluster '{cluster.name}'",
+        ) from e
+
+    group = db.get(InventoryGroup, group_id)
+    return {"id": group_id, "name": group.name, "tables": tables}
 
 
 @router.post(
-    "/cluster/{cluster_id}/inventory-groups/{group_name}/tables",
+    "/cluster/{cluster_id}/inventory-groups/{group_id}/tables",
     response_model=InventoryMembershipRead,
     status_code=status.HTTP_201_CREATED,
 )
 def add_inventory_group_table(
     cluster_id: int,
-    group_name: str,
+    group_id: int,
     payload: InventoryMembershipCreate,
     db: Session = Depends(get_db),
 ) -> dict:
     get_cluster_or_404(db, cluster_id)
 
     try:
-        inventory_groups.add_membership(db, cluster_id, group_name, payload.database, payload.table)
+        inventory_groups.add_membership(db, cluster_id, group_id, payload.database, payload.table)
     except inventory_groups.InventoryMembershipConflictError as e:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e)) from e
 
-    for membership in inventory_groups.get_group(db, cluster_id, group_name):
+    for membership in inventory_groups.get_group(db, cluster_id, group_id):
         if membership["database"] == payload.database and membership["table"] == payload.table:
             return membership
     # Defensive fallback - should be unreachable since add_membership just succeeded.
@@ -105,12 +111,12 @@ def add_inventory_group_table(
 
 
 @router.delete(
-    "/cluster/{cluster_id}/inventory-groups/{group_name}/tables/{database_name}/{table_name}",
+    "/cluster/{cluster_id}/inventory-groups/{group_id}/tables/{database_name}/{table_name}",
     status_code=status.HTTP_204_NO_CONTENT,
 )
 def remove_inventory_group_table(
     cluster_id: int,
-    group_name: str,
+    group_id: int,
     database_name: str,
     table_name: str,
     db: Session = Depends(get_db),
@@ -118,19 +124,21 @@ def remove_inventory_group_table(
     get_cluster_or_404(db, cluster_id)
 
     try:
-        inventory_groups.remove_membership(db, cluster_id, group_name, database_name, table_name)
+        inventory_groups.remove_membership(db, cluster_id, group_id, database_name, table_name)
     except inventory_groups.InventoryMembershipNotFoundError as e:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e)) from e
 
 
 @router.delete(
-    "/cluster/{cluster_id}/inventory-groups/{group_name}",
+    "/cluster/{cluster_id}/inventory-groups/{group_id}",
     status_code=status.HTTP_204_NO_CONTENT,
 )
-def delete_inventory_group(cluster_id: int, group_name: str, db: Session = Depends(get_db)) -> None:
+def delete_inventory_group(cluster_id: int, group_id: int, db: Session = Depends(get_db)) -> None:
     get_cluster_or_404(db, cluster_id)
 
     try:
-        inventory_groups.delete_group(db, cluster_id, group_name)
+        inventory_groups.delete_group(db, cluster_id, group_id)
     except inventory_groups.InventoryGroupNotFoundError as e:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e)) from e
+    except inventory_groups.InventoryGroupInUseError as e:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e)) from e

@@ -62,7 +62,7 @@ class ClusterRead(BaseModel):
 class BackupFullRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    group: str = Field(min_length=1, max_length=128)
+    group_id: int
     name: str | None = None
     backend: str | None = None
 
@@ -70,7 +70,7 @@ class BackupFullRequest(BaseModel):
 class BackupIncrementalRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    group: str = Field(min_length=1, max_length=128)
+    group_id: int
     name: str | None = None
     baseline_backup: str | None = None
     backend: str | None = None
@@ -80,22 +80,22 @@ class RestoreRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     target_label: str = Field(min_length=1)
-    group: str | None = None
+    group_id: int | None = None
     table: str | None = None
     rename_suffix: str = "_restored"
     backend: str | None = None
 
     @model_validator(mode="after")
     def _check_group_and_table_not_both_set(self) -> "RestoreRequest":
-        if self.group and self.table:
-            raise ValueError("Cannot specify both 'group' and 'table'")
+        if self.group_id and self.table:
+            raise ValueError("Cannot specify both 'group_id' and 'table'")
         return self
 
 
 class PruneRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    group: str | None = None
+    group_id: int | None = None
     keep_last: int | None = Field(default=None, gt=0)
     older_than: str | None = None
     snapshot: str | None = None
@@ -132,7 +132,7 @@ class JobRead(BaseModel):
 
 class ScheduleCreate(BaseModel):
     job_type: str = Field(pattern="^(backup_full|backup_incremental)$")
-    group_name: str = Field(min_length=1, max_length=128)
+    inventory_group_id: int
     cadence: str = Field(min_length=1, max_length=128)
     backend: str | None = None
     enabled: bool = True
@@ -140,7 +140,7 @@ class ScheduleCreate(BaseModel):
 
 class ScheduleUpdate(BaseModel):
     job_type: str | None = Field(default=None, pattern="^(backup_full|backup_incremental)$")
-    group_name: str | None = Field(default=None, min_length=1, max_length=128)
+    inventory_group_id: int | None = None
     cadence: str | None = Field(default=None, min_length=1, max_length=128)
     backend: str | None = None
     enabled: bool | None = None
@@ -152,7 +152,7 @@ class ScheduleRead(BaseModel):
     id: int
     cluster_id: int
     job_type: str
-    group_name: str
+    inventory_group_id: int
     cadence: str
     backend: str | None
     enabled: bool
@@ -198,6 +198,7 @@ class RepositoryVerifyResponse(BaseModel):
 
 
 class InventoryGroupSummary(BaseModel):
+    id: int
     name: str
     table_count: int
 
@@ -222,5 +223,6 @@ class InventoryMembershipRead(BaseModel):
 
 
 class InventoryGroupRead(BaseModel):
+    id: int
     name: str
     tables: list[InventoryMembershipRead]
