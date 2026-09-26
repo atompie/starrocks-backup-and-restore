@@ -167,7 +167,7 @@ def test_job_submit_with_wait_polls_until_terminal_and_fails_on_failure(runner, 
     calls = {"n": 0}
 
     def handler(request):
-        if request.method == "GET" and request.url.path.endswith("/inventory-groups"):
+        if request.method == "GET" and request.url.path.startswith("/inventories/cluster/"):
             return httpx.Response(200, json=[{"id": 1, "name": "g1", "table_count": 2}])
         if request.method == "POST":
             return httpx.Response(202, json={"id": 5, "status": "PENDING"})

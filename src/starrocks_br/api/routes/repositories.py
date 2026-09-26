@@ -37,7 +37,7 @@ def verify_repository(payload: RepositoryVerifyRequest) -> RepositoryVerifyRespo
     )
 
 
-@router.get("/cluster/{cluster_id}/repositories", response_model=list[RepositoryRead])
+@router.get("/repositories/cluster/{cluster_id}", response_model=list[RepositoryRead])
 def list_repositories(cluster_id: int, db: Session = Depends(get_db)) -> list[dict]:
     cluster = _get_cluster_or_404(db, cluster_id)
 
@@ -49,7 +49,7 @@ def list_repositories(cluster_id: int, db: Session = Depends(get_db)) -> list[di
 
 
 @router.post(
-    "/cluster/{cluster_id}/repositories",
+    "/repositories/cluster/{cluster_id}",
     response_model=RepositoryRead,
     status_code=status.HTTP_201_CREATED,
 )
@@ -76,7 +76,9 @@ def create_repository(
         database.close()
 
 
-@router.delete("/cluster/{cluster_id}/repositories/{name}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/repositories/cluster/{cluster_id}/name/{name}", status_code=status.HTTP_204_NO_CONTENT
+)
 def delete_repository(cluster_id: int, name: str, db: Session = Depends(get_db)) -> None:
     cluster = _get_cluster_or_404(db, cluster_id)
 

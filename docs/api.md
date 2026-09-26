@@ -215,15 +215,15 @@ id, instead of a StarRocks-side database - a registered cluster's StarRocks
 instance no longer needs an `ops` database at all. A request body still
 containing `ops_database` is silently ignored, not rejected.
 
-### Jobs
+### Manual Backups
 
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | `/cluster/{id}/backups/full` | Submit a full backup. |
-| POST | `/cluster/{id}/backups/incremental` | Submit an incremental backup. |
-| POST | `/cluster/{id}/restores` | Submit a restore. |
-| POST | `/cluster/{id}/prunes` | Submit a prune. |
-| GET | `/job/{id}` | Get a job's status/progress. |
+| POST | `/backup/manual/full/cluster/{id}` | Submit a full backup. |
+| POST | `/backup/manual/incremental/cluster/{id}` | Submit an incremental backup. |
+| POST | `/backup/manual/restore/cluster/{id}` | Submit a restore. |
+| POST | `/backup/manual/prune/cluster/{id}` | Submit a prune. |
+| GET | `/job/{id}` | Get a job's status/progress (any job type, not manual-backup-specific). |
 
 Every submit endpoint returns `202 Accepted` immediately with the created job (`status: PENDING`);
 the work runs asynchronously. Request body fields (all optional, send only what applies):
@@ -263,18 +263,18 @@ otherwise — `state_detail` (e.g. `SNAPSHOTING`, `UPLOADING`, `COMMITTING`, `FI
 either way, so you always know a job is progressing even without a percentage. `error_message` is
 set only when `status` is `FAILED`.
 
-### Schedules
+### Backup Schedules
 
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | `/cluster/{cluster_id}/schedules` | Create a recurring schedule for this cluster. |
-| GET | `/cluster/{cluster_id}/schedules` | List this cluster's schedules. |
-| GET | `/cluster/{cluster_id}/schedule/{id}` | Get one schedule. |
-| PATCH | `/cluster/{cluster_id}/schedule/{id}` | Update cadence/group/backend/enabled (partial). |
-| DELETE | `/cluster/{cluster_id}/schedule/{id}` | Delete a schedule. |
-| POST | `/schedules/run-due` | Trigger every enabled schedule that's currently due, across all clusters. |
+| POST | `/backup/schedules/cluster/{cluster_id}` | Create a recurring schedule for this cluster. |
+| GET | `/backup/schedules/cluster/{cluster_id}` | List this cluster's schedules. |
+| GET | `/backup/schedules/cluster/{cluster_id}/schedule_id/{id}` | Get one schedule. |
+| PATCH | `/backup/schedules/cluster/{cluster_id}/schedule_id/{id}` | Update cadence/group/backend/enabled (partial). |
+| DELETE | `/backup/schedules/cluster/{cluster_id}/schedule_id/{id}` | Delete a schedule. |
+| POST | `/backup/schedules/run` | Trigger every enabled schedule that's currently due, across all clusters. |
 
-`POST /cluster/{cluster_id}/schedules` body:
+`POST /backup/schedules/cluster/{cluster_id}` body:
 
 ```json
 {
@@ -287,7 +287,7 @@ set only when `status` is `FAILED`.
 ```
 `job_type` is `backup_full` or `backup_incremental`. `cadence` is a standard cron expression.
 
-`POST /schedules/run-due` response:
+`POST /backup/schedules/run` response:
 
 ```json
 {"triggered_job_ids": [43, 44], "triggered_count": 2}
@@ -301,11 +301,11 @@ and submitted S3 credentials are never stored in the API's own metadata store.
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/cluster/{id}/repositories` | List repositories that currently exist on this cluster. |
-| POST | `/cluster/{id}/repositories` | Create a new S3-compatible repository on this cluster. |
-| DELETE | `/cluster/{id}/repositories/{name}` | Delete a repository from this cluster (blocked if it holds any snapshot). |
+| GET | `/repositories/cluster/{id}` | List repositories that currently exist on this cluster. |
+| POST | `/repositories/cluster/{id}` | Create a new S3-compatible repository on this cluster. |
+| DELETE | `/repositories/cluster/{id}/name/{name}` | Delete a repository from this cluster (blocked if it holds any snapshot). |
 
-`GET /cluster/{id}/repositories` response:
+`GET /repositories/cluster/{id}` response:
 
 ```json
 [
@@ -320,7 +320,7 @@ and submitted S3 credentials are never stored in the API's own metadata store.
 ```
 Returns `503` (rather than an empty list) if the cluster can't currently be reached.
 
-`POST /cluster/{id}/repositories` body:
+`POST /repositories/cluster/{id}` body:
 
 ```json
 {
@@ -336,9 +336,50 @@ Returns `503` (rather than an empty list) if the cluster can't currently be reac
 The response body is a `RepositoryRead` object (as above); the submitted `access_key`/`secret_key`
 are forwarded to StarRocks and never written to the API's own metadata store.
 
-`DELETE /cluster/{id}/repositories/{name}` checks StarRocks' own `SHOW SNAPSHOT ON <repo>` first
-and returns `409` if the repository still holds any snapshot, `404` if the cluster or repository
-doesn't exist, or `204` on successful deletion.
+`DELETE /repositories/cluster/{id}/name/{name}` checks StarRocks' own `SHOW SNAPSHOT ON <repo>`
+first and returns `409` if the repository still holds any snapshot, `404` if the cluster or
+repository doesn't exist, or `204` on successful deletion.
+
+### Inventory Groups
+
+Inventory groups are named sets of database/table memberships that scope backup, restore, and
+prune operations, persisted in this tool's own SQLite metastore. Collection-level operations use
+the plural `/inventories/...` domain; operations on one group (and its table memberships) use the
+singular `/inventory/...` domain.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/inventories/cluster/{cluster_id}` | List inventory groups on this cluster (id, name, table count). |
+| POST | `/inventories/cluster/{cluster_id}` | Create a new inventory group. |
+| GET | `/inventory/cluster/{cluster_id}/group_id/{group_id}` | Get one group's table memberships. |
+| DELETE | `/inventory/cluster/{cluster_id}/group_id/{group_id}` | Delete a group and all its memberships (`409` if a schedule still references it). |
+| POST | `/inventory/cluster/{cluster_id}/group_id/{group_id}/tables` | Add a single database/table membership. |
+| DELETE | `/inventory/cluster/{cluster_id}/group_id/{group_id}/tables/{database_name}/{table_name}` | Remove a single membership. |
+
+`POST /inventories/cluster/{cluster_id}` body:
+
+```json
+{
+  "name": "production",
+  "tables": [{"database": "sales_db", "table": "orders"}]
+}
+```
+Returns `409` if a group with that name already exists on the cluster.
+
+`GET /inventory/cluster/{cluster_id}/group_id/{group_id}` response:
+
+```json
+{
+  "id": 1,
+  "name": "production",
+  "tables": [
+    {"database": "sales_db", "table": "orders", "created_at": "...", "updated_at": "..."}
+  ]
+}
+```
+
+`POST /inventory/cluster/{cluster_id}/group_id/{group_id}/tables` body: `{"database": "sales_db",
+"table": "orders"}` — returns `409` if that exact membership already exists.
 
 ## CLI Reference
 
@@ -357,15 +398,15 @@ export STARROCKS_BR_API_KEY=<your key>
 | `starrocks-br api cluster add --name ... --host ... --port ... --user ... --password ... --database ... --repository ...` | `POST /cluster` |
 | `starrocks-br api cluster list` | `GET /clusters` |
 | `starrocks-br api cluster remove <id>` | `DELETE /cluster/{id}` |
-| `starrocks-br api job submit --cluster <id> --type backup-full\|backup-incremental\|restore\|prune [options] [--wait]` | `POST /cluster/{id}/...` |
+| `starrocks-br api job submit --cluster <id> --type backup-full\|backup-incremental\|restore\|prune [options] [--wait]` | `POST /backup/manual/{operation}/cluster/{id}` |
 | `starrocks-br api job status <id>` | `GET /job/{id}` |
-| `starrocks-br api schedule add --cluster <id> --type backup_full\|backup_incremental --group ... --cadence ...` | `POST /cluster/{id}/schedules` |
-| `starrocks-br api schedule list --cluster <id>` | `GET /cluster/{id}/schedules` |
-| `starrocks-br api schedule remove --cluster <id> <schedule_id>` | `DELETE /cluster/{id}/schedule/{schedule_id}` |
-| `starrocks-br api schedule run-due` | `POST /schedules/run-due` |
-| `starrocks-br api repository add --cluster <id> --name ... --location ... --access-key ... --secret-key ... --endpoint ... [--region ...]` | `POST /cluster/{id}/repositories` |
-| `starrocks-br api repository list --cluster <id>` | `GET /cluster/{id}/repositories` |
-| `starrocks-br api repository remove --cluster <id> <name>` | `DELETE /cluster/{id}/repositories/{name}` |
+| `starrocks-br api schedule add --cluster <id> --type backup_full\|backup_incremental --group ... --cadence ...` | `POST /backup/schedules/cluster/{id}` |
+| `starrocks-br api schedule list --cluster <id>` | `GET /backup/schedules/cluster/{id}` |
+| `starrocks-br api schedule remove --cluster <id> <schedule_id>` | `DELETE /backup/schedules/cluster/{id}/schedule_id/{schedule_id}` |
+| `starrocks-br api schedule run-due` | `POST /backup/schedules/run` |
+| `starrocks-br api repository add --cluster <id> --name ... --location ... --access-key ... --secret-key ... --endpoint ... [--region ...]` | `POST /repositories/cluster/{id}` |
+| `starrocks-br api repository list --cluster <id>` | `GET /repositories/cluster/{id}` |
+| `starrocks-br api repository remove --cluster <id> <name>` | `DELETE /repositories/cluster/{id}/name/{name}` |
 
 `job submit --wait` polls `GET /job/{id}` until the job reaches `SUCCESS` or `FAILED`, printing
 progress as it goes, and exits non-zero on failure — useful in scripts/CI.

@@ -21,10 +21,10 @@ from .. import logger
 from .client import add_common_api_options, make_client, request, resolve_group_id
 
 _ENDPOINT_BY_TYPE = {
-    "backup-full": "backups/full",
-    "backup-incremental": "backups/incremental",
-    "restore": "restores",
-    "prune": "prunes",
+    "backup-full": "full",
+    "backup-incremental": "incremental",
+    "restore": "restore",
+    "prune": "prune",
 }
 
 
@@ -95,7 +95,9 @@ def job_submit(
         }
         payload = {k: v for k, v in payload.items() if v is not None}
 
-        response = request(client, "POST", f"/cluster/{cluster_id}/{_ENDPOINT_BY_TYPE[job_type]}", json=payload)
+        response = request(
+            client, "POST", f"/backup/manual/{_ENDPOINT_BY_TYPE[job_type]}/cluster/{cluster_id}", json=payload
+        )
         job = response.json()
         logger.success(f"Submitted job {job['id']} (status={job['status']})")
 

@@ -16,7 +16,7 @@ def _create_cluster(api_client) -> int:
 def _create_group(api_client, cluster_id, name="prod", tables=None) -> dict:
     tables = tables if tables is not None else [{"database": "sales_db", "table": "*"}]
     response = api_client.post(
-        f"/cluster/{cluster_id}/inventory-groups",
+        f"/inventories/cluster/{cluster_id}",
         json={"name": name, "tables": tables},
     )
     assert response.status_code == 201
@@ -27,7 +27,7 @@ def test_list_inventory_groups_success(api_client):
     cluster_id = _create_cluster(api_client)
     created = _create_group(api_client, cluster_id)
 
-    response = api_client.get(f"/cluster/{cluster_id}/inventory-groups")
+    response = api_client.get(f"/inventories/cluster/{cluster_id}")
 
     assert response.status_code == 200
     assert response.json() == [{"id": created["id"], "name": "prod", "table_count": 1}]
@@ -37,7 +37,7 @@ def test_create_inventory_group_success(api_client):
     cluster_id = _create_cluster(api_client)
 
     response = api_client.post(
-        f"/cluster/{cluster_id}/inventory-groups",
+        f"/inventories/cluster/{cluster_id}",
         json={"name": "prod", "tables": [{"database": "sales_db", "table": "*"}]},
     )
 
@@ -60,7 +60,7 @@ def test_create_inventory_group_duplicate_is_409(api_client):
     _create_group(api_client, cluster_id, name="prod")
 
     response = api_client.post(
-        f"/cluster/{cluster_id}/inventory-groups",
+        f"/inventories/cluster/{cluster_id}",
         json={"name": "prod", "tables": [{"database": "sales_db", "table": "*"}]},
     )
 
@@ -70,7 +70,7 @@ def test_create_inventory_group_duplicate_is_409(api_client):
 def test_create_inventory_group_requires_at_least_one_table(api_client):
     cluster_id = _create_cluster(api_client)
     response = api_client.post(
-        f"/cluster/{cluster_id}/inventory-groups",
+        f"/inventories/cluster/{cluster_id}",
         json={"name": "prod", "tables": []},
     )
 
@@ -83,7 +83,7 @@ def test_get_inventory_group_success(api_client):
         api_client, cluster_id, tables=[{"database": "sales_db", "table": "orders"}]
     )
 
-    response = api_client.get(f"/cluster/{cluster_id}/inventory-groups/{created['id']}")
+    response = api_client.get(f"/inventory/cluster/{cluster_id}/group_id/{created['id']}")
 
     assert response.status_code == 200
     assert response.json()["id"] == created["id"]
@@ -94,7 +94,7 @@ def test_get_inventory_group_success(api_client):
 def test_get_unknown_inventory_group_is_404(api_client):
     cluster_id = _create_cluster(api_client)
 
-    response = api_client.get(f"/cluster/{cluster_id}/inventory-groups/999")
+    response = api_client.get(f"/inventory/cluster/{cluster_id}/group_id/999")
 
     assert response.status_code == 404
 
@@ -106,7 +106,7 @@ def test_add_table_to_group_success(api_client):
     )
 
     response = api_client.post(
-        f"/cluster/{cluster_id}/inventory-groups/{created['id']}/tables",
+        f"/inventory/cluster/{cluster_id}/group_id/{created['id']}/tables",
         json={"database": "sales_db", "table": "customers"},
     )
 
@@ -122,7 +122,7 @@ def test_add_duplicate_table_to_group_is_409(api_client):
     )
 
     response = api_client.post(
-        f"/cluster/{cluster_id}/inventory-groups/{created['id']}/tables",
+        f"/inventory/cluster/{cluster_id}/group_id/{created['id']}/tables",
         json={"database": "sales_db", "table": "orders"},
     )
 
@@ -136,11 +136,11 @@ def test_remove_table_from_group_success(api_client):
     )
 
     response = api_client.delete(
-        f"/cluster/{cluster_id}/inventory-groups/{created['id']}/tables/sales_db/orders"
+        f"/inventory/cluster/{cluster_id}/group_id/{created['id']}/tables/sales_db/orders"
     )
 
     assert response.status_code == 204
-    assert api_client.get(f"/cluster/{cluster_id}/inventory-groups/{created['id']}").json()["tables"] == []
+    assert api_client.get(f"/inventory/cluster/{cluster_id}/group_id/{created['id']}").json()["tables"] == []
 
 
 def test_remove_nonexistent_table_from_group_is_404(api_client):
@@ -150,7 +150,7 @@ def test_remove_nonexistent_table_from_group_is_404(api_client):
     )
 
     response = api_client.delete(
-        f"/cluster/{cluster_id}/inventory-groups/{created['id']}/tables/sales_db/unknown_table"
+        f"/inventory/cluster/{cluster_id}/group_id/{created['id']}/tables/sales_db/unknown_table"
     )
 
     assert response.status_code == 404
@@ -160,16 +160,16 @@ def test_delete_inventory_group_success(api_client):
     cluster_id = _create_cluster(api_client)
     created = _create_group(api_client, cluster_id)
 
-    response = api_client.delete(f"/cluster/{cluster_id}/inventory-groups/{created['id']}")
+    response = api_client.delete(f"/inventory/cluster/{cluster_id}/group_id/{created['id']}")
 
     assert response.status_code == 204
-    assert api_client.get(f"/cluster/{cluster_id}/inventory-groups").json() == []
+    assert api_client.get(f"/inventories/cluster/{cluster_id}").json() == []
 
 
 def test_delete_nonexistent_inventory_group_is_404(api_client):
     cluster_id = _create_cluster(api_client)
 
-    response = api_client.delete(f"/cluster/{cluster_id}/inventory-groups/999")
+    response = api_client.delete(f"/inventory/cluster/{cluster_id}/group_id/999")
 
     assert response.status_code == 404
 
@@ -179,7 +179,7 @@ def test_delete_inventory_group_referenced_by_schedule_is_409(api_client):
     created = _create_group(api_client, cluster_id)
 
     schedule_response = api_client.post(
-        f"/cluster/{cluster_id}/schedules",
+        f"/backup/schedules/cluster/{cluster_id}",
         json={
             "job_type": "backup_full",
             "inventory_group_id": created["id"],
@@ -188,10 +188,10 @@ def test_delete_inventory_group_referenced_by_schedule_is_409(api_client):
     )
     assert schedule_response.status_code == 201
 
-    response = api_client.delete(f"/cluster/{cluster_id}/inventory-groups/{created['id']}")
+    response = api_client.delete(f"/inventory/cluster/{cluster_id}/group_id/{created['id']}")
 
     assert response.status_code == 409
-    assert api_client.get(f"/cluster/{cluster_id}/inventory-groups/{created['id']}").status_code == 200
+    assert api_client.get(f"/inventory/cluster/{cluster_id}/group_id/{created['id']}").status_code == 200
 
 
 def test_inventory_groups_against_unknown_cluster_is_404(api_client):

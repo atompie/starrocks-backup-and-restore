@@ -17,7 +17,7 @@ from ..schemas import (
 )
 from ._cluster_connect import get_cluster_or_404 as _get_cluster_or_404
 
-router = APIRouter(tags=["jobs"], dependencies=[Depends(require_api_key)])
+router = APIRouter(tags=["manual-backups"], dependencies=[Depends(require_api_key)])
 
 
 def _submit(
@@ -60,7 +60,7 @@ def _submit_backup_job(
 
 
 @router.post(
-    "/cluster/{cluster_id}/backups/full",
+    "/backup/manual/full/cluster/{cluster_id}",
     response_model=JobRead,
     status_code=status.HTTP_202_ACCEPTED,
 )
@@ -71,7 +71,7 @@ def submit_backup_full(
 
 
 @router.post(
-    "/cluster/{cluster_id}/backups/incremental",
+    "/backup/manual/incremental/cluster/{cluster_id}",
     response_model=JobRead,
     status_code=status.HTTP_202_ACCEPTED,
 )
@@ -82,7 +82,7 @@ def submit_backup_incremental(
 
 
 @router.post(
-    "/cluster/{cluster_id}/restores",
+    "/backup/manual/restore/cluster/{cluster_id}",
     response_model=JobRead,
     status_code=status.HTTP_202_ACCEPTED,
 )
@@ -93,7 +93,7 @@ def submit_restore(
 
 
 @router.post(
-    "/cluster/{cluster_id}/prunes",
+    "/backup/manual/prune/cluster/{cluster_id}",
     response_model=JobRead,
     status_code=status.HTTP_202_ACCEPTED,
 )

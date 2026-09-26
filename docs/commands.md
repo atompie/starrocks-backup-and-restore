@@ -391,7 +391,7 @@ starrocks-br api cluster list
 ### Submit and poll a job
 
 ```bash
-curl -X POST http://localhost:8000/cluster/1/backups/full \
+curl -X POST http://localhost:8000/backup/manual/full/cluster/1 \
   -H "Authorization: Bearer $STARROCKS_BR_API_KEY" -H "Content-Type: application/json" \
   -d '{"group": "production"}'
 # -> 202 {"id": 1, "status": "PENDING", ...}
@@ -403,14 +403,14 @@ curl http://localhost:8000/job/1 -H "Authorization: Bearer $STARROCKS_BR_API_KEY
 starrocks-br api job submit --cluster 1 --type backup-full --group production --wait
 ```
 
-The same pattern applies to `backups/incremental`, `restores`, and `prunes` (CLI:
-`--type backup-incremental|restore|prune`), matching the direct `backup incremental`,
-`restore`, and `prune` commands' options.
+The same pattern applies to `/backup/manual/incremental/...`, `/backup/manual/restore/...`, and
+`/backup/manual/prune/...` (CLI: `--type backup-incremental|restore|prune`), matching the direct
+`backup incremental`, `restore`, and `prune` commands' options.
 
 ### Manage schedules
 
 ```bash
-curl -X POST http://localhost:8000/cluster/1/schedules \
+curl -X POST http://localhost:8000/backup/schedules/cluster/1 \
   -H "Authorization: Bearer $STARROCKS_BR_API_KEY" -H "Content-Type: application/json" \
   -d '{"job_type": "backup_full", "group_name": "production", "cadence": "0 1 * * 0"}'
 

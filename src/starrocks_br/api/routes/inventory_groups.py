@@ -27,7 +27,7 @@ router = APIRouter(tags=["inventory-groups"], dependencies=[Depends(require_api_
 
 
 @router.get(
-    "/cluster/{cluster_id}/inventory-groups",
+    "/inventories/cluster/{cluster_id}",
     response_model=list[InventoryGroupSummary],
 )
 def list_inventory_groups(cluster_id: int, db: Session = Depends(get_db)) -> list[dict]:
@@ -36,7 +36,7 @@ def list_inventory_groups(cluster_id: int, db: Session = Depends(get_db)) -> lis
 
 
 @router.post(
-    "/cluster/{cluster_id}/inventory-groups",
+    "/inventories/cluster/{cluster_id}",
     response_model=InventoryGroupRead,
     status_code=status.HTTP_201_CREATED,
 )
@@ -62,7 +62,7 @@ def create_inventory_group(
 
 
 @router.get(
-    "/cluster/{cluster_id}/inventory-groups/{group_id}",
+    "/inventory/cluster/{cluster_id}/group_id/{group_id}",
     response_model=InventoryGroupRead,
 )
 def get_inventory_group(cluster_id: int, group_id: int, db: Session = Depends(get_db)) -> dict:
@@ -81,7 +81,7 @@ def get_inventory_group(cluster_id: int, group_id: int, db: Session = Depends(ge
 
 
 @router.post(
-    "/cluster/{cluster_id}/inventory-groups/{group_id}/tables",
+    "/inventory/cluster/{cluster_id}/group_id/{group_id}/tables",
     response_model=InventoryMembershipRead,
     status_code=status.HTTP_201_CREATED,
 )
@@ -111,7 +111,7 @@ def add_inventory_group_table(
 
 
 @router.delete(
-    "/cluster/{cluster_id}/inventory-groups/{group_id}/tables/{database_name}/{table_name}",
+    "/inventory/cluster/{cluster_id}/group_id/{group_id}/tables/{database_name}/{table_name}",
     status_code=status.HTTP_204_NO_CONTENT,
 )
 def remove_inventory_group_table(
@@ -130,7 +130,7 @@ def remove_inventory_group_table(
 
 
 @router.delete(
-    "/cluster/{cluster_id}/inventory-groups/{group_id}",
+    "/inventory/cluster/{cluster_id}/group_id/{group_id}",
     status_code=status.HTTP_204_NO_CONTENT,
 )
 def delete_inventory_group(cluster_id: int, group_id: int, db: Session = Depends(get_db)) -> None:

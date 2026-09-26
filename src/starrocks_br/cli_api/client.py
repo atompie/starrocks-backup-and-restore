@@ -83,7 +83,7 @@ def resolve_group_id(client: httpx.Client, cluster_id: int, name: str) -> int:
     cluster's groups and matches by name client-side rather than the API
     exposing a name-based lookup route.
     """
-    response = request(client, "GET", f"/cluster/{cluster_id}/inventory-groups")
+    response = request(client, "GET", f"/inventories/cluster/{cluster_id}")
     for group in response.json():
         if group["name"] == name:
             return group["id"]

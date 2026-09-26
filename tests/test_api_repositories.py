@@ -51,7 +51,7 @@ def test_repositories_router_registered_alongside_others(api_client):
     # Reachable alongside the existing cluster/job/schedule routers - a
     # connection failure (real DB unreachable in tests) still proves the
     # route is registered and dispatches, unlike a 404 for an unknown route.
-    response = api_client.get(f"/cluster/{cluster_id}/repositories")
+    response = api_client.get(f"/repositories/cluster/{cluster_id}")
 
     assert response.status_code != 404
 
@@ -70,7 +70,7 @@ def test_list_repositories_success(api_client, monkeypatch):
     )
 
     cluster_id = _create_cluster(api_client)
-    response = api_client.get(f"/cluster/{cluster_id}/repositories")
+    response = api_client.get(f"/repositories/cluster/{cluster_id}")
 
     assert response.status_code == 200
     assert response.json() == [
@@ -89,7 +89,7 @@ def test_list_repositories_unreachable_cluster_is_distinguishable_error(api_clie
     _patch_connect(monkeypatch, fake_db)
 
     cluster_id = _create_cluster(api_client)
-    response = api_client.get(f"/cluster/{cluster_id}/repositories")
+    response = api_client.get(f"/repositories/cluster/{cluster_id}")
 
     assert response.status_code == 503
     assert "connection refused" in response.json()["detail"].lower()
@@ -116,7 +116,7 @@ def test_create_repository_success(api_client, monkeypatch):
 
     cluster_id = _create_cluster(api_client)
     response = api_client.post(
-        f"/cluster/{cluster_id}/repositories",
+        f"/repositories/cluster/{cluster_id}",
         json={
             "name": "my_repo",
             "location": "s3://bucket/path",
@@ -144,7 +144,7 @@ def test_create_repository_duplicate_name_is_409(api_client, monkeypatch):
 
     cluster_id = _create_cluster(api_client)
     response = api_client.post(
-        f"/cluster/{cluster_id}/repositories",
+        f"/repositories/cluster/{cluster_id}",
         json={
             "name": "my_repo",
             "location": "s3://bucket/path",
@@ -174,7 +174,7 @@ def test_create_repository_against_unknown_cluster_is_404(api_client):
 def test_create_repository_missing_required_field_is_422(api_client):
     cluster_id = _create_cluster(api_client)
     response = api_client.post(
-        f"/cluster/{cluster_id}/repositories",
+        f"/repositories/cluster/{cluster_id}",
         json={"name": "my_repo", "location": "s3://bucket/path"},
     )
     assert response.status_code == 422
@@ -190,7 +190,7 @@ def test_create_repository_never_persists_credentials(api_client, monkeypatch):
 
     cluster_id = _create_cluster(api_client)
     api_client.post(
-        f"/cluster/{cluster_id}/repositories",
+        f"/repositories/cluster/{cluster_id}",
         json={
             "name": "my_repo",
             "location": "s3://bucket/path",
@@ -223,7 +223,7 @@ def test_delete_repository_blocked_by_snapshot_is_409(api_client, monkeypatch):
     monkeypatch.setattr(repository_module, "has_snapshots", lambda db, name: True)
 
     cluster_id = _create_cluster(api_client)
-    response = api_client.delete(f"/cluster/{cluster_id}/repositories/my_repo")
+    response = api_client.delete(f"/repositories/cluster/{cluster_id}/name/my_repo")
 
     assert response.status_code == 409
 
@@ -238,7 +238,7 @@ def test_delete_repository_succeeds_when_empty(api_client, monkeypatch):
     monkeypatch.setattr(repository_module, "drop_repository", lambda db, name: dropped.append(name))
 
     cluster_id = _create_cluster(api_client)
-    response = api_client.delete(f"/cluster/{cluster_id}/repositories/my_repo")
+    response = api_client.delete(f"/repositories/cluster/{cluster_id}/name/my_repo")
 
     assert response.status_code == 204
     assert dropped == ["my_repo"]
@@ -261,6 +261,6 @@ def test_delete_repository_unknown_repository_is_404(api_client, monkeypatch):
     monkeypatch.setattr(repository_module, "has_snapshots", _raise_not_found)
 
     cluster_id = _create_cluster(api_client)
-    response = api_client.delete(f"/cluster/{cluster_id}/repositories/missing_repo")
+    response = api_client.delete(f"/repositories/cluster/{cluster_id}/name/missing_repo")
 
     assert response.status_code == 404

@@ -109,7 +109,7 @@ def test_delete_cluster_blocked_by_active_job(api_client, monkeypatch):
     monkeypatch.setattr(inventory_groups, "group_exists", lambda db, cluster_id, group_id: True)
 
     created = api_client.post("/cluster", json=CLUSTER_PAYLOAD).json()
-    api_client.post(f"/cluster/{created['id']}/backups/full", json={"group_id": 1})
+    api_client.post(f"/backup/manual/full/cluster/{created['id']}", json={"group_id": 1})
 
     response = api_client.delete(f"/cluster/{created['id']}")
 

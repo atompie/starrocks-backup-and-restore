@@ -45,7 +45,7 @@ def schedule_add(api_url, api_key, cluster_id, job_type, group_name, cadence, ba
         response = request(
             client,
             "POST",
-            f"/cluster/{cluster_id}/schedules",
+            f"/backup/schedules/cluster/{cluster_id}",
             json={
                 "job_type": job_type,
                 "inventory_group_id": group_id,
@@ -63,7 +63,7 @@ def schedule_add(api_url, api_key, cluster_id, job_type, group_name, cadence, ba
 def schedule_list(api_url, api_key, cluster_id):
     """List a cluster's schedules."""
     with make_client(api_url, api_key) as client:
-        response = request(client, "GET", f"/cluster/{cluster_id}/schedules")
+        response = request(client, "GET", f"/backup/schedules/cluster/{cluster_id}")
     for schedule in response.json():
         state = "enabled" if schedule["enabled"] else "disabled"
         logger.info(
@@ -80,7 +80,7 @@ def schedule_list(api_url, api_key, cluster_id):
 def schedule_remove(api_url, api_key, cluster_id, schedule_id):
     """Delete a schedule by id."""
     with make_client(api_url, api_key) as client:
-        request(client, "DELETE", f"/cluster/{cluster_id}/schedule/{schedule_id}")
+        request(client, "DELETE", f"/backup/schedules/cluster/{cluster_id}/schedule_id/{schedule_id}")
     logger.success(f"Removed schedule {schedule_id}")
 
 
@@ -94,7 +94,7 @@ def schedule_run_due(api_url, api_key):
     exits.
     """
     with make_client(api_url, api_key) as client:
-        response = request(client, "POST", "/schedules/run-due")
+        response = request(client, "POST", "/backup/schedules/run")
 
     body = response.json()
     logger.success(f"Triggered {body['triggered_count']} job(s): {body['triggered_job_ids']}")
