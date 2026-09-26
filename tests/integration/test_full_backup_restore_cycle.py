@@ -83,6 +83,7 @@ def test_full_backup_then_restore_recovers_dropped_database(
 ):
     database = seeded_database["database"]
     table = seeded_database["table"]
+    repository_name = seeded_database["repository"]
 
     # 1. Register the cluster with the API server.
     cluster_resp = api_client.post(
@@ -94,17 +95,18 @@ def test_full_backup_then_restore_recovers_dropped_database(
             "user": "root",
             "password": "",
             "database": database,
-            "repository": seeded_database["repository"],
+            "repository": repository_name,
         },
     )
     assert cluster_resp.status_code == 201, cluster_resp.text
     cluster_id = cluster_resp.json()["id"]
 
-    # 2. Create a real S3-backed repository on the cluster.
+    # 2. Create a real S3-backed repository on the cluster (dropped in the
+    # `finally` block below once the test is done with it).
     repo_resp = api_client.post(
         f"/repositories/cluster/{cluster_id}",
         json={
-            "name": seeded_database["repository"],
+            "name": repository_name,
             "location": f"s3://{S3_BUCKET}/it-backups/{seeded_database['suffix']}",
             "access_key": S3_ACCESS_KEY,
             "secret_key": S3_SECRET_KEY,
@@ -114,48 +116,58 @@ def test_full_backup_then_restore_recovers_dropped_database(
     )
     assert repo_resp.status_code == 201, repo_resp.text
 
-    # 3. Define an inventory group covering every table in the test database.
-    group_resp = api_client.post(
-        f"/inventories/cluster/{cluster_id}",
-        json={"name": seeded_database["group"], "tables": [{"database": database, "table": "*"}]},
-    )
-    assert group_resp.status_code == 201, group_resp.text
-    group_id = group_resp.json()["id"]
+    try:
+        # 3. Define an inventory group covering every table in the test database.
+        group_resp = api_client.post(
+            f"/inventories/cluster/{cluster_id}",
+            json={"name": seeded_database["group"], "tables": [{"database": database, "table": "*"}]},
+        )
+        assert group_resp.status_code == 201, group_resp.text
+        group_id = group_resp.json()["id"]
 
-    # 4. Run a full backup.
-    backup_resp = api_client.post(
-        f"/backup/manual/full/cluster/{cluster_id}",
-        json={"group_id": group_id, "name": seeded_database["backup_label"]},
-    )
-    assert backup_resp.status_code == 202, backup_resp.text
-    backup_job = _wait_for_job(api_client, backup_resp.json()["id"])
-    assert backup_job["status"] == "SUCCESS", backup_job
+        # 4. Run a full backup.
+        backup_resp = api_client.post(
+            f"/backup/manual/full/cluster/{cluster_id}",
+            json={
+                "group_id": group_id,
+                "repository": repository_name,
+                "name": seeded_database["backup_label"],
+            },
+        )
+        assert backup_resp.status_code == 202, backup_resp.text
+        backup_job = _wait_for_job(api_client, backup_resp.json()["id"])
+        assert backup_job["status"] == "SUCCESS", backup_job
 
-    # 5. Simulate total data loss: drop the whole database.
-    #
-    # StarRocks' RESTORE requires the target database to already exist, and this
-    # tool's restore flow renames the *existing* table out of the way before
-    # putting the restored one in its place (see `restore._perform_atomic_rename`)
-    # - so recovering from a fully dropped database means recreating the (empty)
-    # database and table shell first, exactly as an operator would when rebuilding
-    # a cluster from scratch before restoring onto it.
-    sr_admin_db.execute(f"DROP DATABASE `{database}`")
-    sr_admin_db.execute(f"CREATE DATABASE `{database}`")
-    sr_admin_db.execute(_table_ddl(database, table))
+        # 5. Simulate total data loss: drop the whole database.
+        #
+        # StarRocks' RESTORE requires the target database to already exist, and this
+        # tool's restore flow renames the *existing* table out of the way before
+        # putting the restored one in its place (see `restore._perform_atomic_rename`)
+        # - so recovering from a fully dropped database means recreating the (empty)
+        # database and table shell first, exactly as an operator would when rebuilding
+        # a cluster from scratch before restoring onto it.
+        sr_admin_db.execute(f"DROP DATABASE `{database}`")
+        sr_admin_db.execute(f"CREATE DATABASE `{database}`")
+        sr_admin_db.execute(_table_ddl(database, table))
 
-    remaining = sr_admin_db.query(f"SELECT COUNT(*) FROM `{database}`.`{table}`")
-    assert remaining[0][0] == 0
+        remaining = sr_admin_db.query(f"SELECT COUNT(*) FROM `{database}`.`{table}`")
+        assert remaining[0][0] == 0
 
-    # 6. Restore from the full backup.
-    restore_resp = api_client.post(
-        f"/backup/manual/restore/cluster/{cluster_id}",
-        json={"target_label": seeded_database["backup_label"], "group_id": group_id},
-    )
-    assert restore_resp.status_code == 202, restore_resp.text
-    restore_job = _wait_for_job(api_client, restore_resp.json()["id"])
-    assert restore_job["status"] == "SUCCESS", restore_job
+        # 6. Restore from the full backup.
+        restore_resp = api_client.post(
+            f"/backup/manual/restore/cluster/{cluster_id}",
+            json={"target_label": seeded_database["backup_label"], "group_id": group_id},
+        )
+        assert restore_resp.status_code == 202, restore_resp.text
+        restore_job = _wait_for_job(api_client, restore_resp.json()["id"])
+        assert restore_job["status"] == "SUCCESS", restore_job
 
-    # 7. The original rows are back.
-    restored_rows = sr_admin_db.query(f"SELECT id, name, amount FROM `{database}`.`{table}` ORDER BY id")
-    restored = [(row[0], row[1], str(row[2])) for row in restored_rows]
-    assert restored == ORIGINAL_ROWS
+        # 7. The original rows are back.
+        restored_rows = sr_admin_db.query(f"SELECT id, name, amount FROM `{database}`.`{table}` ORDER BY id")
+        restored = [(row[0], row[1], str(row[2])) for row in restored_rows]
+        assert restored == ORIGINAL_ROWS
+    finally:
+        # Bypass the API's own DELETE (its snapshot-retention check would
+        # refuse this, since the backup above intentionally leaves real
+        # snapshot data behind) - test cleanup just needs it gone.
+        sr_admin_db.execute(f"DROP REPOSITORY `{repository_name}`")
