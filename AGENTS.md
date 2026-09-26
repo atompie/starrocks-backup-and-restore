@@ -49,6 +49,35 @@ Order API path segments from the domain or service, to the operation, then the r
 
 For example: `POST /backup/manual/full/cluster/{cluster_id}` and `GET /backup/schedules/cluster/{cluster_id}`.
 
+## Testing conventions
+
+Tests are organized by what they depend on, then by what they verify:
+
+```text
+tests/
+├── integration/   # real StarRocks + real S3/object storage, nothing mocked
+└── unit/
+    ├── crud/      # simple create/read/update/delete on one store/data-access operation, mocked
+    └── service/   # business/application logic: workflows, coordination, validation, dispatch
+```
+
+- `tests/integration/`: tests that establish a real connection to StarRocks, S3, or other external
+  infrastructure. Do not mock the external connection here; these tests verify behavior against the
+  real thing and should skip cleanly (not error) when that infrastructure isn't reachable, following
+  the pattern in `tests/integration/conftest.py`.
+- `tests/unit/crud/`: tests that mock external connections and dependencies and focus on a single
+  basic operation (insert, fetch, update, delete) on one store/model/table.
+- `tests/unit/service/`: tests that mock external connections and dependencies and verify
+  business/application logic spanning multiple operations - coordination between components,
+  validation, dispatch, workflows, or other non-trivial behavior. Most CLI, API, and commands-layer
+  tests belong here.
+- Classify a new test by what it actually does, not by which module it targets: a test against a
+  `store/` model that only checks a single field update is CRUD; a test against the same layer that
+  exercises a validation rule or a multi-step operation is service-level.
+- Shared fixtures (`sqlite_session`, `make_cluster`, etc.) live in `tests/conftest.py` at the `tests/`
+  root so both `unit/crud/` and `unit/service/` inherit them; add new shared fixtures there rather
+  than duplicating them per subdirectory.
+
 ## Main source areas
 
 - `src/starrocks_br/cli.py`: direct CLI adapter.
@@ -58,4 +87,4 @@ For example: `POST /backup/manual/full/cluster/{cluster_id}` and `GET /backup/sc
 - `src/starrocks_br/jobs/`: asynchronous job backend interface, registry, and command handlers.
 - `src/starrocks_br/`: StarRocks connection and core backup, restore, planning, execution, and pruning logic.
 - `src/starrocks_br/store/`: SQLAlchemy metadata models, sessions, encryption, and Alembic migrations.
-- `tests/`: automated tests organized around CLI, API, commands, and core behavior.
+- `tests/`: automated tests, organized as described in "Testing conventions" above.
