@@ -14,7 +14,7 @@
 
 from __future__ import annotations
 
-from . import utils
+from . import exceptions, utils
 
 
 class RepositoryNotFoundError(RuntimeError):
@@ -150,18 +150,26 @@ def build_create_s3_repository_command(
 def has_snapshots(db, repository_name: str) -> bool:
     """Return whether `repository_name` currently holds any snapshot.
 
+    Existence is checked authoritatively against `SHOW REPOSITORIES` first,
+    rather than by pattern-matching the wording of a `SHOW SNAPSHOT` failure
+    - StarRocks' error message for "the repository's storage backend is
+    unreachable" can look just like "the repository doesn't exist" (both
+    mention "repository" and "exist"), which previously caused an
+    unreachable-but-real repository to be misreported as not found.
+
     Raises:
-        RepositoryNotFoundError: If StarRocks reports the repository itself
-            doesn't exist, distinguished from the repository existing but
-            simply having zero snapshots.
+        RepositoryNotFoundError: If the repository isn't registered at all.
+        RepositoryUnreachableError: If it's registered but its storage
+            backend couldn't be reached to check for snapshots.
     """
+    existing_names = {repo["name"] for repo in list_repositories(db)}
+    if repository_name not in existing_names:
+        raise RepositoryNotFoundError(f"Repository '{repository_name}' not found")
+
     try:
         rows = db.query(f"SHOW SNAPSHOT ON {utils.quote_identifier(repository_name)}")
     except Exception as e:
-        message = str(e).lower()
-        if "repository" in message and ("unknown" in message or "not exist" in message or "not found" in message):
-            raise RepositoryNotFoundError(f"Repository '{repository_name}' not found") from e
-        raise
+        raise exceptions.RepositoryUnreachableError(repository_name, str(e)) from e
     return len(rows) > 0
 
 

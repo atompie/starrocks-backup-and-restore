@@ -197,6 +197,17 @@ class RepositoryStillHasSnapshotsError(StarRocksBRError):
         super().__init__(f"Repository '{name}' still holds snapshot data; cannot delete")
 
 
+class RepositoryUnreachableError(StarRocksBRError):
+    """The repository is registered in StarRocks but its storage backend
+    couldn't be reached to check for snapshots (e.g. bad/unreachable
+    endpoint) - distinguished from the repository not existing at all."""
+
+    def __init__(self, name: str, reason: str):
+        self.name = name
+        self.reason = reason
+        super().__init__(f"Could not check snapshots for repository '{name}': {reason}")
+
+
 class RestoreExecutionError(StarRocksBRError):
     def __init__(self, message: str):
         super().__init__(message)

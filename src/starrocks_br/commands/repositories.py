@@ -56,8 +56,10 @@ def create_repository(
 def delete_repository(database, name: str) -> None:
     """Delete `name`, refusing when it still holds snapshot data.
 
-    Raises `repository.RepositoryNotFoundError` (unchanged, from
-    `repository.has_snapshots`) when the repository doesn't exist.
+    Raises `repository.RepositoryNotFoundError` when the repository doesn't
+    exist, or `exceptions.RepositoryUnreachableError` when it exists but its
+    storage backend couldn't be reached to check for snapshots - both from
+    `repository.has_snapshots`, unchanged here.
     """
     if repository.has_snapshots(database, name):
         raise RepositoryStillHasSnapshotsError(name)

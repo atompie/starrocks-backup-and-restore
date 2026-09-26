@@ -14,7 +14,7 @@ import uuid
 
 import pytest
 
-from .conftest import S3_ACCESS_KEY, S3_BUCKET, S3_ENDPOINT, S3_SECRET_KEY
+from .conftest import S3_ACCESS_KEY, S3_BUCKET, S3_ENDPOINT_FROM_STARROCKS, S3_SECRET_KEY
 
 JOB_POLL_INTERVAL_SECONDS = 1
 JOB_POLL_TIMEOUT_SECONDS = 120
@@ -78,7 +78,9 @@ def seeded_database(sr_admin_db, it_names):
     sr_admin_db.execute(f"DROP DATABASE IF EXISTS `{database}`")
 
 
-def test_full_backup_then_restore_recovers_dropped_database(api_client, sr_admin_db, seeded_database):
+def test_full_backup_then_restore_recovers_dropped_database(
+    api_client, sr_admin_db, seeded_database, require_starrocks_reachable_s3
+):
     database = seeded_database["database"]
     table = seeded_database["table"]
 
@@ -106,7 +108,7 @@ def test_full_backup_then_restore_recovers_dropped_database(api_client, sr_admin
             "location": f"s3://{S3_BUCKET}/it-backups/{seeded_database['suffix']}",
             "access_key": S3_ACCESS_KEY,
             "secret_key": S3_SECRET_KEY,
-            "endpoint": S3_ENDPOINT,
+            "endpoint": S3_ENDPOINT_FROM_STARROCKS,
             "region": "us-east-1",
         },
     )

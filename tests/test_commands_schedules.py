@@ -85,6 +85,45 @@ def test_run_due_schedules_triggers_due_schedule_and_advances_next_run_at(sqlite
         assert args[4] == "thread"
 
 
+def test_run_due_schedules_triggers_due_incremental_schedule_with_equivalent_context(
+    sqlite_store, mocker
+):
+    """Mirrors the backup_full case above for backup_incremental - per
+    unify-backup-command-entrypoints, both job types must reach `submit_job`
+    with the same shape of context (group id and repository)."""
+    with session_scope() as session:
+        cluster = _make_cluster(session)
+        group = _make_group(session, cluster)
+        job = Job(cluster_id=cluster.id, job_type="backup_incremental", backend="thread", params_json="{}")
+        session.add(job)
+        session.flush()
+        submit_job = mocker.patch("starrocks_br.commands.schedules.submit_job", return_value=job)
+
+        schedule = Schedule(
+            cluster_id=cluster.id,
+            job_type="backup_incremental",
+            inventory_group_id=group.id,
+            repository="repo",
+            cadence="* * * * *",
+            backend="thread",
+            enabled=True,
+            next_run_at=_utcnow() - datetime.timedelta(minutes=1),
+        )
+        session.add(schedule)
+        session.flush()
+
+        triggered_job_ids, triggered_count = run_due_schedules(session, _utcnow())
+
+        assert triggered_job_ids == [job.id]
+        assert triggered_count == 1
+        submit_job.assert_called_once()
+        args = submit_job.call_args.args
+        assert args[1].id == cluster.id
+        assert args[2] == "backup_incremental"
+        assert args[3] == {"group_id": group.id, "repository": "repo"}
+        assert args[4] == "thread"
+
+
 def test_run_due_schedules_skips_not_yet_due_schedule(sqlite_store, mocker):
     submit_job = mocker.patch("starrocks_br.commands.schedules.submit_job")
 

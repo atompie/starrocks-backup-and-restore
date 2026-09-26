@@ -14,6 +14,7 @@
 
 import pytest
 
+from starrocks_br.exceptions import RepositoryUnreachableError
 from starrocks_br.repository import (
     RepositoryNotFoundError,
     build_create_s3_repository_command,
@@ -208,47 +209,61 @@ def test_build_create_s3_repository_command_derives_ssl_flag_from_endpoint_schem
     assert "'aws.s3.enable_path_style_access' = 'true'" in http_command
 
 
-def test_has_snapshots_returns_false_when_empty(mocker):
+def _mock_db_with_repository(mocker, repo_name, snapshot_rows=None, snapshot_error=None):
+    """A `db.query` mock that answers `SHOW REPOSITORIES` with `repo_name`
+    present, and any other query (i.e. `SHOW SNAPSHOT ON ...`) with either
+    `snapshot_rows` or by raising `snapshot_error`."""
+
+    def query(sql):
+        if sql == "SHOW REPOSITORIES":
+            return [(1, repo_name, "2025-01-01", "false", "s3://bucket/path", "", "NULL")]
+        if snapshot_error is not None:
+            raise snapshot_error
+        return snapshot_rows
+
     db = mocker.Mock()
-    db.query.return_value = []
+    db.query.side_effect = query
+    return db
+
+
+def test_has_snapshots_returns_false_when_empty(mocker):
+    db = _mock_db_with_repository(mocker, "my_repo", snapshot_rows=[])
 
     assert has_snapshots(db, "my_repo") is False
 
 
 def test_has_snapshots_returns_true_when_non_empty(mocker):
-    db = mocker.Mock()
-    db.query.return_value = [("snap1", "2025-10-16", "OK")]
+    db = _mock_db_with_repository(mocker, "my_repo", snapshot_rows=[("snap1", "2025-10-16", "OK")])
 
     assert has_snapshots(db, "my_repo") is True
 
 
-def test_has_snapshots_raises_not_found_distinct_from_zero_snapshots(mocker):
+def test_has_snapshots_raises_not_found_when_repository_is_not_registered(mocker):
     db = mocker.Mock()
-    db.query.side_effect = RuntimeError("Unknown repository 'missing_repo'")
+    db.query.return_value = []  # SHOW REPOSITORIES lists nothing at all
 
     with pytest.raises(RepositoryNotFoundError):
         has_snapshots(db, "missing_repo")
 
 
-def test_has_snapshots_raises_not_found_for_actual_starrocks_error_wording(mocker):
-    # Verified against a live StarRocks 3.5 cluster during the manual smoke test.
-    db = mocker.Mock()
-    db.query.side_effect = RuntimeError(
-        "Getting analyzing error. Detail message: Repository [missing_repo] does not exist."
+def test_has_snapshots_raises_unreachable_when_registered_but_snapshot_check_fails(mocker):
+    # Regression test: a repository whose storage backend is unreachable
+    # produces a StarRocks error that also mentions "repository" and
+    # "exist" (e.g. "failed to check remote path exist: ... Repository
+    # [my_repo] ..."), which used to be misclassified as RepositoryNotFoundError
+    # even though `SHOW REPOSITORIES` confirms the repository is registered.
+    db = _mock_db_with_repository(
+        mocker,
+        "my_repo",
+        snapshot_error=RuntimeError(
+            "failed to check remote path exist: s3://bucket/__starrocks_repository_my_repo"
+        ),
     )
 
-    with pytest.raises(RepositoryNotFoundError):
-        has_snapshots(db, "missing_repo")
-
-
-def test_has_snapshots_reraises_other_errors(mocker):
-    db = mocker.Mock()
-    db.query.side_effect = RuntimeError("connection reset by peer")
-
-    with pytest.raises(RuntimeError) as err:
+    with pytest.raises(RepositoryUnreachableError) as err:
         has_snapshots(db, "my_repo")
 
-    assert not isinstance(err.value, RepositoryNotFoundError)
+    assert "my_repo" in str(err.value)
 
 
 def test_drop_repository_executes_exact_sql(mocker):

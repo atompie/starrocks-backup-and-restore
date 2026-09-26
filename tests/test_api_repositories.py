@@ -264,3 +264,21 @@ def test_delete_repository_unknown_repository_is_404(api_client, monkeypatch):
     response = api_client.delete(f"/repositories/cluster/{cluster_id}/name/missing_repo")
 
     assert response.status_code == 404
+
+
+def test_delete_repository_unreachable_storage_is_503(api_client, monkeypatch):
+    from starrocks_br import repository as repository_module
+    from starrocks_br.exceptions import RepositoryUnreachableError
+
+    fake_db = FakeDB()
+    _patch_connect(monkeypatch, fake_db)
+
+    def _raise_unreachable(db, name):
+        raise RepositoryUnreachableError(name, "connection reset by peer")
+
+    monkeypatch.setattr(repository_module, "has_snapshots", _raise_unreachable)
+
+    cluster_id = _create_cluster(api_client)
+    response = api_client.delete(f"/repositories/cluster/{cluster_id}/name/my_repo")
+
+    assert response.status_code == 503

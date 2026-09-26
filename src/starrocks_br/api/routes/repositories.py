@@ -92,5 +92,7 @@ def delete_repository(cluster_id: int, name: str, db: Session = Depends(get_db))
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Repository '{name}' not found on cluster '{cluster.name}'",
         ) from e
+    except exceptions.RepositoryUnreachableError as e:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(e)) from e
     finally:
         database.close()
