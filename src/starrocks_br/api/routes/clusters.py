@@ -93,10 +93,11 @@ def update_cluster(
     cluster = _get_cluster_or_404(db, cluster_id)
 
     updates = payload.model_dump(exclude_unset=True)
+    password_provided = "password" in updates
     password = updates.pop("password", None)
     for field, value in updates.items():
         setattr(cluster, field, value)
-    if password:
+    if password_provided:
         cluster.password_encrypted = encrypt_password(password)
 
     db.flush()
