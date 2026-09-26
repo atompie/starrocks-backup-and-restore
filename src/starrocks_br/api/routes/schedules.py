@@ -30,13 +30,13 @@ from sqlalchemy.orm import Session
 from ... import exceptions
 from ...commands.schedules import compute_next_run_at, run_due_schedules
 from ...jobs.backend import UnknownBackendError
-from ...store.models import Cluster, Schedule
+from ...store.models import Schedule
 from ..auth import require_api_key
 from ..deps import get_db
 from ..schemas import RunDueResponse, ScheduleCreate, ScheduleRead, ScheduleUpdate
+from ._cluster_connect import get_cluster_or_404
 
-schedule_router = APIRouter(prefix="/schedule", tags=["schedules"], dependencies=[Depends(require_api_key)])
-schedules_router = APIRouter(prefix="/schedules", tags=["schedules"], dependencies=[Depends(require_api_key)])
+router = APIRouter(tags=["schedules"], dependencies=[Depends(require_api_key)])
 
 
 def _utcnow() -> datetime.datetime:
@@ -50,23 +50,23 @@ def _compute_next_run_at(cadence: str, after: datetime.datetime | None = None) -
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(e)) from e
 
 
-def _get_schedule_or_404(db: Session, schedule_id: int) -> Schedule:
+def _get_schedule_or_404(db: Session, cluster_id: int, schedule_id: int) -> Schedule:
     schedule = db.get(Schedule, schedule_id)
-    if schedule is None:
+    if schedule is None or schedule.cluster_id != cluster_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Schedule not found")
     return schedule
 
 
-@schedule_router.post("", response_model=ScheduleRead, status_code=status.HTTP_201_CREATED)
-def create_schedule(payload: ScheduleCreate, db: Session = Depends(get_db)) -> Schedule:
-    cluster = db.get(Cluster, payload.cluster_id)
-    if cluster is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Cluster not found")
+@router.post(
+    "/cluster/{cluster_id}/schedules", response_model=ScheduleRead, status_code=status.HTTP_201_CREATED
+)
+def create_schedule(cluster_id: int, payload: ScheduleCreate, db: Session = Depends(get_db)) -> Schedule:
+    get_cluster_or_404(db, cluster_id)
 
     next_run_at = _compute_next_run_at(payload.cadence)
 
     schedule = Schedule(
-        cluster_id=payload.cluster_id,
+        cluster_id=cluster_id,
         job_type=payload.job_type,
         group_name=payload.group_name,
         cadence=payload.cadence,
@@ -80,21 +80,26 @@ def create_schedule(payload: ScheduleCreate, db: Session = Depends(get_db)) -> S
     return schedule
 
 
-@schedules_router.get("", response_model=list[ScheduleRead])
-def list_schedules(db: Session = Depends(get_db)) -> list[Schedule]:
-    return list(db.query(Schedule).order_by(Schedule.id).all())
+@router.get("/cluster/{cluster_id}/schedules", response_model=list[ScheduleRead])
+def list_schedules(cluster_id: int, db: Session = Depends(get_db)) -> list[Schedule]:
+    get_cluster_or_404(db, cluster_id)
+    return list(
+        db.query(Schedule).filter(Schedule.cluster_id == cluster_id).order_by(Schedule.id).all()
+    )
 
 
-@schedule_router.get("/{schedule_id}", response_model=ScheduleRead)
-def get_schedule(schedule_id: int, db: Session = Depends(get_db)) -> Schedule:
-    return _get_schedule_or_404(db, schedule_id)
+@router.get("/cluster/{cluster_id}/schedule/{schedule_id}", response_model=ScheduleRead)
+def get_schedule(cluster_id: int, schedule_id: int, db: Session = Depends(get_db)) -> Schedule:
+    get_cluster_or_404(db, cluster_id)
+    return _get_schedule_or_404(db, cluster_id, schedule_id)
 
 
-@schedule_router.patch("/{schedule_id}", response_model=ScheduleRead)
+@router.patch("/cluster/{cluster_id}/schedule/{schedule_id}", response_model=ScheduleRead)
 def update_schedule(
-    schedule_id: int, payload: ScheduleUpdate, db: Session = Depends(get_db)
+    cluster_id: int, schedule_id: int, payload: ScheduleUpdate, db: Session = Depends(get_db)
 ) -> Schedule:
-    schedule = _get_schedule_or_404(db, schedule_id)
+    get_cluster_or_404(db, cluster_id)
+    schedule = _get_schedule_or_404(db, cluster_id, schedule_id)
 
     updates = payload.model_dump(exclude_unset=True)
     cadence_changed = "cadence" in updates
@@ -109,13 +114,14 @@ def update_schedule(
     return schedule
 
 
-@schedule_router.delete("/{schedule_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_schedule(schedule_id: int, db: Session = Depends(get_db)) -> None:
-    schedule = _get_schedule_or_404(db, schedule_id)
+@router.delete("/cluster/{cluster_id}/schedule/{schedule_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_schedule(cluster_id: int, schedule_id: int, db: Session = Depends(get_db)) -> None:
+    get_cluster_or_404(db, cluster_id)
+    schedule = _get_schedule_or_404(db, cluster_id, schedule_id)
     db.delete(schedule)
 
 
-@schedules_router.post("/run-due", response_model=RunDueResponse)
+@router.post("/schedules/run-due", response_model=RunDueResponse)
 def run_due(db: Session = Depends(get_db)) -> RunDueResponse:
     try:
         triggered_job_ids, triggered_count = run_due_schedules(db, _utcnow())

@@ -267,18 +267,17 @@ set only when `status` is `FAILED`.
 
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | `/schedule` | Create a recurring schedule. |
-| GET | `/schedules` | List schedules. |
-| GET | `/schedule/{id}` | Get one schedule. |
-| PATCH | `/schedule/{id}` | Update cadence/group/backend/enabled (partial). |
-| DELETE | `/schedule/{id}` | Delete a schedule. |
-| POST | `/schedules/run-due` | Trigger every enabled schedule that's currently due. |
+| POST | `/cluster/{cluster_id}/schedules` | Create a recurring schedule for this cluster. |
+| GET | `/cluster/{cluster_id}/schedules` | List this cluster's schedules. |
+| GET | `/cluster/{cluster_id}/schedule/{id}` | Get one schedule. |
+| PATCH | `/cluster/{cluster_id}/schedule/{id}` | Update cadence/group/backend/enabled (partial). |
+| DELETE | `/cluster/{cluster_id}/schedule/{id}` | Delete a schedule. |
+| POST | `/schedules/run-due` | Trigger every enabled schedule that's currently due, across all clusters. |
 
-`POST /schedule` body:
+`POST /cluster/{cluster_id}/schedules` body:
 
 ```json
 {
-  "cluster_id": 1,
   "job_type": "backup_full",
   "group_name": "production",
   "cadence": "0 1 * * 0",
@@ -360,9 +359,9 @@ export STARROCKS_BR_API_KEY=<your key>
 | `starrocks-br api cluster remove <id>` | `DELETE /cluster/{id}` |
 | `starrocks-br api job submit --cluster <id> --type backup-full\|backup-incremental\|restore\|prune [options] [--wait]` | `POST /cluster/{id}/...` |
 | `starrocks-br api job status <id>` | `GET /job/{id}` |
-| `starrocks-br api schedule add --cluster <id> --type backup_full\|backup_incremental --group ... --cadence ...` | `POST /schedule` |
-| `starrocks-br api schedule list` | `GET /schedules` |
-| `starrocks-br api schedule remove <id>` | `DELETE /schedule/{id}` |
+| `starrocks-br api schedule add --cluster <id> --type backup_full\|backup_incremental --group ... --cadence ...` | `POST /cluster/{id}/schedules` |
+| `starrocks-br api schedule list --cluster <id>` | `GET /cluster/{id}/schedules` |
+| `starrocks-br api schedule remove --cluster <id> <schedule_id>` | `DELETE /cluster/{id}/schedule/{schedule_id}` |
 | `starrocks-br api schedule run-due` | `POST /schedules/run-due` |
 | `starrocks-br api repository add --cluster <id> --name ... --location ... --access-key ... --secret-key ... --endpoint ... [--region ...]` | `POST /cluster/{id}/repositories` |
 | `starrocks-br api repository list --cluster <id>` | `GET /cluster/{id}/repositories` |

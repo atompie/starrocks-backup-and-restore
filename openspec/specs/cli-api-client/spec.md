@@ -31,6 +31,17 @@ The system SHALL provide CLI commands to submit a backup/restore/prune job again
 - **WHEN** a user runs the job-submission CLI command with a wait flag
 - **THEN** the CLI submits the job via the API, polls its status until it reaches SUCCESS or FAILED, and exits with a status code reflecting the outcome
 
+### Requirement: CLI can manage schedules against a specific cluster
+The system SHALL provide CLI commands to create a schedule against a specific cluster, list the schedules registered against a specific cluster, and remove a schedule, by calling the corresponding cluster-scoped API endpoints.
+
+#### Scenario: Add a schedule for a cluster via CLI
+- **WHEN** a user runs the schedule-add CLI command with a cluster id, job type, group, and cadence
+- **THEN** the CLI calls the API to create the schedule under that cluster and prints the created schedule's id and next run time
+
+#### Scenario: List a cluster's schedules via CLI
+- **WHEN** a user runs the schedule-list CLI command with a cluster id
+- **THEN** the CLI calls the API to list only the schedules registered against that cluster
+
 ### Requirement: CLI provides a single-shot schedule runner for cron/CronJob use
 The system SHALL provide a CLI command that calls the API's run-due-schedules endpoint once and exits, suitable for invocation from an external scheduler (cron, Kubernetes CronJob) on a fixed interval, and SHALL exit non-zero if the API call fails.
 

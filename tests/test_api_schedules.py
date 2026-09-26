@@ -26,17 +26,17 @@ CLUSTER_PAYLOAD = {
 }
 
 
-def _create_cluster(api_client) -> int:
-    return api_client.post("/cluster", json=CLUSTER_PAYLOAD).json()["id"]
+def _create_cluster(api_client, name: str = "prod-eu") -> int:
+    payload = {**CLUSTER_PAYLOAD, "name": name}
+    return api_client.post("/cluster", json=payload).json()["id"]
 
 
 def test_create_schedule_computes_next_run_at(api_client):
     cluster_id = _create_cluster(api_client)
 
     response = api_client.post(
-        "/schedule",
+        f"/cluster/{cluster_id}/schedules",
         json={
-            "cluster_id": cluster_id,
             "job_type": "backup_full",
             "group_name": "g1",
             "cadence": "0 1 * * *",
@@ -45,14 +45,15 @@ def test_create_schedule_computes_next_run_at(api_client):
 
     assert response.status_code == 201
     body = response.json()
+    assert body["cluster_id"] == cluster_id
     assert body["next_run_at"] is not None
     assert body["enabled"] is True
 
 
 def test_create_schedule_unknown_cluster_404(api_client):
     response = api_client.post(
-        "/schedule",
-        json={"cluster_id": 999, "job_type": "backup_full", "group_name": "g1", "cadence": "0 1 * * *"},
+        "/cluster/999/schedules",
+        json={"job_type": "backup_full", "group_name": "g1", "cadence": "0 1 * * *"},
     )
     assert response.status_code == 404
 
@@ -61,15 +62,63 @@ def test_create_schedule_invalid_cadence_422(api_client):
     cluster_id = _create_cluster(api_client)
 
     response = api_client.post(
-        "/schedule",
+        f"/cluster/{cluster_id}/schedules",
         json={
-            "cluster_id": cluster_id,
             "job_type": "backup_full",
             "group_name": "g1",
             "cadence": "not a cron expression",
         },
     )
     assert response.status_code == 422
+
+
+def test_list_schedules_scoped_to_cluster(api_client):
+    cluster_a = _create_cluster(api_client, "cluster-a")
+    cluster_b = _create_cluster(api_client, "cluster-b")
+
+    api_client.post(
+        f"/cluster/{cluster_a}/schedules",
+        json={"job_type": "backup_full", "group_name": "g1", "cadence": "0 1 * * *"},
+    )
+    api_client.post(
+        f"/cluster/{cluster_b}/schedules",
+        json={"job_type": "backup_full", "group_name": "g2", "cadence": "0 1 * * *"},
+    )
+
+    response = api_client.get(f"/cluster/{cluster_a}/schedules")
+
+    assert response.status_code == 200
+    schedules = response.json()
+    assert len(schedules) == 1
+    assert schedules[0]["group_name"] == "g1"
+    assert schedules[0]["cluster_id"] == cluster_a
+
+
+def test_list_schedules_unknown_cluster_404(api_client):
+    response = api_client.get("/cluster/999/schedules")
+    assert response.status_code == 404
+
+
+def test_get_update_delete_schedule_via_wrong_cluster_404(api_client):
+    cluster_a = _create_cluster(api_client, "cluster-a")
+    cluster_b = _create_cluster(api_client, "cluster-b")
+
+    created = api_client.post(
+        f"/cluster/{cluster_a}/schedules",
+        json={"job_type": "backup_full", "group_name": "g1", "cadence": "0 1 * * *"},
+    ).json()
+
+    assert api_client.get(f"/cluster/{cluster_b}/schedule/{created['id']}").status_code == 404
+    assert (
+        api_client.patch(
+            f"/cluster/{cluster_b}/schedule/{created['id']}", json={"enabled": False}
+        ).status_code
+        == 404
+    )
+    assert api_client.delete(f"/cluster/{cluster_b}/schedule/{created['id']}").status_code == 404
+
+    # Still reachable, untouched, via its own cluster.
+    assert api_client.get(f"/cluster/{cluster_a}/schedule/{created['id']}").status_code == 200
 
 
 def test_disable_schedule_excludes_it_from_run_due(api_client, monkeypatch):
@@ -81,16 +130,15 @@ def test_disable_schedule_excludes_it_from_run_due(api_client, monkeypatch):
 
     cluster_id = _create_cluster(api_client)
     created = api_client.post(
-        "/schedule",
+        f"/cluster/{cluster_id}/schedules",
         json={
-            "cluster_id": cluster_id,
             "job_type": "backup_full",
             "group_name": "g1",
             "cadence": "* * * * *",
         },
     ).json()
 
-    api_client.patch(f"/schedule/{created['id']}", json={"enabled": False})
+    api_client.patch(f"/cluster/{cluster_id}/schedule/{created['id']}", json={"enabled": False})
 
     response = api_client.post("/schedules/run-due")
 
@@ -100,19 +148,18 @@ def test_disable_schedule_excludes_it_from_run_due(api_client, monkeypatch):
 def test_delete_schedule_removes_it(api_client):
     cluster_id = _create_cluster(api_client)
     created = api_client.post(
-        "/schedule",
+        f"/cluster/{cluster_id}/schedules",
         json={
-            "cluster_id": cluster_id,
             "job_type": "backup_full",
             "group_name": "g1",
             "cadence": "0 1 * * *",
         },
     ).json()
 
-    response = api_client.delete(f"/schedule/{created['id']}")
+    response = api_client.delete(f"/cluster/{cluster_id}/schedule/{created['id']}")
 
     assert response.status_code == 204
-    assert api_client.get(f"/schedule/{created['id']}").status_code == 404
+    assert api_client.get(f"/cluster/{cluster_id}/schedule/{created['id']}").status_code == 404
 
 
 def test_run_due_triggers_a_due_schedule(api_client, monkeypatch):
@@ -126,9 +173,8 @@ def test_run_due_triggers_a_due_schedule(api_client, monkeypatch):
 
     cluster_id = _create_cluster(api_client)
     created = api_client.post(
-        "/schedule",
+        f"/cluster/{cluster_id}/schedules",
         json={
-            "cluster_id": cluster_id,
             "job_type": "backup_full",
             "group_name": "g1",
             "cadence": "0 1 * * *",
@@ -148,7 +194,7 @@ def test_run_due_triggers_a_due_schedule(api_client, monkeypatch):
     assert body["triggered_count"] == 1
     assert len(body["triggered_job_ids"]) == 1
 
-    updated = api_client.get(f"/schedule/{created['id']}").json()
+    updated = api_client.get(f"/cluster/{cluster_id}/schedule/{created['id']}").json()
     assert updated["last_run_job_id"] == body["triggered_job_ids"][0]
     assert updated["next_run_at"] > forced_past.isoformat()
 
@@ -156,9 +202,8 @@ def test_run_due_triggers_a_due_schedule(api_client, monkeypatch):
 def test_run_due_skips_not_yet_due_schedule(api_client):
     cluster_id = _create_cluster(api_client)
     api_client.post(
-        "/schedule",
+        f"/cluster/{cluster_id}/schedules",
         json={
-            "cluster_id": cluster_id,
             "job_type": "backup_full",
             "group_name": "g1",
             "cadence": "0 1 1 1 *",  # once a year - far in the future
@@ -188,9 +233,8 @@ def test_run_due_is_idempotent_under_concurrent_calls(api_client, monkeypatch):
 
     cluster_id = _create_cluster(api_client)
     created = api_client.post(
-        "/schedule",
+        f"/cluster/{cluster_id}/schedules",
         json={
-            "cluster_id": cluster_id,
             "job_type": "backup_full",
             "group_name": "g1",
             "cadence": "0 1 * * *",

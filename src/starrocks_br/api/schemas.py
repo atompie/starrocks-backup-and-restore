@@ -131,7 +131,6 @@ class JobRead(BaseModel):
 
 
 class ScheduleCreate(BaseModel):
-    cluster_id: int
     job_type: str = Field(pattern="^(backup_full|backup_incremental)$")
     group_name: str = Field(min_length=1, max_length=128)
     cadence: str = Field(min_length=1, max_length=128)

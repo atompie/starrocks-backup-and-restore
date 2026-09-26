@@ -44,9 +44,8 @@ def schedule_add(api_url, api_key, cluster_id, job_type, group_name, cadence, ba
         response = request(
             client,
             "POST",
-            "/schedule",
+            f"/cluster/{cluster_id}/schedules",
             json={
-                "cluster_id": cluster_id,
                 "job_type": job_type,
                 "group_name": group_name,
                 "cadence": cadence,
@@ -59,10 +58,11 @@ def schedule_add(api_url, api_key, cluster_id, job_type, group_name, cadence, ba
 
 @schedule_group.command("list")
 @add_common_api_options
-def schedule_list(api_url, api_key):
-    """List all schedules."""
+@click.option("--cluster", "cluster_id", required=True, type=int)
+def schedule_list(api_url, api_key, cluster_id):
+    """List a cluster's schedules."""
     with make_client(api_url, api_key) as client:
-        response = request(client, "GET", "/schedules")
+        response = request(client, "GET", f"/cluster/{cluster_id}/schedules")
     for schedule in response.json():
         state = "enabled" if schedule["enabled"] else "disabled"
         logger.info(
@@ -74,11 +74,12 @@ def schedule_list(api_url, api_key):
 
 @schedule_group.command("remove")
 @add_common_api_options
+@click.option("--cluster", "cluster_id", required=True, type=int)
 @click.argument("schedule_id", type=int)
-def schedule_remove(api_url, api_key, schedule_id):
+def schedule_remove(api_url, api_key, cluster_id, schedule_id):
     """Delete a schedule by id."""
     with make_client(api_url, api_key) as client:
-        request(client, "DELETE", f"/schedule/{schedule_id}")
+        request(client, "DELETE", f"/cluster/{cluster_id}/schedule/{schedule_id}")
     logger.success(f"Removed schedule {schedule_id}")
 
 

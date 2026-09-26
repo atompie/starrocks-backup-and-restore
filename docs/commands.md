@@ -410,13 +410,13 @@ The same pattern applies to `backups/incremental`, `restores`, and `prunes` (CLI
 ### Manage schedules
 
 ```bash
-curl -X POST http://localhost:8000/schedules \
+curl -X POST http://localhost:8000/cluster/1/schedules \
   -H "Authorization: Bearer $STARROCKS_BR_API_KEY" -H "Content-Type: application/json" \
-  -d '{"cluster_id": 1, "job_type": "backup_full", "group_name": "production", "cadence": "0 1 * * 0"}'
+  -d '{"job_type": "backup_full", "group_name": "production", "cadence": "0 1 * * 0"}'
 
 # or via the CLI
 starrocks-br api schedule add --cluster 1 --type backup_full --group production --cadence "0 1 * * 0"
-starrocks-br api schedule list
+starrocks-br api schedule list --cluster 1
 ```
 
 To actually run due schedules, call `run-due` on a fixed interval (e.g. every minute) from cron

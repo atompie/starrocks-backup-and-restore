@@ -8,7 +8,7 @@ Guide for automating backups and monitoring their status.
 
 If you're running the [API server](commands.md#api-server), define schedules through it instead
 of hand-writing per-group cron entries — schedules are centrally visible and manageable
-(`starrocks-br api schedule list`), and cadence/group/backend changes take effect without editing
+(`starrocks-br api schedule list --cluster <id>`), and cadence/group/backend changes take effect without editing
 crontab files. Register each schedule once:
 
 ```bash

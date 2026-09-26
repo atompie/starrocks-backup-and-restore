@@ -1,10 +1,4 @@
-# api-scheduling Specification
-
-## Purpose
-
-Lets operators define recurring backup schedules per cluster/group through the API instead of maintaining external cron entries by hand, and lets a lightweight periodic trigger (cron, Kubernetes CronJob) ask the server to run whatever is due.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Define a recurring backup schedule
 The system SHALL allow an authenticated client to create a schedule against a registered cluster identified by a cluster id in the request path, specifying job type (full or incremental backup), inventory group, a cadence (cron expression or equivalent interval), and an optional execution backend override, and SHALL persist it in the metadata store.
@@ -43,22 +37,3 @@ The system SHALL allow an authenticated client to list the schedules registered 
 #### Scenario: Accessing a schedule through the wrong cluster
 - **WHEN** an authenticated client gets, updates, or deletes a schedule id using a cluster id that the schedule does not belong to
 - **THEN** the system responds with HTTP 404, the same as if the schedule did not exist
-
-### Requirement: Running due schedules submits jobs through the standard job system
-The system SHALL expose an endpoint that, when called, finds all enabled schedules whose next-run time has passed, submits a job for each through the same job-submission path used by direct API job submission (including backend selection), and advances each triggered schedule's next-run time.
-
-#### Scenario: Due schedule is triggered
-- **WHEN** the run-due endpoint is called and a schedule's next-run time has passed
-- **THEN** the system submits a job for that schedule's cluster/job-type/group, and updates the schedule's next-run time to the next occurrence after now
-
-#### Scenario: Not-yet-due schedule is skipped
-- **WHEN** the run-due endpoint is called and a schedule's next-run time has not yet passed
-- **THEN** the system does not submit a job for that schedule and leaves its next-run time unchanged
-
-#### Scenario: No schedules are due
-- **WHEN** the run-due endpoint is called and no enabled schedule is due
-- **THEN** the system responds successfully indicating zero jobs were triggered
-
-#### Scenario: Run-due call is idempotent per due occurrence
-- **WHEN** the run-due endpoint is called twice in quick succession before a triggered job's schedule advances its next-run time
-- **THEN** the second call does not submit a duplicate job for a schedule already triggered for its current due occurrence
