@@ -62,8 +62,6 @@ class Cluster(Base):
     port: Mapped[int] = mapped_column(Integer, nullable=False)
     user: Mapped[str] = mapped_column(String(128), nullable=False)
     password_encrypted: Mapped[str] = mapped_column(Text, nullable=False)
-    database: Mapped[str] = mapped_column(String(128), nullable=False)
-    repository: Mapped[str] = mapped_column(String(128), nullable=False)
     default_backend: Mapped[str] = mapped_column(String(64), nullable=False, default="thread")
     created_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     updated_at: Mapped[datetime.datetime] = mapped_column(

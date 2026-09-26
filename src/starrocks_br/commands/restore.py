@@ -25,14 +25,20 @@ def run_restore(
     target_label = params["target_label"]
     group = params.get("group_id")
     table = params.get("table")
+    table_database = params.get("database")
     rename_suffix = params.get("rename_suffix") or "_restored"
 
     if group and table:
         raise ValueError("Cannot specify both 'group_id' and 'table'")
+    if table and not table_database:
+        raise ValueError("'database' is required when 'table' is specified")
 
     database = connect(cluster)
     with database:
-        ensure_ready(database, cluster)
+        with session_scope() as session:
+            repository = restore.find_backup_repository(session, cluster.id, target_label)
+
+        ensure_ready(database, cluster, repository=repository)
 
         with session_scope() as session:
             restore_pair = restore.find_restore_pair(session, cluster.id, target_label)
@@ -44,7 +50,7 @@ def run_restore(
                 target_label,
                 group=group,
                 table=table,
-                database=cluster.database if table else None,
+                database=table_database if table else None,
             )
         if not tables_to_restore:
             raise NoTablesFoundError(group=group, label=target_label)
@@ -54,7 +60,7 @@ def run_restore(
                 database,
                 session,
                 cluster.id,
-                cluster.repository,
+                repository,
                 restore_pair,
                 tables_to_restore,
                 rename_suffix,

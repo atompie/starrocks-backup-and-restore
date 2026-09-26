@@ -75,6 +75,30 @@ def find_tables_by_group(session: Session, cluster_id: int, group_id: int) -> li
     return [{"database": row.database_name, "table": row.table_name} for row in rows]
 
 
+def resolve_group_database(session: Session, cluster_id: int, group_id: int) -> str:
+    """Resolve the single database a group's table memberships belong to.
+
+    Backup command-building (`build_full_backup_command`, `build_incremental_backup_command`,
+    etc.) is written around one database per operation - there is no cluster-level default
+    database to fall back to any more (see openspec/changes/decouple-database-and-repository-
+    from-cluster/design.md "Group database derivation"). A group with no memberships, or with
+    memberships in more than one database, cannot be resolved to a single database.
+
+    Raises:
+        NoTablesFoundError: If the group has no table memberships.
+        MultipleDatabasesInGroupError: If the group's memberships span more than one database.
+    """
+    tables = find_tables_by_group(session, cluster_id, group_id)
+    if not tables:
+        raise exceptions.NoTablesFoundError(group=group_id)
+
+    databases = {t["database"] for t in tables}
+    if len(databases) > 1:
+        raise exceptions.MultipleDatabasesInGroupError(group_id, sorted(databases))
+
+    return next(iter(databases))
+
+
 def validate_tables_exist(
     db, database: str, tables: list[dict[str, str]], group: int | None = None
 ) -> None:
@@ -87,10 +111,17 @@ def validate_tables_exist(
         group: Optional inventory group id for better error messages
 
     Raises:
+        MultipleDatabasesInGroupError: If any table's database differs from `database`
+            (a group must already have been resolved to a single database - see
+            `resolve_group_database` - so this indicates an inconsistent caller).
         InvalidTablesInInventoryError: If any tables don't exist in the database
     """
     if not tables:
         return
+
+    other_databases = {t["database"] for t in tables if t["database"] != database}
+    if other_databases and group is not None:
+        raise exceptions.MultipleDatabasesInGroupError(group, sorted(other_databases | {database}))
 
     db_tables = [t for t in tables if t["database"] == database and t["table"] != "*"]
 

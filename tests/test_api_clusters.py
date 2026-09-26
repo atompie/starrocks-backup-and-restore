@@ -4,8 +4,6 @@ CLUSTER_PAYLOAD = {
     "port": 9030,
     "user": "backup_svc",
     "password": "s3cret",
-    "database": "sales_db",
-    "repository": "s3_repo",
 }
 
 
@@ -217,7 +215,7 @@ def test_verify_cluster_succeeds(api_client, monkeypatch):
             "port": 9030,
             "user": "backup_svc",
             "password": "s3cret",
-            "database": "sales_db",
+            "database": None,
         }
     ]
 
@@ -237,38 +235,6 @@ def test_verify_cluster_fails(api_client, monkeypatch):
     body = response.json()
     assert body["success"] is False
     assert "Can't connect" in body["message"]
-
-
-def test_verify_cluster_null_database(api_client, monkeypatch):
-    """Stored clusters always have a database today (registry requires one), but
-    the verify code path must still handle a null database gracefully - e.g. if
-    that constraint is relaxed later. Patch `_get_cluster_or_404` to hand back a
-    cluster row with `database=None` without persisting it, since the real
-    registry rejects a null database at creation."""
-    from starrocks_br.api.routes import clusters as clusters_module
-    from starrocks_br.api.schemas import ClusterVerifyResponse
-    from starrocks_br.store.models import Cluster
-
-    calls = _patch_verify_connection(
-        monkeypatch, ClusterVerifyResponse(success=True, message="Connection successful")
-    )
-
-    fake_cluster = Cluster(
-        id=1,
-        name="no-db-cluster",
-        host="sr.internal",
-        port=9030,
-        user="backup_svc",
-        password_encrypted=clusters_module.encrypt_password("s3cret"),
-        database=None,
-        repository="s3_repo",
-    )
-    monkeypatch.setattr(clusters_module, "_get_cluster_or_404", lambda db, cluster_id: fake_cluster)
-
-    response = api_client.get("/cluster/1/verify")
-
-    assert response.status_code == 200
-    assert calls[0]["database"] is None
 
 
 def test_verify_unknown_cluster_404(api_client):

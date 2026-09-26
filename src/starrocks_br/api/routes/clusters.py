@@ -34,8 +34,6 @@ def create_cluster(payload: ClusterCreate, db: Session = Depends(get_db)) -> Clu
         port=payload.port,
         user=payload.user,
         password_encrypted=encrypt_password(payload.password),
-        database=payload.database,
-        repository=payload.repository,
         default_backend=payload.default_backend,
     )
     db.add(cluster)
@@ -84,7 +82,7 @@ def verify_cluster(cluster_id: int, db: Session = Depends(get_db)) -> ClusterVer
         port=cluster.port,
         user=cluster.user,
         password=password,
-        database=cluster.database,
+        database=None,
     )
 
 

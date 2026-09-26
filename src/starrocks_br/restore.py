@@ -390,6 +390,29 @@ def find_restore_pair(session: Session, cluster_id: int, target_label: str) -> l
     raise ValueError(f"Unknown backup type '{target_row.backup_type}' for label '{target_label}'")
 
 
+def find_backup_repository(session: Session, cluster_id: int, target_label: str) -> str:
+    """Resolve the repository a backup was stored in from its own recorded history.
+
+    Per specs/api-job-execution "Restore requests accept at most one of group or
+    table", restore determines which repository holds the target backup from
+    `backup_history` rather than from any client-supplied field or a cluster-level
+    default - see openspec/changes/decouple-database-and-repository-from-cluster.
+
+    Raises:
+        BackupLabelNotFoundError: If target_label has no finished backup on record.
+    """
+    row = session.scalars(
+        select(BackupHistory).where(
+            BackupHistory.cluster_id == cluster_id,
+            BackupHistory.label == target_label,
+            BackupHistory.status == "FINISHED",
+        )
+    ).first()
+    if row is None:
+        raise exceptions.BackupLabelNotFoundError(target_label)
+    return row.repository
+
+
 def get_tables_from_backup(
     db,
     session: Session,

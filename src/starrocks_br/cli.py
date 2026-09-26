@@ -46,11 +46,14 @@ def resolve_cluster(session: Session, cfg: dict, *, create: bool) -> Cluster:
     tool's existing stricter "must init first" behavior and guards against
     a `--config` typo silently registering a phantom cluster.
 
-    On every run, mutable connection fields (host/port/user/password/
-    database/repository) are refreshed from the YAML so the config file
-    stays authoritative; the stored identity (`name`) itself is left alone
-    unless the config's optional `name` field is explicitly present and
-    differs from what's stored.
+    On every run, mutable connection fields (host/port/user/password) are
+    refreshed from the YAML so the config file stays authoritative; the
+    stored identity (`name`) itself is left alone unless the config's
+    optional `name` field is explicitly present and differs from what's
+    stored. `database`/`repository` are no longer stored on `Cluster` -
+    each command passes its config's `database`/`repository` through in
+    the operation's own params instead (see openspec/changes/decouple-
+    database-and-repository-from-cluster).
     """
     identity = config_module.get_cluster_identity(cfg)
     password = os.getenv("STARROCKS_PASSWORD", "")
@@ -66,8 +69,6 @@ def resolve_cluster(session: Session, cfg: dict, *, create: bool) -> Cluster:
             port=cfg["port"],
             user=cfg["user"],
             password_encrypted=encrypt_password(password),
-            database=cfg["database"],
-            repository=cfg["repository"],
         )
         session.add(cluster)
         session.flush()
@@ -77,8 +78,6 @@ def resolve_cluster(session: Session, cfg: dict, *, create: bool) -> Cluster:
     cluster.port = cfg["port"]
     cluster.user = cfg["user"]
     cluster.password_encrypted = encrypt_password(password)
-    cluster.database = cfg["database"]
-    cluster.repository = cfg["repository"]
     configured_name = cfg.get("name")
     if configured_name and configured_name != cluster.name:
         cluster.name = configured_name
@@ -279,7 +278,12 @@ def backup_incremental(config, baseline_backup, group, name):
         logger.info(f"Starting incremental backup for group '{group}'...")
         result = commands.backup.run_backup_incremental(
             cluster,
-            {"group_id": group_id, "name": name, "baseline_backup": baseline_backup},
+            {
+                "group_id": group_id,
+                "repository": cfg["repository"],
+                "name": name,
+                "baseline_backup": baseline_backup,
+            },
             on_progress=_on_progress,
         )
 
@@ -362,7 +366,9 @@ def backup_full(config, group, name):
             group_id = inventory_groups.get_group_id_by_name(session, cluster.id, group)
 
         logger.info(f"Starting full backup for group '{group}'...")
-        result = commands.backup.run_backup_full(cluster, {"group_id": group_id, "name": name})
+        result = commands.backup.run_backup_full(
+            cluster, {"group_id": group_id, "repository": cfg["repository"], "name": name}
+        )
 
         logger.success(f"Backup completed successfully: {result['final_status']['state']}")
         sys.exit(0)
@@ -466,6 +472,7 @@ def restore_command(config, target_label, group, table, rename_suffix, yes):
                 "target_label": target_label,
                 "group_id": group_id,
                 "table": table,
+                "database": cfg["database"] if table else None,
                 "rename_suffix": rename_suffix,
             },
             skip_confirmation=yes,
@@ -533,7 +540,8 @@ def restore_command(config, target_label, group, table, rename_suffix, yes):
 @click.option("--config", required=True, help="Path to config YAML file")
 @click.option(
     "--group",
-    help="Optional inventory group to filter backups. Without this, prunes ALL backups.",
+    required=True,
+    help="Inventory group whose backups to prune. Pruning is always scoped to one group.",
 )
 @click.option(
     "--keep-last",
@@ -620,10 +628,7 @@ def prune_command(config, group, keep_last, older_than, snapshot, snapshots, dry
         plan = commands.prune.run_prune(cluster, {**params, "dry_run": True})
 
         if "would_delete" not in plan:
-            msg = f"No successful backups found in repository '{cfg['repository']}'"
-            if group:
-                msg += f" for inventory group '{group}'"
-            logger.info(msg)
+            logger.info(f"No successful backups found for inventory group '{group}'")
             sys.exit(0)
 
         snapshots_to_delete = plan["would_delete"]

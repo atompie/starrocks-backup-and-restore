@@ -18,6 +18,8 @@ def run_prune(cluster: Cluster, params: dict[str, Any], on_progress: OnProgress 
     del on_progress  # prune has no long-running per-snapshot progress to report
 
     group = params.get("group_id")
+    if not group:
+        raise ValueError("'group_id' is required for prune")
     keep_last = params.get("keep_last")
     older_than = params.get("older_than")
     snapshot = params.get("snapshot")
@@ -49,13 +51,20 @@ def run_prune(cluster: Cluster, params: dict[str, Any], on_progress: OnProgress 
         # command body is fine - unlike backup/restore, there's no multi-minute
         # StarRocks wait to avoid holding a write lock across.
         with session_scope() as session:
-            all_backups = prune.get_successful_backups(session, cluster.id, cluster.repository, group=group)
+            all_backups = prune.get_successful_backups(session, cluster.id, group)
             if not all_backups:
                 return {"deleted": [], "kept_count": 0}
 
+            repository_by_label = {snap["label"]: snap["repository"] for snap in all_backups}
+
             if strategy in ("specific", "multiple"):
-                for snap in kwargs.get("snapshots", [kwargs.get("snapshot")]):
-                    prune.verify_snapshot_exists(database, cluster.repository, snap)
+                for snap_label in kwargs.get("snapshots", [kwargs.get("snapshot")]):
+                    snap_repository = repository_by_label.get(snap_label)
+                    if snap_repository is None:
+                        raise ValueError(
+                            f"Snapshot '{snap_label}' is not a successful backup of group '{group}'"
+                        )
+                    prune.verify_snapshot_exists(database, snap_repository, snap_label)
 
             snapshots_to_delete = prune.filter_snapshots_to_delete(all_backups, strategy, **kwargs)
 
@@ -68,7 +77,7 @@ def run_prune(cluster: Cluster, params: dict[str, Any], on_progress: OnProgress 
 
             deleted = []
             for snap in snapshots_to_delete:
-                prune.execute_drop_snapshot(database, cluster.repository, snap["label"])
+                prune.execute_drop_snapshot(database, snap["repository"], snap["label"])
                 prune.cleanup_backup_history(session, cluster.id, snap["label"])
                 deleted.append(snap["label"])
 

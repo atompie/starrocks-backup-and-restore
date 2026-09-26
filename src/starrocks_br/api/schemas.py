@@ -6,8 +6,11 @@ password or password_encrypted fields - only ClusterCreate/ClusterUpdate
 """
 
 import datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+Backend = Literal["thread", "job"]
 
 
 class ClusterCreate(BaseModel):
@@ -16,9 +19,7 @@ class ClusterCreate(BaseModel):
     port: int = Field(default=9030, gt=0, le=65535)
     user: str = Field(min_length=1, max_length=128)
     password: str = Field(default="", description="StarRocks allows an empty password (e.g. local root).")
-    database: str = Field(min_length=1, max_length=128)
-    repository: str = Field(min_length=1, max_length=128)
-    default_backend: str = Field(default="thread", max_length=64)
+    default_backend: Backend = "thread"
 
 
 class ClusterVerifyRequest(BaseModel):
@@ -39,9 +40,7 @@ class ClusterUpdate(BaseModel):
     port: int | None = Field(default=None, gt=0, le=65535)
     user: str | None = Field(default=None, min_length=1, max_length=128)
     password: str | None = None
-    database: str | None = Field(default=None, min_length=1, max_length=128)
-    repository: str | None = Field(default=None, min_length=1, max_length=128)
-    default_backend: str | None = Field(default=None, max_length=64)
+    default_backend: Backend | None = None
 
 
 class ClusterRead(BaseModel):
@@ -52,8 +51,6 @@ class ClusterRead(BaseModel):
     host: str
     port: int
     user: str
-    database: str
-    repository: str
     default_backend: str
     created_at: datetime.datetime
     updated_at: datetime.datetime
@@ -63,17 +60,19 @@ class BackupFullRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     group_id: int
+    repository: str = Field(min_length=1, max_length=128)
     name: str | None = None
-    backend: str | None = None
+    backend: Backend | None = None
 
 
 class BackupIncrementalRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     group_id: int
+    repository: str = Field(min_length=1, max_length=128)
     name: str | None = None
     baseline_backup: str | None = None
-    backend: str | None = None
+    backend: Backend | None = None
 
 
 class RestoreRequest(BaseModel):
@@ -82,26 +81,29 @@ class RestoreRequest(BaseModel):
     target_label: str = Field(min_length=1)
     group_id: int | None = None
     table: str | None = None
+    database: str | None = Field(default=None, min_length=1, max_length=128)
     rename_suffix: str = "_restored"
-    backend: str | None = None
+    backend: Backend | None = None
 
     @model_validator(mode="after")
     def _check_group_and_table_not_both_set(self) -> "RestoreRequest":
         if self.group_id and self.table:
             raise ValueError("Cannot specify both 'group_id' and 'table'")
+        if self.table and not self.database:
+            raise ValueError("'database' is required when 'table' is specified")
         return self
 
 
 class PruneRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    group_id: int | None = None
+    group_id: int
     keep_last: int | None = Field(default=None, gt=0)
     older_than: str | None = None
     snapshot: str | None = None
     snapshots: str | None = None
     dry_run: bool = False
-    backend: str | None = None
+    backend: Backend | None = None
 
     @model_validator(mode="after")
     def _check_exactly_one_strategy(self) -> "PruneRequest":
@@ -134,7 +136,7 @@ class ScheduleCreate(BaseModel):
     job_type: str = Field(pattern="^(backup_full|backup_incremental)$")
     inventory_group_id: int
     cadence: str = Field(min_length=1, max_length=128)
-    backend: str | None = None
+    backend: Backend | None = None
     enabled: bool = True
 
 
@@ -142,7 +144,7 @@ class ScheduleUpdate(BaseModel):
     job_type: str | None = Field(default=None, pattern="^(backup_full|backup_incremental)$")
     inventory_group_id: int | None = None
     cadence: str | None = Field(default=None, min_length=1, max_length=128)
-    backend: str | None = None
+    backend: Backend | None = None
     enabled: bool | None = None
 
 

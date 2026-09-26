@@ -36,29 +36,34 @@ def run_backup_full(cluster: Cluster, params: dict[str, Any], on_progress: OnPro
     group = params.get("group_id")
     if not group:
         raise ValueError("'group_id' is required for backup_full")
+    repository = params.get("repository")
+    if not repository:
+        raise ValueError("'repository' is required for backup_full")
     name = params.get("name")
 
     database = connect(cluster)
     with database:
-        ensure_ready(database, cluster)
+        ensure_ready(database, cluster, repository=repository)
 
         with session_scope() as session:
+            group_database = planner.resolve_group_database(session, cluster.id, group)
+
             label = labels.determine_backup_label(
-                session, cluster.id, "full", cluster.database, custom_name=name
+                session, cluster.id, "full", group_database, custom_name=name
             )
 
             tables = planner.find_tables_by_group(session, cluster.id, group)
-            planner.validate_tables_exist(database, cluster.database, tables, group)
+            planner.validate_tables_exist(database, group_database, tables, group)
 
             backup_command = planner.build_full_backup_command(
-                session, cluster.id, group, cluster.repository, label, cluster.database
+                session, cluster.id, group, repository, label, group_database
             )
             if not backup_command:
                 raise RuntimeError(
-                    f"No tables found in group '{group}' for database '{cluster.database}' to backup"
+                    f"No tables found in group '{group}' for database '{group_database}' to backup"
                 )
 
-            all_partitions = planner.get_all_partitions_for_tables(database, cluster.database, tables)
+            all_partitions = planner.get_all_partitions_for_tables(database, group_database, tables)
 
             concurrency.reserve_job_slot(database, session, cluster.id, "backup", label)
             planner.record_backup_partitions(session, cluster.id, label, all_partitions)
@@ -69,10 +74,10 @@ def run_backup_full(cluster: Cluster, params: dict[str, Any], on_progress: OnPro
                 session,
                 cluster.id,
                 backup_command,
-                repository=cluster.repository,
+                repository=repository,
                 backup_type="full",
                 scope="backup",
-                database=cluster.database,
+                database=group_database,
                 on_progress=on_progress,
             )
 
@@ -88,16 +93,21 @@ def run_backup_incremental(
     group = params.get("group_id")
     if not group:
         raise ValueError("'group_id' is required for backup_incremental")
+    repository = params.get("repository")
+    if not repository:
+        raise ValueError("'repository' is required for backup_incremental")
     name = params.get("name")
     baseline_backup = params.get("baseline_backup")
 
     database = connect(cluster)
     with database:
-        ensure_ready(database, cluster)
+        ensure_ready(database, cluster, repository=repository)
 
         with session_scope() as session:
+            group_database = planner.resolve_group_database(session, cluster.id, group)
+
             label = labels.determine_backup_label(
-                session, cluster.id, "incremental", cluster.database, custom_name=name
+                session, cluster.id, "incremental", group_database, custom_name=name
             )
 
             if baseline_backup:
@@ -105,7 +115,7 @@ def run_backup_incremental(
                     on_progress({"event": "baseline_specified", "baseline_backup": baseline_backup})
             else:
                 latest_backup = planner.find_latest_full_backup(
-                    database, session, cluster.id, cluster.database
+                    database, session, cluster.id, group_database
                 )
                 if on_progress:
                     on_progress({"event": "baseline_resolved", "latest_backup": latest_backup})
@@ -114,7 +124,7 @@ def run_backup_incremental(
                 database,
                 session,
                 cluster.id,
-                cluster.database,
+                group_database,
                 baseline_backup_label=baseline_backup,
                 group_id=group,
             )
@@ -122,7 +132,7 @@ def run_backup_incremental(
                 raise RuntimeError("No partitions found to backup")
 
             backup_command = planner.build_incremental_backup_command(
-                partitions, cluster.repository, label, cluster.database
+                partitions, repository, label, group_database
             )
 
             concurrency.reserve_job_slot(database, session, cluster.id, "backup", label)
@@ -134,10 +144,10 @@ def run_backup_incremental(
                 session,
                 cluster.id,
                 backup_command,
-                repository=cluster.repository,
+                repository=repository,
                 backup_type="incremental",
                 scope="backup",
-                database=cluster.database,
+                database=group_database,
                 on_progress=on_progress,
             )
 

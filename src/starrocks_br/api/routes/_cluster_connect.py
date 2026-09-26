@@ -30,7 +30,7 @@ def connect(cluster: Cluster) -> db_module.StarRocksDB:
         port=cluster.port,
         user=cluster.user,
         password=decrypt_password(cluster.password_encrypted),
-        database=cluster.database,
+        database=None,
     )
 
 

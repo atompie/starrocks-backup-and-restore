@@ -21,62 +21,58 @@ from . import logger
 from .store.models import BackupHistory, BackupPartition, TableInventory
 
 
-def get_successful_backups(
-    session: Session, cluster_id: int, repository: str, group: int | None = None
-) -> list[dict]:
-    """Get all successful backups from backup_history, optionally filtered by group.
+def get_successful_backups(session: Session, cluster_id: int, group: int) -> list[dict]:
+    """Get all successful backups belonging to an inventory group's backup history.
+
+    Per specs/api-job-execution "Prune requests specify exactly one pruning strategy",
+    prune is always scoped to one inventory group - there is no cluster-level default
+    repository to filter by any more, so each returned backup carries its own
+    recorded `repository` instead (see openspec/changes/decouple-database-and-
+    repository-from-cluster/design.md "`group_id` becomes required for prune").
 
     Args:
         session: SQLite metastore session
         cluster_id: Cluster this backup history belongs to
-        repository: Repository name to filter by
-        group: Optional inventory group id to filter by
+        group: Inventory group id to filter by
 
     Returns:
-        List of backup records as dicts with keys: label, finished_at, inventory_group_id (if group filtering is used)
+        List of backup records as dicts with keys: label, finished_at, repository, inventory_group_id
     """
-    results = []
+    rows = session.execute(
+        select(
+            BackupHistory.label,
+            BackupHistory.finished_at,
+            BackupHistory.repository,
+            TableInventory.inventory_group_id,
+        )
+        .distinct()
+        .join(BackupPartition, BackupPartition.label == BackupHistory.label)
+        .join(
+            TableInventory,
+            and_(
+                TableInventory.database_name == BackupPartition.database_name,
+                or_(TableInventory.table_name == BackupPartition.table_name, TableInventory.table_name == "*"),
+                TableInventory.cluster_id == cluster_id,
+            ),
+        )
+        .where(
+            BackupHistory.cluster_id == cluster_id,
+            BackupPartition.cluster_id == cluster_id,
+            BackupHistory.status == "FINISHED",
+            TableInventory.inventory_group_id == group,
+        )
+        .order_by(BackupHistory.finished_at.asc())
+    ).all()
 
-    if group:
-        rows = session.execute(
-            select(BackupHistory.label, BackupHistory.finished_at, TableInventory.inventory_group_id)
-            .distinct()
-            .join(BackupPartition, BackupPartition.label == BackupHistory.label)
-            .join(
-                TableInventory,
-                and_(
-                    TableInventory.database_name == BackupPartition.database_name,
-                    or_(TableInventory.table_name == BackupPartition.table_name, TableInventory.table_name == "*"),
-                    TableInventory.cluster_id == cluster_id,
-                ),
-            )
-            .where(
-                BackupHistory.cluster_id == cluster_id,
-                BackupPartition.cluster_id == cluster_id,
-                BackupHistory.repository == repository,
-                BackupHistory.status == "FINISHED",
-                TableInventory.inventory_group_id == group,
-            )
-            .order_by(BackupHistory.finished_at.asc())
-        ).all()
-        for label, finished_at, inventory_group_id in rows:
-            results.append(
-                {"label": label, "finished_at": str(finished_at), "inventory_group_id": inventory_group_id}
-            )
-    else:
-        rows = session.execute(
-            select(BackupHistory.label, BackupHistory.finished_at)
-            .where(
-                BackupHistory.cluster_id == cluster_id,
-                BackupHistory.repository == repository,
-                BackupHistory.status == "FINISHED",
-            )
-            .order_by(BackupHistory.finished_at.asc())
-        ).all()
-        for label, finished_at in rows:
-            results.append({"label": label, "finished_at": str(finished_at)})
-
-    return results
+    return [
+        {
+            "label": label,
+            "finished_at": str(finished_at),
+            "repository": repository,
+            "inventory_group_id": inventory_group_id,
+        }
+        for label, finished_at, repository, inventory_group_id in rows
+    ]
 
 
 def filter_snapshots_to_delete(all_snapshots: list[dict], strategy: str, **kwargs) -> list[dict]:
