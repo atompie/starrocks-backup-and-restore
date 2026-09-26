@@ -14,7 +14,7 @@ This project provides a backup and restore system for StarRocks databases. Inven
 The main application flow is:
 
 ```text
-CLI / HTTP API
+HTTP API
       |
       v
  commands layer -----> core operations
@@ -24,7 +24,7 @@ CLI / HTTP API
  (SQLAlchemy models and sessions; Alembic migrations)
 ```
 
-- The CLI and HTTP API are entry points. For application operations, they should call the corresponding functions in `src/starrocks_br/commands/` rather than call core operation modules directly.
+- The HTTP API is the entry point. For application operations, it should call the corresponding functions in `src/starrocks_br/commands/` rather than call core operation modules directly.
 - The commands layer coordinates use cases and calls core operation modules. Commands may call other commands when composing a use case, as `commands/schedules.py` does when it submits jobs through `commands/jobs.py`.
 - Core operation modules implement StarRocks work and domain logic. They must not call back into the commands layer.
 - Persistent metadata has a separate data access layer in `src/starrocks_br/store/`. SQLAlchemy models and sessions provide database access; Alembic manages schema migrations. The metadata store defaults to SQLite and is configured through `STARROCKS_BR_DATABASE_URL`.
@@ -35,7 +35,7 @@ The job system can execute work concurrently across its worker pool. Keep long-r
 
 Current behavior has two important limits. `concurrency.reserve_job_slot` reserves the cluster's `backup` scope, so backup operations on the same cluster are currently serialized. Also, `commands/backup.py` keeps a SQLAlchemy session open while `executor.execute_backup` submits and polls StarRocks. Treat short transaction lifetimes and parallel-safe metadata as architectural requirements; these current behaviors are gaps to account for when changing backup execution. Keep concurrency policy explicit and separate from the backup operation itself.
 
-Some existing paths do not yet follow the intended commands boundary: API routes perform inventory-group operations and pre-validation directly, while the CLI resolves inventory-group names before invoking backup, restore, and prune commands. CLI initialization also calls inventory and repository helpers directly. Treat these as current exceptions; when changing them, preserve existing behavior while moving application use cases behind commands where appropriate.
+Some existing paths do not yet follow the intended commands boundary: API routes perform inventory-group operations and pre-validation directly. Treat this as a current exception; when changing it, preserve existing behavior while moving application use cases behind commands where appropriate.
 
 ## API conventions
 
@@ -69,7 +69,7 @@ tests/
   basic operation (insert, fetch, update, delete) on one store/model/table.
 - `tests/unit/service/`: tests that mock external connections and dependencies and verify
   business/application logic spanning multiple operations - coordination between components,
-  validation, dispatch, workflows, or other non-trivial behavior. Most CLI, API, and commands-layer
+  validation, dispatch, workflows, or other non-trivial behavior. Most API and commands-layer
   tests belong here.
 - Classify a new test by what it actually does, not by which module it targets: a test against a
   `store/` model that only checks a single field update is CRUD; a test against the same layer that
@@ -80,10 +80,8 @@ tests/
 
 ## Main source areas
 
-- `src/starrocks_br/cli.py`: direct CLI adapter.
-- `src/starrocks_br/cli_api/`: CLI client for the HTTP API.
 - `src/starrocks_br/api/`: FastAPI application, routes, schemas, auth, and dependencies.
-- `src/starrocks_br/commands/`: shared application use cases called by entry points and composed by other commands.
+- `src/starrocks_br/commands/`: shared application use cases called by the API and composed by other commands.
 - `src/starrocks_br/jobs/`: asynchronous job backend interface, registry, and command handlers.
 - `src/starrocks_br/`: StarRocks connection and core backup, restore, planning, execution, and pruning logic.
 - `src/starrocks_br/store/`: SQLAlchemy metadata models, sessions, encryption, and Alembic migrations.

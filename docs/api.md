@@ -1,9 +1,8 @@
 # API Server
 
-The FastAPI server lets you operate `starrocks-br` as a service: register multiple StarRocks
-clusters, trigger and monitor backup/restore/prune jobs over HTTP, and manage recurring backup
-schedules centrally. It's optional and fully additive — the existing direct-to-StarRocks CLI
-commands (`backup`, `restore`, `prune`, `init`) work exactly as before and don't need it.
+`starrocks-br` runs as a FastAPI service: register multiple StarRocks clusters, trigger and
+monitor backup/restore/prune jobs over HTTP, and manage recurring backup schedules centrally. It
+is the only interface this tool provides — there is no CLI.
 
 ## Table of Contents
 
@@ -14,7 +13,6 @@ commands (`backup`, `restore`, `prune`, `init`) work exactly as before and don't
 - [Authentication](#authentication)
 - [Quickstart](#quickstart)
 - [API Reference](#api-reference)
-- [CLI Reference](#cli-reference)
 - [Job Execution Backends](#job-execution-backends)
 - [Scheduling](#scheduling)
 - [Troubleshooting](#troubleshooting)
@@ -23,7 +21,7 @@ commands (`backup`, `restore`, `prune`, `init`) work exactly as before and don't
 
 ```
 +----------------------------------------------------------------------+
-|  starrocks-br api serve   (FastAPI + Uvicorn, long-running process)  |
+|  FastAPI + Uvicorn server (long-running process)                     |
 |                                                                        |
 |   auth: bearer token (STARROCKS_BR_API_KEY)                          |
 |   +----------------------------------------------------------+       |
@@ -40,31 +38,25 @@ commands (`backup`, `restore`, `prune`, `init`) work exactly as before and don't
   (registered via API)      (registered via API)      (registered via API)
 ```
 
-Unlike the direct CLI's original design, backup/restore bookkeeping
-(`backup_history`, `table_inventory`, `run_status`, `backup_partitions`,
-`restore_history`) is **not** stored on each target StarRocks cluster - it
-lives in this same metadata store, scoped by `cluster_id`, alongside the
-`clusters`/`jobs`/`schedules` tables. This means the bookkeeping survives a
-dead or unreachable StarRocks cluster, and no cluster needs an `ops` database
-of its own. The legacy standalone CLI (`starrocks-br init`/`backup`/
-`restore`/`prune`) shares this same metastore now too - see the
-[Configuration Reference](configuration.md) for what that requires.
+Backup/restore bookkeeping (`backup_history`, `table_inventory`, `run_status`, `backup_partitions`,
+`restore_history`) is **not** stored on each target StarRocks cluster - it lives in this same
+metadata store, scoped by `cluster_id`, alongside the `clusters`/`jobs`/`schedules` tables. This
+means the bookkeeping survives a dead or unreachable StarRocks cluster, and no cluster needs an
+`ops` database of its own.
 
 ## Installation
 
-The API server needs extra dependencies not required by the base CLI install:
-
 ```bash
-pip install "starrocks-br[api]"
+pip install starrocks-br
 ```
 
-This adds FastAPI, Uvicorn, SQLAlchemy, Alembic, httpx, and croniter. See
-[Installation Guide](installation.md#optional-api-server-support).
+This installs FastAPI, Uvicorn, SQLAlchemy, Alembic, httpx, croniter, cryptography, and boto3 as
+base dependencies. See [Installation Guide](installation.md).
 
 ## Configuration
 
-The server is configured entirely through environment variables (no server config YAML). It does
-**not** read `config.yaml` — clusters are registered dynamically through the API/CLI instead.
+The server is configured entirely through environment variables (no config file). Clusters are
+registered dynamically through the API.
 
 | Variable | Required | Default | Purpose |
 |----------|----------|---------|---------|
@@ -101,16 +93,11 @@ apply a schema update after upgrading `starrocks-br`.
 ## Running the Server
 
 ```bash
-starrocks-br api serve --host 0.0.0.0 --port 8000
-```
-
-Equivalent direct `uvicorn` invocation (useful for `--workers`, reload during development, etc. —
-note the API is stateful in-process for the `thread` backend, so running multiple workers means
-each worker has its own job queue and only sees jobs it itself submitted):
-
-```bash
 uvicorn starrocks_br.api.app:create_app --factory --host 0.0.0.0 --port 8000
 ```
+
+Note the API is stateful in-process for the `thread` backend, so running multiple workers
+(`--workers`) means each worker has its own job queue and only sees jobs it itself submitted.
 
 Check it's up:
 
@@ -137,38 +124,34 @@ without a token, or with the wrong one, get `401 Unauthorized`.
 
 ```bash
 # 1. Install and configure
-pip install "starrocks-br[api]"
+pip install starrocks-br
 export STARROCKS_BR_API_KEY=$(python -c "import secrets; print(secrets.token_urlsafe(32))")
 export STARROCKS_BR_DB_ENCRYPTION_KEY=$(python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())")
 
 # 2. Start the server (in another terminal, or as a background service)
-starrocks-br api serve
+uvicorn starrocks_br.api.app:create_app --factory
 
-# 3. Point the CLI's api-client commands at it
-export STARROCKS_BR_API_URL=http://localhost:8000
-export STARROCKS_BR_API_KEY=<same key as above>
+# 3. Register a cluster
+curl -s -H "Authorization: Bearer $STARROCKS_BR_API_KEY" -H "Content-Type: application/json" \
+  -X POST http://localhost:8000/cluster \
+  -d '{"name": "prod-eu", "host": "sr.internal", "port": 9030, "user": "root",
+       "password": "secret", "database": "mydb", "repository": "s3_repo"}'
+# -> {"id": 1, "name": "prod-eu", ...}
 
-# 4. Register a cluster
-starrocks-br api cluster add \
-  --name prod-eu --host sr.internal --port 9030 --user root --password secret \
-  --database mydb --repository s3_repo
+# 4. Create an inventory group on that cluster
+curl -s -H "Authorization: Bearer $STARROCKS_BR_API_KEY" -H "Content-Type: application/json" \
+  -X POST http://localhost:8000/inventories/cluster/1 \
+  -d '{"name": "production", "tables": [{"database": "mydb", "table": "*"}]}'
+# -> {"id": 1, "name": "production"}
 
-# 5. Initialize its ops schema (still a direct CLI operation against that cluster)
-cat > prod-eu.yaml <<EOF
-host: sr.internal
-port: 9030
-user: root
-database: mydb
-repository: s3_repo
-table_inventory:
-  - group: production
-    tables:
-      - {database: mydb, table: "*"}
-EOF
-STARROCKS_PASSWORD=secret starrocks-br init --config prod-eu.yaml
+# 5. Submit a full backup (group_id 1 from step 4) and poll it until it finishes
+curl -s -H "Authorization: Bearer $STARROCKS_BR_API_KEY" -H "Content-Type: application/json" \
+  -X POST http://localhost:8000/backup/manual/full/cluster/1 \
+  -d '{"group_id": 1, "repository": "s3_repo"}'
+# -> 202 {"id": 1, "status": "PENDING", ...}
 
-# 6. Run a backup through the API and wait for it to finish
-starrocks-br api job submit --cluster 1 --type backup-full --group production --wait
+curl -s -H "Authorization: Bearer $STARROCKS_BR_API_KEY" http://localhost:8000/job/1
+# -> {"status": "RUNNING", "progress_pct": 42, ...} or {"status": "SUCCESS", ...}
 ```
 
 ## API Reference
@@ -226,18 +209,21 @@ containing `ops_database` is silently ignored, not rejected.
 | GET | `/job/{id}` | Get a job's status/progress (any job type, not manual-backup-specific). |
 
 Every submit endpoint returns `202 Accepted` immediately with the created job (`status: PENDING`);
-the work runs asynchronously. Request body fields (all optional, send only what applies):
+the work runs asynchronously. Request body fields (send only what applies to that job type):
 
-| Field | Used by | Meaning |
-|-------|---------|---------|
-| `group` | backups, restores | Inventory group name. |
-| `name` | backups | Custom backup label. |
-| `baseline_backup` | incremental backup | Baseline backup label to diff against. |
-| `target_label` | restore | Backup label to restore. |
-| `table` | restore | Restore a single table instead of a group. |
-| `rename_suffix` | restore | Temp-table suffix (default `_restored`). |
-| `keep_last`, `older_than`, `snapshot`, `snapshots`, `dry_run` | prune | Same semantics as the CLI's `prune` options — exactly one of `keep_last`/`older_than`/`snapshot`/`snapshots` is required. |
-| `backend` | all | Override the execution backend for this one job. |
+| Field | Used by | Required | Meaning |
+|-------|---------|----------|---------|
+| `group_id` | backups, prune | Yes | Inventory group id (from `GET /inventories/cluster/{id}`). |
+| `repository` | backups | Yes | Destination repository name; must currently exist on the cluster. |
+| `name` | backups | No | Custom backup label. |
+| `baseline_backup` | incremental backup | No | Baseline backup label to diff against. |
+| `target_label` | restore | Yes | Backup label to restore. |
+| `group_id` | restore | No | Restore every table in this group instead of a single table (mutually exclusive with `table`). |
+| `table` / `database` | restore | No | Restore a single table instead of a group; `database` is required alongside `table`. |
+| `rename_suffix` | restore | No | Temp-table suffix (default `_restored`). |
+| `keep_last`, `older_than`, `snapshot`, `snapshots` | prune | Exactly one | Pruning strategy. |
+| `dry_run` | prune | No | Report what would be pruned without deleting anything. |
+| `backend` | all | No | Override the execution backend for this one job. |
 
 `GET /job/{id}` response:
 
@@ -279,7 +265,8 @@ set only when `status` is `FAILED`.
 ```json
 {
   "job_type": "backup_full",
-  "group_name": "production",
+  "inventory_group_id": 1,
+  "repository": "s3_repo",
   "cadence": "0 1 * * 0",
   "backend": null,
   "enabled": true
@@ -381,38 +368,6 @@ Returns `409` if a group with that name already exists on the cluster.
 `POST /inventory/cluster/{cluster_id}/group_id/{group_id}/tables` body: `{"database": "sales_db",
 "table": "orders"}` — returns `409` if that exact membership already exists.
 
-## CLI Reference
-
-`starrocks-br api ...` commands are thin HTTP clients for the endpoints above. They never talk to
-StarRocks directly. Configure the target server once via environment variables, or pass
-`--api-url`/`--api-key` on each command:
-
-```bash
-export STARROCKS_BR_API_URL=http://localhost:8000
-export STARROCKS_BR_API_KEY=<your key>
-```
-
-| Command | Equivalent endpoint |
-|---------|---------------------|
-| `starrocks-br api serve [--host] [--port]` | starts the server |
-| `starrocks-br api cluster add --name ... --host ... --port ... --user ... --password ... --database ... --repository ...` | `POST /cluster` |
-| `starrocks-br api cluster list` | `GET /clusters` |
-| `starrocks-br api cluster remove <id>` | `DELETE /cluster/{id}` |
-| `starrocks-br api job submit --cluster <id> --type backup-full\|backup-incremental\|restore\|prune [options] [--wait]` | `POST /backup/manual/{operation}/cluster/{id}` |
-| `starrocks-br api job status <id>` | `GET /job/{id}` |
-| `starrocks-br api schedule add --cluster <id> --type backup_full\|backup_incremental --group ... --cadence ...` | `POST /backup/schedules/cluster/{id}` |
-| `starrocks-br api schedule list --cluster <id>` | `GET /backup/schedules/cluster/{id}` |
-| `starrocks-br api schedule remove --cluster <id> <schedule_id>` | `DELETE /backup/schedules/cluster/{id}/schedule_id/{schedule_id}` |
-| `starrocks-br api schedule run-due` | `POST /backup/schedules/run` |
-| `starrocks-br api repository add --cluster <id> --name ... --location ... --access-key ... --secret-key ... --endpoint ... [--region ...]` | `POST /repositories/cluster/{id}` |
-| `starrocks-br api repository list --cluster <id>` | `GET /repositories/cluster/{id}` |
-| `starrocks-br api repository remove --cluster <id> <name>` | `DELETE /repositories/cluster/{id}/name/{name}` |
-
-`job submit --wait` polls `GET /job/{id}` until the job reaches `SUCCESS` or `FAILED`, printing
-progress as it goes, and exits non-zero on failure — useful in scripts/CI.
-
-Run `starrocks-br api --help`, or `starrocks-br api <group> --help`, for the full option list.
-
 ## Job Execution Backends
 
 Jobs run on a pluggable backend, chosen per request (`backend` field / `--backend` flag), falling
@@ -424,18 +379,17 @@ backend for distributed workers); adding one doesn't change this API's request/r
 ## Scheduling
 
 See [Scheduling and Monitoring](scheduling.md#recommended-api-managed-schedules) for how to wire
-`starrocks-br api schedule run-due` into cron or a Kubernetes CronJob so due schedules actually
-get triggered.
+`POST /backup/schedules/run` into cron or a Kubernetes CronJob so due schedules actually get
+triggered.
 
 ## Troubleshooting
 
 **Server won't start / exits immediately with an error about `STARROCKS_BR_API_KEY` or
-`STARROCKS_BR_DB_ENCRYPTION_KEY`.** Both must be set before `starrocks-br api serve` (or
-`uvicorn ...`) is invoked — see [Configuration](#configuration).
+`STARROCKS_BR_DB_ENCRYPTION_KEY`.** Both must be set before the server (`uvicorn ...`) is invoked
+— see [Configuration](#configuration).
 
 **`401` from every request.** Check `Authorization: Bearer <token>` is present and matches the
-server's `STARROCKS_BR_API_KEY` exactly (the CLI reads `STARROCKS_BR_API_KEY`/`--api-key` too —
-make sure it's set in the *client's* environment, not just the server's).
+server's `STARROCKS_BR_API_KEY` exactly.
 
 **`422` on cluster/schedule creation.** The response body's `detail` lists which field failed
 validation (e.g. a missing required field, a bad cron expression, or an unknown `backend` name not

@@ -15,10 +15,9 @@
 """Job type -> command dispatch table.
 
 The actual application logic lives in `starrocks_br.commands` (the single
-implementation of each use case, shared with `cli.py` and the API - see
-openspec/changes/establish-command-layer). This module only maps job-type
-strings to those command functions for `JobBackend` implementations
-(`jobs/thread_backend.py` today) to dispatch on.
+implementation of each use case - see openspec/changes/establish-command-layer).
+This module only maps job-type strings to those command functions for
+`JobBackend` implementations (`jobs/thread_backend.py` today) to dispatch on.
 """
 
 from collections.abc import Callable

@@ -2,8 +2,8 @@
 
 Fails fast (raises before the app is constructed) when required server-side
 secrets are missing, per specs/api-authentication "Server refuses to start
-without a configured key". Importing this module is what CLIs like
-`starrocks-br api serve` and test fixtures call into.
+without a configured key". Importing this module is what `uvicorn
+starrocks_br.api.app:create_app --factory` and test fixtures call into.
 """
 
 from fastapi import FastAPI

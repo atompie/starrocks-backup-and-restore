@@ -8,7 +8,6 @@ from starrocks_br.inventory_groups import (
     InventoryMembershipNotFoundError,
     add_membership,
     add_memberships_bulk,
-    bootstrap_table_inventory,
     create_group,
     delete_group,
     get_group,
@@ -230,42 +229,3 @@ def test_delete_group_raises_in_use_when_schedule_references_it(sqlite_session, 
 
     # Nothing was deleted.
     assert sqlite_session.get(InventoryGroup, group_id) is not None
-
-
-def test_bootstrap_table_inventory_creates_group_and_adds_entries(sqlite_session, make_cluster):
-    cluster = make_cluster()
-
-    bootstrap_table_inventory(sqlite_session, cluster.id, [("prod", "sales_db", "orders")])
-
-    group_id = get_group_id_by_name(sqlite_session, cluster.id, "prod")
-    assert group_exists(sqlite_session, cluster.id, group_id) is True
-    assert sqlite_session.query(TableInventory).filter_by(cluster_id=cluster.id).count() == 1
-
-
-def test_bootstrap_table_inventory_is_idempotent(sqlite_session, make_cluster, make_group):
-    cluster = make_cluster()
-    group_id = make_group(cluster.id, "prod")
-    add_membership(sqlite_session, cluster.id, group_id, "sales_db", "orders")
-
-    # Re-running with an already-existing entry is a no-op, not an error.
-    bootstrap_table_inventory(sqlite_session, cluster.id, [("prod", "sales_db", "orders")])
-
-    assert sqlite_session.query(TableInventory).filter_by(cluster_id=cluster.id).count() == 1
-
-
-def test_bootstrap_table_inventory_reuses_existing_group_by_name(sqlite_session, make_cluster, make_group):
-    cluster = make_cluster()
-    group_id = make_group(cluster.id, "prod")
-
-    bootstrap_table_inventory(sqlite_session, cluster.id, [("prod", "sales_db", "orders")])
-
-    row = sqlite_session.query(TableInventory).filter_by(cluster_id=cluster.id).one()
-    assert row.inventory_group_id == group_id
-
-
-def test_bootstrap_table_inventory_handles_empty_entries(sqlite_session, make_cluster):
-    cluster = make_cluster()
-
-    bootstrap_table_inventory(sqlite_session, cluster.id, [])
-
-    assert sqlite_session.query(TableInventory).filter_by(cluster_id=cluster.id).count() == 0

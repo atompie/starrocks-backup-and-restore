@@ -16,47 +16,14 @@ source .venv/bin/activate  # Linux/Mac
 pip install starrocks-br
 
 # Verify
-starrocks-br --help
+python -c "import starrocks_br.api.app"
 ```
 
-**Note:** Always activate the virtual environment before using the tool.
+**Note:** Always activate the virtual environment before using the tool. This installs FastAPI,
+Uvicorn, SQLAlchemy, Alembic, httpx, croniter, cryptography, and boto3 as base dependencies — see
+[API Server](api.md) for how to configure and run the server.
 
-### Optional: API server support
-
-The CLI works standalone with no extra dependencies. To also run the FastAPI
-server (register clusters, submit/monitor jobs, manage schedules over HTTP —
-see [Commands Reference](commands.md#api-server)), install the `api` extra:
-
-```bash
-pip install "starrocks-br[api]"
-```
-
-This adds FastAPI, Uvicorn, SQLAlchemy, Alembic, httpx, and croniter. It is
-not required for any of the existing direct-to-StarRocks CLI commands.
-
-## Option 2: Standalone Executable
-
-**No Python installation required.**
-
-Download the executable for your platform from the [latest release](https://github.com/deep-bi/starrocks-backup-and-restore/releases/latest):
-
-- **Linux**: `starrocks-br-linux-x86_64`
-- **Windows**: `starrocks-br-windows-x86_64.exe`
-- **macOS (Apple Silicon)**: `starrocks-br-macos-arm64`
-- **macOS (Intel)**: `starrocks-br-macos-x86_64`
-
-**Linux/macOS:**
-```bash
-chmod +x starrocks-br-*
-./starrocks-br-linux-x86_64 --help
-```
-
-**Windows (PowerShell):**
-```powershell
-.\starrocks-br-windows-x86_64.exe --help
-```
-
-## Option 3: Micromamba
+## Option 2: Micromamba
 
 [Micromamba](https://mamba.readthedocs.io/en/latest/user_guide/micromamba.html) is a lightweight package manager that creates isolated environments. It's useful when you want environment isolation without a full Anaconda/Miniconda installation.
 
@@ -70,27 +37,16 @@ micromamba activate starrocks-br
 pip install starrocks-br
 
 # Verify
-starrocks-br --help
+python -c "import starrocks_br.api.app"
 ```
 
 **Running without activation:**
 
-You can run the tool without activating the environment:
-
 ```bash
-# Option 1: Using micromamba run
-micromamba run -n starrocks-br starrocks-br --help
-
-# Option 2: Using direct path to binary
-~/.local/share/micromamba/envs/starrocks-br/bin/starrocks-br --help
+micromamba run -n starrocks-br uvicorn starrocks_br.api.app:create_app --factory
 ```
 
-**Optional:** Add the binary to your PATH for easier access:
-```bash
-export PATH="$HOME/.local/share/micromamba/envs/starrocks-br/bin:$PATH"
-```
-
-## Option 4: Devbox (Development)
+## Option 3: Devbox (Development)
 
 **Recommended for contributors.**
 
@@ -106,11 +62,10 @@ curl -fsSL https://get.jetpack.io/devbox | bash
 devbox shell
 
 # Ready to go
-starrocks-br --help
 pytest
 ```
 
-## Option 5: Manual Development Setup
+## Option 4: Manual Development Setup
 
 ```bash
 # Clone the repository
@@ -125,7 +80,7 @@ source .venv/bin/activate  # Linux/Mac
 pip install -e ".[dev]"
 
 # Verify
-starrocks-br --help
+pytest
 ```
 
 ## Next Steps

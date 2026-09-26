@@ -17,12 +17,6 @@ class StarRocksBRError(Exception):
     pass
 
 
-class MissingOptionError(StarRocksBRError):
-    def __init__(self, missing_option: str):
-        self.missing_option = missing_option
-        super().__init__(f"Missing required option: {missing_option}")
-
-
 class BackupLabelNotFoundError(StarRocksBRError):
     def __init__(self, label: str, repository: str = None):
         self.label = label
@@ -54,26 +48,6 @@ class InvalidTableNameError(StarRocksBRError):
         self.table_name = table_name
         self.reason = reason
         super().__init__(f"Invalid table name '{table_name}': {reason}")
-
-
-class ConfigFileNotFoundError(StarRocksBRError):
-    def __init__(self, config_path: str):
-        self.config_path = config_path
-        super().__init__(f"Config file not found: {config_path}")
-
-
-class ConfigValidationError(StarRocksBRError):
-    def __init__(self, message: str):
-        super().__init__(f"Configuration error: {message}")
-
-
-class ClusterNotInitializedError(StarRocksBRError):
-    def __init__(self, identity: str):
-        self.identity = identity
-        super().__init__(
-            f"No cluster registered for '{identity}' in the local SQLite metastore. "
-            "Run 'starrocks-br init --config <config.yaml>' first."
-        )
 
 
 class ClusterHealthCheckFailedError(StarRocksBRError):

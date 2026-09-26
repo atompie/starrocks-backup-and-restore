@@ -77,9 +77,10 @@ You can name your groups anything that makes sense for your use case: `group_a`,
 ### How Groups Work
 
 1. **Define groups** by inserting rows into `ops.table_inventory`
-2. **Run backups** by specifying the group name:
+2. **Run backups** by specifying the group id:
    ```bash
-   starrocks-br backup full --group fact_tables
+   curl -X POST http://localhost:8000/backup/manual/full/cluster/{cluster_id} \
+     -d '{"group_id": <fact_tables group id>, "repository": "..."}'
    ```
 3. **The tool** looks up all tables in that group and backs them up together
 
@@ -141,9 +142,10 @@ A **full backup** copies all data from the selected tables at a point in time.
 - Can be restored independently (no dependencies)
 - Serves as a baseline for incremental backups
 
-**Command:**
+**Request:**
 ```bash
-starrocks-br backup full --config config.yaml --group my_group
+curl -X POST http://localhost:8000/backup/manual/full/cluster/{cluster_id} \
+  -d '{"group_id": <my_group id>, "repository": "..."}'
 ```
 
 ### Incremental Backup
@@ -160,9 +162,10 @@ An **incremental backup** copies only the partitions that have changed since the
 - Requires less storage space
 - Depends on a full backup as baseline
 
-**Command:**
+**Request:**
 ```bash
-starrocks-br backup incremental --config config.yaml --group my_group
+curl -X POST http://localhost:8000/backup/manual/incremental/cluster/{cluster_id} \
+  -d '{"group_id": <my_group id>, "repository": "..."}'
 ```
 
 **Important:** You must have a full backup before running an incremental backup. The tool uses the full backup as the comparison baseline.
@@ -252,7 +255,8 @@ The tool automatically resolves backup chains for you:
 
 ```bash
 # You specify a target backup (could be full or incremental)
-starrocks-br restore --config config.yaml --target-label my_backup_label
+curl -X POST http://localhost:8000/backup/manual/restore/cluster/{cluster_id} \
+  -d '{"target_label": "my_backup_label"}'
 
 # The tool automatically:
 # - Detects if it's a full or incremental backup
@@ -265,22 +269,25 @@ starrocks-br restore --config config.yaml --target-label my_backup_label
 **1. Full Restore (Disaster Recovery)**
 ```bash
 # Restore all tables from a backup
-starrocks-br restore --config config.yaml --target-label my_backup_label
+curl -X POST http://localhost:8000/backup/manual/restore/cluster/{cluster_id} \
+  -d '{"target_label": "my_backup_label"}'
 ```
 
 **2. Group-Based Restore**
 ```bash
 # Restore only tables in a specific inventory group
-starrocks-br restore --config config.yaml --target-label my_backup_label --group fact_tables
+curl -X POST http://localhost:8000/backup/manual/restore/cluster/{cluster_id} \
+  -d '{"target_label": "my_backup_label", "group_id": <fact_tables group id>}'
 ```
 
 **3. Single Table Restore**
 ```bash
 # Restore just one table
-starrocks-br restore --config config.yaml --target-label my_backup_label --table orders
+curl -X POST http://localhost:8000/backup/manual/restore/cluster/{cluster_id} \
+  -d '{"target_label": "my_backup_label", "table": "orders", "database": "sales_db"}'
 ```
 
-Note: Provide only the table name (e.g., `orders`), not `database.table`. The database is taken from your config file.
+Note: Provide the bare table name (e.g., `orders`) plus its `database`, not `database.table` combined.
 
 ### Safe Restore with Temporary Tables
 
@@ -294,10 +301,8 @@ This ensures you can verify restored data before it replaces production data.
 
 **Customizing the suffix:**
 ```bash
-starrocks-br restore \
-  --config config.yaml \
-  --target-label my_backup \
-  --rename-suffix _verified  # Creates orders_verified instead of orders_restored
+curl -X POST http://localhost:8000/backup/manual/restore/cluster/{cluster_id} \
+  -d '{"target_label": "my_backup", "rename_suffix": "_verified"}'  # Creates orders_verified instead of orders_restored
 ```
 
 ## Next Steps
@@ -306,5 +311,5 @@ Now that you understand the core concepts:
 
 - **New users**: Continue to [Getting Started](getting-started.md) for a step-by-step tutorial
 - **Ready to configure**: See [Configuration Reference](configuration.md)
-- **Need command details**: Check [Command Reference](commands.md)
+- **Need endpoint details**: Check [API Server](api.md)
 - **Setting up automation**: Read [Scheduling and Monitoring](scheduling.md)

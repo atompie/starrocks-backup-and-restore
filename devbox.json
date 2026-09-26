@@ -16,7 +16,7 @@
       "  source .venv/bin/activate",
       "fi",
       "echo 'Available commands:'",
-      "echo '  starrocks-br --help'",
+      "echo '  ./run.sh'",
       "echo '  pytest'"
     ]
   }

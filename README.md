@@ -10,15 +10,13 @@ Full and incremental backup automation for StarRocks shared-nothing clusters.
 
 - [Why This Tool?](#why-this-tool) (this page)
 - [Installation](#installation) (this page)
-- [Configuration](#configuration) (this page)
 - [Basic Usage](#basic-usage) (this page)
 - [How It Works](#how-it-works) (this page)
 - **[Getting Started](docs/getting-started.md)** - Step-by-step tutorial
 - **[Core Concepts](docs/core-concepts.md)** - Understand inventory groups, backup types, and restore chains
 - **[Installation Guide](docs/installation.md)** - All installation methods
-- **[Configuration Reference](docs/configuration.md)** - Config file reference and TLS setup
-- **[Commands Reference](docs/commands.md)** - Detailed command reference
-- **[API Server](docs/api.md)** - Run `starrocks-br` as a service: multi-cluster registry, jobs, and schedules over HTTP
+- **[Configuration Reference](docs/configuration.md)** - Server configuration and TLS setup
+- **[API Server](docs/api.md)** - Multi-cluster registry, jobs, and schedules over HTTP
 - **[Scheduling & Monitoring](docs/scheduling.md)** - Automate backups and monitor status
 
 ## Why This Tool?
@@ -48,99 +46,73 @@ In short: this tool transforms StarRocks's basic backup/restore commands into a 
 
 ## Installation
 
-### Option 1: PyPI
-
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 pip install starrocks-br
 ```
 
-### Option 2: Standalone Executable
-
-Download from [releases](https://github.com/deep-bi/starrocks-backup-and-restore/releases/latest):
-
-```bash
-# Linux
-chmod +x starrocks-br-linux-x86_64
-mv starrocks-br-linux-x86_64 starrocks-br
-./starrocks-br --help
-```
-
 See [Installation Guide](docs/installation.md) for all options.
-
-## Configuration
-
-Create a `config.yaml` file pointing to your StarRocks cluster:
-
-```yaml
-host: "127.0.0.1"       # StarRocks FE node address
-port: 9030              # MySQL protocol port
-user: "root"            # Database user with backup/restore privileges
-database: "your_database"   # Database containing tables to backup
-repository: "your_repo_name"  # Repository created via CREATE REPOSITORY in StarRocks
-
-# Optional: Define table inventory groups directly in config
-table_inventory:
-  - group: "production"
-    tables:
-      - database: "mydb"
-        table: "users"
-      - database: "mydb"
-        table: "orders"
-```
-
-Set password:
-```bash
-export STARROCKS_PASSWORD="your_password"
-```
-
-See [Configuration Reference](docs/configuration.md) for TLS and advanced options.
 
 ## Basic Usage
 
-**Initialize:**
+**Configure and start the server:**
 ```bash
-starrocks-br init --config config.yaml
+export STARROCKS_BR_API_KEY=$(python -c "import secrets; print(secrets.token_urlsafe(32))")
+export STARROCKS_BR_DB_ENCRYPTION_KEY=$(python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())")
+uvicorn starrocks_br.api.app:create_app --factory
 ```
 
-This creates the `ops` database and automatically populates table inventory from your config (if defined).
+**Register a cluster:**
+```bash
+curl -s -H "Authorization: Bearer $STARROCKS_BR_API_KEY" -H "Content-Type: application/json" \
+  -X POST http://localhost:8000/cluster \
+  -d '{"name": "prod", "host": "127.0.0.1", "port": 9030, "user": "root",
+       "password": "your_password", "database": "your_database", "repository": "your_repo_name"}'
+```
 
-**Note:** If you modify the `table_inventory` in your config file, rerun `starrocks-br init --config config.yaml` to update the database.
-
-**Alternative: Define inventory groups manually** (in StarRocks):
-```sql
-INSERT INTO ops.table_inventory (inventory_group, database_name, table_name)
-VALUES
-  ('production', 'mydb', 'users'),
-  ('production', 'mydb', 'orders');
+**Create an inventory group:**
+```bash
+curl -s -H "Authorization: Bearer $STARROCKS_BR_API_KEY" -H "Content-Type: application/json" \
+  -X POST http://localhost:8000/inventories/cluster/1 \
+  -d '{"name": "production", "tables": [{"database": "mydb", "table": "users"}, {"database": "mydb", "table": "orders"}]}'
 ```
 
 **Backup:**
 ```bash
 # Full backup
-starrocks-br backup full --config config.yaml --group production
+curl -s -H "Authorization: Bearer $STARROCKS_BR_API_KEY" -H "Content-Type: application/json" \
+  -X POST http://localhost:8000/backup/manual/full/cluster/1 \
+  -d '{"group_id": 1, "repository": "your_repo_name"}'
 
 # Incremental backup (tool detects changed partitions automatically)
-starrocks-br backup incremental --config config.yaml --group production
+curl -s -H "Authorization: Bearer $STARROCKS_BR_API_KEY" -H "Content-Type: application/json" \
+  -X POST http://localhost:8000/backup/manual/incremental/cluster/1 \
+  -d '{"group_id": 1, "repository": "your_repo_name"}'
 ```
 
 **Restore:**
 ```bash
 # Tool automatically resolves backup chains
-starrocks-br restore --config config.yaml --target-label mydb_20251118_full
+curl -s -H "Authorization: Bearer $STARROCKS_BR_API_KEY" -H "Content-Type: application/json" \
+  -X POST http://localhost:8000/backup/manual/restore/cluster/1 \
+  -d '{"target_label": "mydb_20251118_full"}'
 ```
 
 **Prune old backups:**
 ```bash
 # Keep only last 5 backups
-starrocks-br prune --config config.yaml --keep-last 5
+curl -s -H "Authorization: Bearer $STARROCKS_BR_API_KEY" -H "Content-Type: application/json" \
+  -X POST http://localhost:8000/backup/manual/prune/cluster/1 \
+  -d '{"group_id": 1, "keep_last": 5}'
 
 # Delete backups older than a date
-starrocks-br prune --config config.yaml --older-than "2024-01-01 00:00:00"
+curl -s -H "Authorization: Bearer $STARROCKS_BR_API_KEY" -H "Content-Type: application/json" \
+  -X POST http://localhost:8000/backup/manual/prune/cluster/1 \
+  -d '{"group_id": 1, "older_than": "2024-01-01 00:00:00"}'
 ```
 
-See [Commands Reference](docs/commands.md) for all options.
+See [API Server](docs/api.md) for the full reference and [Configuration Reference](docs/configuration.md) for TLS and advanced options.
 
 ## How It Works
 

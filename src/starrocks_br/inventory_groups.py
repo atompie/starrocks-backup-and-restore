@@ -16,7 +16,6 @@ from __future__ import annotations
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from . import logger
 from .store.models import InventoryGroup, Schedule, TableInventory
 
 
@@ -52,19 +51,6 @@ def get_group_id_by_name(session: Session, cluster_id: int, name: str) -> int:
     if group_id is None:
         raise InventoryGroupNotFoundError(f"Inventory group '{name}' not found on this cluster")
     return group_id
-
-
-def _get_or_create_group_id(session: Session, cluster_id: int, name: str) -> int:
-    group_id = session.scalars(
-        select(InventoryGroup.id).where(InventoryGroup.cluster_id == cluster_id, InventoryGroup.name == name)
-    ).first()
-    if group_id is not None:
-        return group_id
-
-    group = InventoryGroup(cluster_id=cluster_id, name=name)
-    session.add(group)
-    session.flush()
-    return group.id
 
 
 def group_exists(session: Session, cluster_id: int, group_id: int) -> bool:
@@ -160,9 +146,8 @@ def add_memberships_bulk(
 ) -> list[dict]:
     """Add several (database, table) memberships to `group_id`.
 
-    Matches `bootstrap_table_inventory`'s existing idempotency: entries that
-    already exist are silently skipped rather than raising, so partial
-    success across the loop is acceptable and a retry is safe.
+    Entries that already exist are silently skipped rather than raising, so
+    partial success across the loop is acceptable and a retry is safe.
     """
     added = []
     for database_name, table_name in entries:
@@ -246,25 +231,3 @@ def delete_group(session: Session, cluster_id: int, group_id: int) -> int:
     session.delete(group)
     session.flush()
     return count
-
-
-def bootstrap_table_inventory(session: Session, cluster_id: int, entries: list[tuple[str, str, str]]) -> None:
-    """Bootstrap table_inventory rows from configuration (used by `cli.py init`).
-
-    Args:
-        session: SQLite metastore session
-        cluster_id: Cluster these entries belong to
-        entries: List of (group name, database, table) tuples
-    """
-    if not entries:
-        return
-
-    for group_name, database, table in entries:
-        group_id = _get_or_create_group_id(session, cluster_id, group_name)
-        try:
-            add_membership(session, cluster_id, group_id, database, table)
-        except InventoryMembershipConflictError:
-            # Re-running init only adds new rows - an existing entry is a no-op.
-            continue
-
-    logger.success(f"table_inventory bootstrapped with {len(entries)} entries")

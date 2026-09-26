@@ -6,25 +6,26 @@ Guide for automating backups and monitoring their status.
 
 ### Recommended: API-managed schedules
 
-If you're running the [API server](commands.md#api-server), define schedules through it instead
-of hand-writing per-group cron entries — schedules are centrally visible and manageable
-(`starrocks-br api schedule list --cluster <id>`), and cadence/group/backend changes take effect without editing
-crontab files. Register each schedule once:
+Define schedules through the API instead of hand-writing per-group cron entries — schedules are
+centrally visible and manageable (`GET /backup/schedules/cluster/{id}`), and cadence/group/backend
+changes take effect without editing crontab files. Register each schedule once:
 
 ```bash
-starrocks-br api schedule add --cluster 1 --type backup_full \
-  --group production_tables --cadence "0 1 * * 0"       # Sundays at 1 AM
-starrocks-br api schedule add --cluster 1 --type backup_incremental \
-  --group production_tables --cadence "0 1 * * 1-6"     # Mon-Sat at 1 AM
+curl -s -H "Authorization: Bearer $STARROCKS_BR_API_KEY" -H "Content-Type: application/json" \
+  -X POST http://localhost:8000/backup/schedules/cluster/1 \
+  -d '{"job_type": "backup_full", "inventory_group_id": 1, "repository": "s3_repo", "cadence": "0 1 * * 0"}'    # Sundays at 1 AM
+
+curl -s -H "Authorization: Bearer $STARROCKS_BR_API_KEY" -H "Content-Type: application/json" \
+  -X POST http://localhost:8000/backup/schedules/cluster/1 \
+  -d '{"job_type": "backup_incremental", "inventory_group_id": 1, "repository": "s3_repo", "cadence": "0 1 * * 1-6"}'    # Mon-Sat at 1 AM
 ```
 
-Then point a single cron entry (or Kubernetes CronJob) at the schedule runner, on a short,
-fixed interval — it checks what's due and triggers it, doing nothing otherwise:
+Then point a single cron entry (or Kubernetes CronJob) at the schedule-runner endpoint, on a
+short, fixed interval — it checks what's due and triggers it, doing nothing otherwise:
 
 ```bash
 # crontab: check every minute for due schedules
-* * * * * STARROCKS_BR_API_URL=https://api.internal STARROCKS_BR_API_KEY=*** \
-  starrocks-br api schedule run-due
+* * * * * curl -s -H "Authorization: Bearer $STARROCKS_BR_API_KEY" -X POST https://api.internal/backup/schedules/run
 ```
 
 ```yaml
@@ -41,8 +42,11 @@ spec:
         spec:
           containers:
           - name: run-due
-            image: your-starrocks-br-image
-            command: ["starrocks-br", "api", "schedule", "run-due"]
+            image: curlimages/curl
+            command:
+            - sh
+            - -c
+            - "curl -sf -H \"Authorization: Bearer $STARROCKS_BR_API_KEY\" -X POST $STARROCKS_BR_API_URL/backup/schedules/run"
             env:
             - name: STARROCKS_BR_API_URL
               value: "https://api.internal"
@@ -57,84 +61,6 @@ spec:
 The actual backup work runs inside the long-lived API server process (via its configured job
 execution backend), not inside this short-lived `run-due` invocation, so the cron job itself
 finishes immediately regardless of how long the triggered backup takes.
-
-### Using Cron directly (no API server)
-
-**Example: Full backup on Sundays at 1 AM**
-
-```bash
-# Edit crontab
-crontab -e
-
-# Add this line
-0 1 * * 0 cd /path/to/project && source .venv/bin/activate && starrocks-br backup full --config config.yaml --group my_group
-```
-
-**Example: Incremental backup Monday-Saturday at 1 AM**
-
-```bash
-0 1 * * 1-6 cd /path/to/project && source .venv/bin/activate && starrocks-br backup incremental --config config.yaml --group my_group
-```
-
-**Important:** Remember to:
-- Set `STARROCKS_PASSWORD` environment variable in your cron script
-- Activate the virtual environment before running the command
-- Use absolute paths
-
-**Complete cron script example:**
-
-```bash
-#!/bin/bash
-export STARROCKS_PASSWORD="your_password"
-cd /path/to/starrocks-br
-source .venv/bin/activate
-starrocks-br backup full --config config.yaml --group production_tables
-```
-
-Then in crontab:
-```
-0 1 * * 0 /path/to/backup-script.sh
-```
-
-### Using Kubernetes CronJob
-
-```yaml
-apiVersion: batch/v1
-kind: CronJob
-metadata:
-  name: starrocks-backup
-spec:
-  schedule: "0 1 * * 0"  # Sunday at 1 AM
-  jobTemplate:
-    spec:
-      template:
-        spec:
-          containers:
-          - name: backup
-            image: your-starrocks-br-image
-            command:
-            - starrocks-br
-            - backup
-            - full
-            - --config
-            - /config/config.yaml
-            - --group
-            - production_tables
-            env:
-            - name: STARROCKS_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: starrocks-credentials
-                  key: password
-            volumeMounts:
-            - name: config
-              mountPath: /config
-          restartPolicy: OnFailure
-          volumes:
-          - name: config
-            configMap:
-              name: starrocks-br-config
-```
 
 ## Monitoring Backups
 
@@ -263,5 +189,5 @@ WHERE started_at < DATE_SUB(NOW(), INTERVAL 90 DAY);
 
 ## Next Steps
 
-- [Command Reference](commands.md)
+- [API Server](api.md)
 - [Core Concepts](core-concepts.md)

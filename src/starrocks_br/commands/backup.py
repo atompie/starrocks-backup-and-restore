@@ -1,10 +1,8 @@
 """The single implementation of the backup_full/backup_incremental use cases.
 
-Runs exactly the same sequence of core-library calls that `cli.py`'s
-`backup full`/`backup incremental` adapters invoke (see
-openspec/changes/establish-command-layer). Takes no dependency on HTTP or
-CLI frameworks; `cli.py` and the API's job backend both call these
-functions directly.
+Runs the core-library calls needed to execute a backup (see
+openspec/changes/establish-command-layer). Takes no dependency on HTTP
+frameworks; the API's job backend calls these functions directly.
 """
 
 from collections.abc import Callable
@@ -23,8 +21,8 @@ def _raise_for_backup_failure(result: dict) -> None:
     """Translate `executor.execute_backup`'s failure dict into a domain exception.
 
     `execute_backup` itself keeps returning `{"success": False, ...}` (see
-    design.md Decision 2) - this is the one place that dict is translated,
-    so both `cli.py` and the API's job backend see the same exception types.
+    design.md Decision 2) - this is the one place that dict is translated
+    into the exception types the API's job backend expects.
     """
     error_details = result.get("error_details") or {}
     if error_details.get("error_type") == "snapshot_exists":

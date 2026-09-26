@@ -51,9 +51,9 @@ source "$VENV_DIR/bin/activate"
 
 # --- 2. Dependencies -------------------------------------------------------
 
-echo "Installing starrocks-br (with the 'api' extra)..."
+echo "Installing starrocks-br..."
 pip install --quiet --upgrade pip
-pip install --quiet -e ".[api]"
+pip install --quiet -e .
 
 # --- 3. Secrets --------------------------------------------------------
 
@@ -93,11 +93,9 @@ echo "   API key (also saved in $SECRETS_FILE):"
 echo "     $STARROCKS_BR_API_KEY"
 echo ""
 echo "   Try in another terminal:"
-echo "     export STARROCKS_BR_API_URL=http://$HOST:$PORT"
-echo "     export STARROCKS_BR_API_KEY=$STARROCKS_BR_API_KEY"
-echo "     starrocks-br api cluster list"
+echo "     curl -H \"Authorization: Bearer $STARROCKS_BR_API_KEY\" http://$HOST:$PORT/clusters"
 echo ""
 echo "   Full reference: docs/api.md"
 echo ""
 
-exec starrocks-br api serve --host "$HOST" --port "$PORT"
+exec uvicorn starrocks_br.api.app:create_app --factory --host "$HOST" --port "$PORT"

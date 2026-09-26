@@ -1,6 +1,7 @@
 # Getting Started
 
-This guide walks you through setting up and running your first backup with StarRocks Backup & Restore.
+This guide walks you through setting up the API server and running your first backup with
+StarRocks Backup & Restore.
 
 ## Prerequisites
 
@@ -11,7 +12,7 @@ Before you begin, ensure you have:
    - Earlier versions (< 3.5) are not supported due to differences in `SHOW FRONTENDS` and `SHOW BACKENDS` output formats
 2. **A backup repository** - You need to create this in StarRocks first (see [Repository Setup](#repository-setup) below)
 3. **Database access** - User account with backup/restore privileges
-4. **Python 3.8+** (if installing via PyPI) or download the standalone executable
+4. **Python 3.10+**
 
 ## Repository Setup
 
@@ -40,10 +41,6 @@ For other storage backends (HDFS, Azure Blob, etc.), see the [StarRocks document
 
 ## Installation
 
-Choose one of the following installation methods:
-
-### Option 1: Install from PyPI (Recommended)
-
 ```bash
 # Create and activate a virtual environment
 python3 -m venv .venv
@@ -52,167 +49,126 @@ source .venv/bin/activate  # On Linux/Mac
 
 # Install the package
 pip install starrocks-br
-
-# Verify installation
-starrocks-br --help
 ```
 
 **Note:** Always activate the virtual environment before using the tool.
 
-### Option 2: Download Standalone Executable
-
-Download the pre-built executable for your platform from the [latest release](https://github.com/deep-bi/starrocks-backup-and-restore/releases/latest):
-
-- `starrocks-br-linux-x86_64` → Linux (Intel/AMD)
-- `starrocks-br-windows-x86_64.exe` → Windows (Intel/AMD)
-- `starrocks-br-macos-arm64` → macOS Apple Silicon
-- `starrocks-br-macos-x86_64` → macOS Intel
-
-Make it executable (Linux/macOS):
-```bash
-chmod +x starrocks-br-*
-```
-
 See [Installation Guide](installation.md) for more installation options.
 
-## Configuration
+## Start the API Server
 
-Create a `config.yaml` file with your StarRocks connection details:
-
-```yaml
-host: "127.0.0.1"
-port: 9030
-user: "root"
-database: "your_database"       # The database you want to backup
-repository: "my_backup_repo"    # The repository you created above
-
-# Optional: Define table inventory groups in the config file
-table_inventory:
-  - group: "important_tables"
-    tables:
-      - database: "your_database"
-        table: "users"
-      - database: "your_database"
-        table: "orders"
-
-  - group: "full_backup"
-    tables:
-      - database: "your_database"
-        table: "*"  # Wildcard for all tables
-```
-
-Set your database password as an environment variable (never store passwords in config files):
+The server needs two secrets: an API key that clients authenticate with, and an encryption key
+used to store registered clusters' passwords at rest.
 
 ```bash
-export STARROCKS_PASSWORD="your_password"
+export STARROCKS_BR_API_KEY=$(python -c "import secrets; print(secrets.token_urlsafe(32))")
+export STARROCKS_BR_DB_ENCRYPTION_KEY=$(python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())")
+
+uvicorn starrocks_br.api.app:create_app --factory
 ```
 
-On Windows (PowerShell):
-```powershell
-$env:STARROCKS_PASSWORD="your_password"
-```
-
-## Initialize the Tool
-
-Initialize the ops database and control tables:
+Check it's up:
 
 ```bash
-starrocks-br init --config config.yaml
+curl http://localhost:8000/health
+# {"status": "ok"}
 ```
 
-This creates:
-- `ops` database for storing metadata
-- `ops.table_inventory` - where you'll define your backup groups
-- `ops.backup_history` - tracks all backup operations
-- `ops.restore_history` - tracks restore operations
-- `ops.run_status` - prevents concurrent operations
-- `ops.backup_partitions` - partition-level backup details
+See [API Server](api.md) and [Configuration Reference](configuration.md) for the full set of
+server environment variables and production options (e.g. pointing the metadata store at
+MySQL/Postgres instead of the default SQLite file).
+
+## Register Your Cluster
+
+Register the StarRocks cluster you want to back up:
+
+```bash
+curl -s -H "Authorization: Bearer $STARROCKS_BR_API_KEY" -H "Content-Type: application/json" \
+  -X POST http://localhost:8000/cluster \
+  -d '{
+    "name": "prod",
+    "host": "127.0.0.1",
+    "port": 9030,
+    "user": "root",
+    "password": "your_password",
+    "database": "your_database",
+    "repository": "my_backup_repo"
+  }'
+# -> {"id": 1, "name": "prod", ...}
+```
+
+Note the returned `id` — every other call below is scoped to this cluster.
 
 ## Define Your Backup Groups
 
-Now decide which tables you want to back up and how to group them.
-
-### Option 1: Define in Config File (Recommended)
-
-If you included `table_inventory` in your `config.yaml`, the init command automatically populated your groups. You can verify:
-
-```sql
-SELECT * FROM ops.table_inventory;
-```
-
-**Important:** If you add or modify tables in the `table_inventory` section of your config file later, rerun the init command to update the database:
+Inventory groups are named sets of database/table memberships that scope backup, restore, and
+prune operations. Create one for the tables you want to back up:
 
 ```bash
-starrocks-br init --config config.yaml
+curl -s -H "Authorization: Bearer $STARROCKS_BR_API_KEY" -H "Content-Type: application/json" \
+  -X POST http://localhost:8000/inventories/cluster/1 \
+  -d '{
+    "name": "important_tables",
+    "tables": [
+      {"database": "your_database", "table": "users"},
+      {"database": "your_database", "table": "orders"}
+    ]
+  }'
+# -> {"id": 1, "name": "important_tables"}
 ```
 
-### Option 2: Manual SQL Insert
+Use a `"*"` table name to back up every table in a database:
 
-Alternatively, connect to your StarRocks cluster and populate the inventory manually:
-
-```sql
--- Example: Create a group for important tables
-INSERT INTO ops.table_inventory (inventory_group, database_name, table_name)
-VALUES
-  ('important_tables', 'your_database', 'users'),
-  ('important_tables', 'your_database', 'orders'),
-  ('important_tables', 'your_database', 'payments');
-
--- You can create multiple groups
-INSERT INTO ops.table_inventory (inventory_group, database_name, table_name)
-VALUES
-  ('analytics_tables', 'your_database', 'events'),
-  ('analytics_tables', 'your_database', 'metrics');
-
--- Or use a wildcard to backup all tables
-INSERT INTO ops.table_inventory (inventory_group, database_name, table_name)
-VALUES ('full_backup', 'your_database', '*');
+```bash
+curl -s -H "Authorization: Bearer $STARROCKS_BR_API_KEY" -H "Content-Type: application/json" \
+  -X POST http://localhost:8000/inventories/cluster/1 \
+  -d '{"name": "full_backup", "tables": [{"database": "your_database", "table": "*"}]}'
 ```
 
-**Tip:** Think about how you'll schedule backups when creating groups. Tables with similar backup needs should be in the same group.
+Add or remove individual table memberships later with `POST`/`DELETE`
+`/inventory/cluster/{cluster_id}/group_id/{group_id}/tables/...` — see [API Server](api.md#inventory-groups).
 
 Not sure how to group your tables? See [Core Concepts: Inventory Groups](core-concepts.md#inventory-groups) for guidance.
 
 ## Run Your First Backup
 
-Now you're ready to run a backup!
+Now you're ready to run a backup! Submitting a job returns immediately with a job id; the backup
+runs asynchronously.
 
 ### Full Backup
 
-Run a full backup of a group:
-
 ```bash
-starrocks-br backup full --config config.yaml --group important_tables
+curl -s -H "Authorization: Bearer $STARROCKS_BR_API_KEY" -H "Content-Type: application/json" \
+  -X POST http://localhost:8000/backup/manual/full/cluster/1 \
+  -d '{"group_id": 1, "repository": "my_backup_repo"}'
+# -> 202 {"id": 1, "cluster_id": 1, "job_type": "backup_full", "status": "PENDING", ...}
 ```
-
-The tool will:
-1. Verify cluster health
-2. Find all tables in the `important_tables` group
-3. Execute the backup
-4. Poll until completion
-5. Log results to `ops.backup_history`
 
 ### Monitor the Backup
 
-While the backup runs, you can check its status in StarRocks:
+Poll the job until it reaches a terminal state:
 
-```sql
--- Check active backup jobs
-SHOW BACKUP;
-
--- Check backup history (after completion)
-SELECT label, backup_type, status, started_at, finished_at, error_message
-FROM ops.backup_history
-ORDER BY started_at DESC
-LIMIT 10;
+```bash
+curl -s -H "Authorization: Bearer $STARROCKS_BR_API_KEY" http://localhost:8000/job/1
+# -> {"status": "RUNNING", "progress_pct": 55, "state_detail": "UPLOADING", ...}
+# -> {"status": "SUCCESS", "started_at": "...", "finished_at": "...", ...}
 ```
+
+`status` is one of `PENDING`, `RUNNING`, `SUCCESS`, `FAILED`. The tool will:
+1. Verify cluster health
+2. Find all tables in the `important_tables` group
+3. Execute the backup
+4. Track progress until completion
+5. Record the result in its own metadata store (`GET /job/{id}`)
 
 ## Run an Incremental Backup
 
-After you have a full backup, you can run incremental backups to capture only changed partitions:
+After you have a full backup, run incremental backups to capture only changed partitions:
 
 ```bash
-starrocks-br backup incremental --config config.yaml --group important_tables
+curl -s -H "Authorization: Bearer $STARROCKS_BR_API_KEY" -H "Content-Type: application/json" \
+  -X POST http://localhost:8000/backup/manual/incremental/cluster/1 \
+  -d '{"group_id": 1, "repository": "my_backup_repo"}'
 ```
 
 The tool automatically:
@@ -224,41 +180,32 @@ The tool automatically:
 
 ## Restore from a Backup
 
-To restore data from a backup, you need the backup label (found in `ops.backup_history`).
-
-### Find Available Backups
-
-```sql
-SELECT label, backup_type, status, finished_at
-FROM ops.backup_history
-WHERE status = 'SUCCESS'
-ORDER BY finished_at DESC;
-```
+To restore data from a backup, you need its label, found on the completed job (`GET /job/{id}`
+records the backup label in its own history — see [API Server](api.md) for how to look up
+backup history for a cluster).
 
 ### Restore All Tables
 
 ```bash
-starrocks-br restore \
-  --config config.yaml \
-  --target-label your_backup_label_here
+curl -s -H "Authorization: Bearer $STARROCKS_BR_API_KEY" -H "Content-Type: application/json" \
+  -X POST http://localhost:8000/backup/manual/restore/cluster/1 \
+  -d '{"target_label": "your_backup_label_here"}'
 ```
 
 ### Restore Specific Group
 
 ```bash
-starrocks-br restore \
-  --config config.yaml \
-  --target-label your_backup_label_here \
-  --group important_tables
+curl -s -H "Authorization: Bearer $STARROCKS_BR_API_KEY" -H "Content-Type: application/json" \
+  -X POST http://localhost:8000/backup/manual/restore/cluster/1 \
+  -d '{"target_label": "your_backup_label_here", "group_id": 1}'
 ```
 
 ### Restore Single Table
 
 ```bash
-starrocks-br restore \
-  --config config.yaml \
-  --target-label your_backup_label_here \
-  --table users
+curl -s -H "Authorization: Bearer $STARROCKS_BR_API_KEY" -H "Content-Type: application/json" \
+  -X POST http://localhost:8000/backup/manual/restore/cluster/1 \
+  -d '{"target_label": "your_backup_label_here", "table": "users", "database": "your_database"}'
 ```
 
 The tool automatically handles backup chains - if you specify an incremental backup, it will restore the base full backup first, then apply the incremental.
@@ -283,49 +230,26 @@ The tool performs atomic renames to swap the temp tables with the live tables on
 Now that you've completed your first backup and restore:
 
 - **Understand the concepts**: Read [Core Concepts](core-concepts.md) to deepen your understanding
-- **Explore all commands**: See [Command Reference](commands.md) for detailed options
+- **Explore the full API**: See [API Server](api.md) for every endpoint and field
 - **Automate backups**: Learn about scheduling in [Scheduling and Monitoring](scheduling.md)
-- **Advanced configuration**: Check [Configuration Reference](configuration.md) for TLS, custom settings, etc.
-
-## Quick Reference
-
-```bash
-# Initialize (run once)
-starrocks-br init --config config.yaml
-
-# Full backup
-starrocks-br backup full --config config.yaml --group my_group
-
-# Incremental backup
-starrocks-br backup incremental --config config.yaml --group my_group
-
-# Restore
-starrocks-br restore --config config.yaml --target-label backup_label
-
-# Restore with options
-starrocks-br restore \
-  --config config.yaml \
-  --target-label backup_label \
-  --group my_group \
-  --rename-suffix _verified
-```
+- **Advanced configuration**: Check [Configuration Reference](configuration.md) for TLS and advanced settings
 
 ## Troubleshooting
 
-**"Repository not found"**
-- Verify the repository exists: `SHOW REPOSITORIES;`
-- Check the repository name matches your config file
+**`404` submitting a job with a bad `group_id` or `repository`**
+- Confirm the group exists: `GET /inventories/cluster/{cluster_id}`
+- Confirm the repository exists on the cluster: `GET /repositories/cluster/{cluster_id}`
+
+**`404` from every request against a cluster**
+- Verify the cluster id is correct: `GET /clusters`
 
 **"No full backup found for incremental"**
-- Run a full backup first: `starrocks-br backup full --group my_group`
+- Run a full backup for that group first
 
-**"Connection refused"**
-- Verify host and port in config.yaml
-- Check that STARROCKS_PASSWORD is set: `echo $STARROCKS_PASSWORD`
-- Ensure StarRocks FE is running
+**`401` from every request**
+- Check `Authorization: Bearer <token>` is present and matches the server's `STARROCKS_BR_API_KEY`
 
-**"Table not found in inventory"**
-- Check your inventory: `SELECT * FROM ops.table_inventory WHERE inventory_group = 'your_group';`
-- Add missing tables to the inventory
+**Server won't start**
+- Ensure `STARROCKS_BR_API_KEY` and `STARROCKS_BR_DB_ENCRYPTION_KEY` are both set
 
 For more help, see the [GitHub Issues](https://github.com/deep-bi/starrocks-backup-and-restore/issues).
