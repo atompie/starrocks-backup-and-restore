@@ -3,6 +3,7 @@
 ## Repository-wide rules
 
 - Do not add licensing information to files, including license headers, copyright notices, or license text.
+- This project is a spec-driven system. Each change must have its change described in spec using the openspec skill
 
 ## Project purpose
 
