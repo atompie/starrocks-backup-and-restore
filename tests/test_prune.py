@@ -40,19 +40,6 @@ def _add_backup_history(session, cluster_id, label, finished_at, repository="tes
 class TestGetSuccessfulBackups:
     """Unit tests for get_successful_backups function."""
 
-    def test_get_backups_without_group(self, sqlite_session, make_cluster):
-        """Test getting backups without group filter."""
-        cluster = make_cluster()
-        _add_backup_history(sqlite_session, cluster.id, "backup1", dt.datetime(2024, 1, 1))
-        _add_backup_history(sqlite_session, cluster.id, "backup2", dt.datetime(2024, 1, 2))
-
-        result = prune.get_successful_backups(sqlite_session, cluster.id, "test_repo")
-
-        assert len(result) == 2
-        assert result[0]["label"] == "backup1"
-        assert result[1]["label"] == "backup2"
-        assert "inventory_group" not in result[0]
-
     def test_get_backups_with_group(self, sqlite_session, make_cluster):
         """Test getting backups with group filter."""
         cluster = make_cluster()
@@ -79,12 +66,13 @@ class TestGetSuccessfulBackups:
         )
         sqlite_session.commit()
 
-        result = prune.get_successful_backups(sqlite_session, cluster.id, "test_repo", group=group.id)
+        result = prune.get_successful_backups(sqlite_session, cluster.id, group.id)
 
         assert len(result) == 2
         assert result[0] == {
             "label": "backup1",
             "finished_at": str(dt.datetime(2024, 1, 1)),
+            "repository": "test_repo",
             "inventory_group_id": group.id,
         }
         assert result[1]["inventory_group_id"] == group.id
@@ -93,7 +81,7 @@ class TestGetSuccessfulBackups:
         """Test getting backups when none exist."""
         cluster = make_cluster()
 
-        result = prune.get_successful_backups(sqlite_session, cluster.id, "test_repo")
+        result = prune.get_successful_backups(sqlite_session, cluster.id, 1)
 
         assert result == []
 
@@ -102,8 +90,27 @@ class TestGetSuccessfulBackups:
         cluster_a = make_cluster("cluster-a")
         cluster_b = make_cluster("cluster-b")
         _add_backup_history(sqlite_session, cluster_a.id, "backup1", dt.datetime(2024, 1, 1))
+        sqlite_session.add(
+            BackupPartition(
+                cluster_id=cluster_a.id,
+                key_hash="hash-backup1",
+                label="backup1",
+                database_name="sales_db",
+                table_name="orders",
+                partition_name="p1",
+            )
+        )
+        group_a = InventoryGroup(cluster_id=cluster_a.id, name="prod_group")
+        sqlite_session.add(group_a)
+        sqlite_session.commit()
+        sqlite_session.add(
+            TableInventory(
+                cluster_id=cluster_a.id, inventory_group_id=group_a.id, database_name="sales_db", table_name="orders"
+            )
+        )
+        sqlite_session.commit()
 
-        result = prune.get_successful_backups(sqlite_session, cluster_b.id, "test_repo")
+        result = prune.get_successful_backups(sqlite_session, cluster_b.id, group_a.id)
 
         assert result == []
 

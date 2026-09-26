@@ -7,8 +7,6 @@ CLUSTER_PAYLOAD = {
     "port": 9030,
     "user": "backup_svc",
     "password": "s3cret",
-    "database": "sales_db",
-    "repository": "s3_repo",
 }
 
 
@@ -25,6 +23,13 @@ def _mock_group_check(monkeypatch, exists=True):
     )
 
 
+def _mock_repository_check(monkeypatch):
+    """Bypass the synchronous live repository-existence check for backup job submission."""
+    from starrocks_br.api.routes import jobs as jobs_module
+
+    monkeypatch.setattr(jobs_module, "_ensure_repository_exists", lambda cluster, repository_name: None)
+
+
 def _wait_for_terminal(api_client, job_id, timeout=2.0):
     deadline = time.time() + timeout
     while time.time() < deadline:
@@ -39,12 +44,15 @@ def test_submit_backup_full_returns_202_with_job(api_client, monkeypatch):
     from starrocks_br.jobs import handlers
 
     _mock_group_check(monkeypatch)
+    _mock_repository_check(monkeypatch)
     monkeypatch.setitem(
         handlers.JOB_HANDLERS, "backup_full", lambda cluster, params, on_progress=None: {"label": "x"}
     )
 
     cluster_id = _create_cluster(api_client)
-    response = api_client.post(f"/backup/manual/full/cluster/{cluster_id}", json={"group_id": 1})
+    response = api_client.post(
+        f"/backup/manual/full/cluster/{cluster_id}", json={"group_id": 1, "repository": "s3_repo"}
+    )
 
     assert response.status_code == 202
     body = response.json()
@@ -54,7 +62,9 @@ def test_submit_backup_full_returns_202_with_job(api_client, monkeypatch):
 
 
 def test_submit_job_against_unknown_cluster_is_404(api_client):
-    response = api_client.post("/backup/manual/full/cluster/999", json={"group_id": 1})
+    response = api_client.post(
+        "/backup/manual/full/cluster/999", json={"group_id": 1, "repository": "s3_repo"}
+    )
     assert response.status_code == 404
 
 
@@ -69,10 +79,13 @@ def test_submit_then_poll_to_terminal_state_success(api_client, monkeypatch):
         return {"label": "done"}
 
     _mock_group_check(monkeypatch)
+    _mock_repository_check(monkeypatch)
     monkeypatch.setitem(handlers.JOB_HANDLERS, "backup_full", handler)
 
     cluster_id = _create_cluster(api_client)
-    submitted = api_client.post(f"/backup/manual/full/cluster/{cluster_id}", json={"group_id": 1}).json()
+    submitted = api_client.post(
+        f"/backup/manual/full/cluster/{cluster_id}", json={"group_id": 1, "repository": "s3_repo"}
+    ).json()
 
     final = _wait_for_terminal(api_client, submitted["id"])
 
@@ -92,10 +105,13 @@ def test_poll_reports_progress_mid_run_then_terminal(api_client, monkeypatch):
         return {}
 
     _mock_group_check(monkeypatch)
+    _mock_repository_check(monkeypatch)
     monkeypatch.setitem(handlers.JOB_HANDLERS, "backup_full", handler)
 
     cluster_id = _create_cluster(api_client)
-    submitted = api_client.post(f"/backup/manual/full/cluster/{cluster_id}", json={"group_id": 1}).json()
+    submitted = api_client.post(
+        f"/backup/manual/full/cluster/{cluster_id}", json={"group_id": 1, "repository": "s3_repo"}
+    ).json()
 
     deadline = time.time() + 2
     seen_progress = None
@@ -126,10 +142,13 @@ def test_no_progress_phase_reports_running_without_percentage(api_client, monkey
         return {}
 
     _mock_group_check(monkeypatch)
+    _mock_repository_check(monkeypatch)
     monkeypatch.setitem(handlers.JOB_HANDLERS, "backup_full", handler)
 
     cluster_id = _create_cluster(api_client)
-    submitted = api_client.post(f"/backup/manual/full/cluster/{cluster_id}", json={"group_id": 1}).json()
+    submitted = api_client.post(
+        f"/backup/manual/full/cluster/{cluster_id}", json={"group_id": 1, "repository": "s3_repo"}
+    ).json()
 
     deadline = time.time() + 2
     seen_running = None
@@ -155,10 +174,13 @@ def test_submit_job_failure_is_reported(api_client, monkeypatch):
         raise RuntimeError("connection refused")
 
     _mock_group_check(monkeypatch)
+    _mock_repository_check(monkeypatch)
     monkeypatch.setitem(handlers.JOB_HANDLERS, "backup_full", failing_handler)
 
     cluster_id = _create_cluster(api_client)
-    submitted = api_client.post(f"/backup/manual/full/cluster/{cluster_id}", json={"group_id": 1}).json()
+    submitted = api_client.post(
+        f"/backup/manual/full/cluster/{cluster_id}", json={"group_id": 1, "repository": "s3_repo"}
+    ).json()
 
     final = _wait_for_terminal(api_client, submitted["id"])
 
@@ -170,25 +192,45 @@ def test_backend_override_is_honored(api_client, monkeypatch):
     from starrocks_br.jobs import handlers
 
     _mock_group_check(monkeypatch)
+    _mock_repository_check(monkeypatch)
     monkeypatch.setitem(
         handlers.JOB_HANDLERS, "backup_full", lambda cluster, params, on_progress=None: {}
     )
 
     cluster_id = _create_cluster(api_client)
     response = api_client.post(
-        f"/backup/manual/full/cluster/{cluster_id}", json={"group_id": 1, "backend": "thread"}
+        f"/backup/manual/full/cluster/{cluster_id}",
+        json={"group_id": 1, "repository": "s3_repo", "backend": "thread"},
     )
 
     assert response.status_code == 202
     assert response.json()["backend"] == "thread"
 
 
-def test_disabled_backend_is_rejected_with_422(api_client, monkeypatch):
-    _mock_group_check(monkeypatch)
+def test_unrecognized_backend_value_is_rejected_with_422(api_client, monkeypatch):
+    """A backend value outside {"thread", "job"} is rejected at the schema layer,
+    before any group/repository/enabled-backend check runs."""
     cluster_id = _create_cluster(api_client)
 
     response = api_client.post(
-        f"/backup/manual/full/cluster/{cluster_id}", json={"group_id": 1, "backend": "kafka"}
+        f"/backup/manual/full/cluster/{cluster_id}",
+        json={"group_id": 1, "repository": "s3_repo", "backend": "kafka"},
+    )
+
+    assert response.status_code == 422
+
+
+def test_recognized_but_disabled_backend_is_rejected_with_422(api_client, monkeypatch):
+    """"job" is a recognized backend identifier but not enabled in this test server
+    (STARROCKS_BR_ENABLED_BACKENDS=thread) - it must be rejected by the enabled-
+    backend check in jobs.py, distinct from the schema-level enum check above."""
+    _mock_group_check(monkeypatch)
+    _mock_repository_check(monkeypatch)
+    cluster_id = _create_cluster(api_client)
+
+    response = api_client.post(
+        f"/backup/manual/full/cluster/{cluster_id}",
+        json={"group_id": 1, "repository": "s3_repo", "backend": "job"},
     )
 
     assert response.status_code == 422
@@ -198,7 +240,9 @@ def test_submit_backup_full_unknown_group_is_404(api_client, monkeypatch):
     _mock_group_check(monkeypatch, exists=False)
     cluster_id = _create_cluster(api_client)
 
-    response = api_client.post(f"/backup/manual/full/cluster/{cluster_id}", json={"group_id": 999})
+    response = api_client.post(
+        f"/backup/manual/full/cluster/{cluster_id}", json={"group_id": 999, "repository": "s3_repo"}
+    )
 
     assert response.status_code == 404
 
@@ -208,7 +252,8 @@ def test_submit_backup_incremental_unknown_group_is_404(api_client, monkeypatch)
     cluster_id = _create_cluster(api_client)
 
     response = api_client.post(
-        f"/backup/manual/incremental/cluster/{cluster_id}", json={"group_id": 999}
+        f"/backup/manual/incremental/cluster/{cluster_id}",
+        json={"group_id": 999, "repository": "s3_repo"},
     )
 
     assert response.status_code == 404
@@ -218,17 +263,49 @@ def test_submit_backup_full_missing_group_is_422(api_client, monkeypatch):
     _mock_group_check(monkeypatch, exists=False)
     cluster_id = _create_cluster(api_client)
 
-    response = api_client.post(f"/backup/manual/full/cluster/{cluster_id}", json={})
+    response = api_client.post(
+        f"/backup/manual/full/cluster/{cluster_id}", json={"repository": "s3_repo"}
+    )
 
     assert response.status_code == 422
 
 
-def test_submit_backup_full_rejects_foreign_field_is_422(api_client, monkeypatch):
+def test_submit_backup_full_missing_repository_is_422(api_client, monkeypatch):
     _mock_group_check(monkeypatch)
     cluster_id = _create_cluster(api_client)
 
+    response = api_client.post(f"/backup/manual/full/cluster/{cluster_id}", json={"group_id": 1})
+
+    assert response.status_code == 422
+
+
+def test_submit_backup_full_unknown_repository_is_404(api_client, monkeypatch):
+    from starrocks_br.api.routes import _cluster_connect
+
+    _mock_group_check(monkeypatch)
+    monkeypatch.setattr(
+        _cluster_connect, "connect_or_503", lambda cluster: type(
+            "FakeDB", (), {"close": lambda self: None}
+        )()
+    )
+    monkeypatch.setattr(_cluster_connect.repository_module, "list_repositories", lambda db: [])
+    cluster_id = _create_cluster(api_client)
+
     response = api_client.post(
-        f"/backup/manual/full/cluster/{cluster_id}", json={"group_id": 1, "keep_last": 5}
+        f"/backup/manual/full/cluster/{cluster_id}", json={"group_id": 1, "repository": "missing_repo"}
+    )
+
+    assert response.status_code == 404
+
+
+def test_submit_backup_full_rejects_foreign_field_is_422(api_client, monkeypatch):
+    _mock_group_check(monkeypatch)
+    _mock_repository_check(monkeypatch)
+    cluster_id = _create_cluster(api_client)
+
+    response = api_client.post(
+        f"/backup/manual/full/cluster/{cluster_id}",
+        json={"group_id": 1, "repository": "s3_repo", "keep_last": 5},
     )
 
     assert response.status_code == 422

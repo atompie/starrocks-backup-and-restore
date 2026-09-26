@@ -10,6 +10,7 @@ from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
 from ... import db as db_module
+from ... import repository as repository_module
 from ...store.crypto import decrypt_password
 from ...store.models import Cluster
 from ..schemas import ClusterVerifyResponse
@@ -49,6 +50,27 @@ def connect_or_503(cluster: Cluster) -> db_module.StarRocksDB:
             detail=f"Could not connect to cluster '{cluster.name}': {e}",
         ) from e
     return database
+
+
+def ensure_repository_exists(cluster: Cluster, repository_name: str) -> None:
+    """Synchronously verify `repository_name` exists on `cluster`, raising 404 if not.
+
+    Reuses the same live `SHOW REPOSITORIES` lookup `api-repository-management`
+    already uses to list repositories. Shared by backup-job submission
+    (`jobs.py`) and schedule creation/update (`schedules.py`), per
+    specs/api-job-execution and specs/api-scheduling.
+    """
+    database = connect_or_503(cluster)
+    try:
+        names = {repo["name"] for repo in repository_module.list_repositories(database)}
+    finally:
+        database.close()
+
+    if repository_name not in names:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Repository '{repository_name}' not found on cluster '{cluster.name}'",
+        )
 
 
 def verify_connection(

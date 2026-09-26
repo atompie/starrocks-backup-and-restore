@@ -103,11 +103,17 @@ def test_delete_cluster_blocked_by_active_job(api_client, monkeypatch):
         time.sleep(0.3)
         return {}
 
+    from starrocks_br.api.routes import jobs as jobs_module
+
     monkeypatch.setitem(handlers.JOB_HANDLERS, "backup_full", slow_handler)
     monkeypatch.setattr(inventory_groups, "group_exists", lambda db, cluster_id, group_id: True)
+    monkeypatch.setattr(jobs_module, "_ensure_repository_exists", lambda cluster, repository_name: None)
 
     created = api_client.post("/cluster", json=CLUSTER_PAYLOAD).json()
-    api_client.post(f"/backup/manual/full/cluster/{created['id']}", json={"group_id": 1})
+    api_client.post(
+        f"/backup/manual/full/cluster/{created['id']}",
+        json={"group_id": 1, "repository": "s3_repo"},
+    )
 
     response = api_client.delete(f"/cluster/{created['id']}")
 

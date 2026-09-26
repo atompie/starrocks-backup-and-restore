@@ -26,8 +26,6 @@ def _make_cluster(session) -> Cluster:
         port=9030,
         user="u",
         password_encrypted="enc",
-        database="db",
-        repository="repo",
     )
     session.add(cluster)
     session.flush()
@@ -57,6 +55,7 @@ def test_delete_cluster_blocked_by_enabled_schedule(sqlite_store):
                 cluster_id=cluster.id,
                 job_type="backup_full",
                 inventory_group_id=group.id,
+                repository="repo",
                 cadence="0 0 * * *",
                 backend="thread",
                 enabled=True,

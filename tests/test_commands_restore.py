@@ -16,8 +16,6 @@ def cluster():
         port=9030,
         user="root",
         password_encrypted="encrypted-token",
-        database="test_db",
-        repository="test_repo",
         default_backend="thread",
     )
 

@@ -2,10 +2,10 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from ... import inventory_groups, repository
+from ... import inventory_groups
 from ...commands.jobs import submit_job
 from ...jobs.backend import UnknownBackendError
-from ...store.models import Cluster, Job
+from ...store.models import Job
 from ..auth import require_api_key
 from ..deps import get_db
 from ..schemas import (
@@ -15,30 +15,10 @@ from ..schemas import (
     PruneRequest,
     RestoreRequest,
 )
-from ._cluster_connect import connect_or_503 as _connect_or_503
+from ._cluster_connect import ensure_repository_exists as _ensure_repository_exists
 from ._cluster_connect import get_cluster_or_404 as _get_cluster_or_404
 
 router = APIRouter(tags=["manual-backups"], dependencies=[Depends(require_api_key)])
-
-
-def _ensure_repository_exists(cluster: Cluster, repository_name: str) -> None:
-    """Synchronously verify `repository_name` exists on `cluster`, raising 404 if not.
-
-    Reuses the same live `SHOW REPOSITORIES` lookup `api-repository-management`
-    already uses to list repositories, per specs/api-job-execution "Submitting
-    an operation returns immediately with a job".
-    """
-    database = _connect_or_503(cluster)
-    try:
-        names = {repo["name"] for repo in repository.list_repositories(database)}
-    finally:
-        database.close()
-
-    if repository_name not in names:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Repository '{repository_name}' not found on cluster '{cluster.name}'",
-        )
 
 
 def _submit(

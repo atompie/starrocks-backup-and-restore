@@ -30,6 +30,7 @@ def test_restore_success(
     runner = CliRunner()
 
     mocker.patch("starrocks_br.restore.find_restore_pair", return_value=["test_backup"])
+    mocker.patch("starrocks_br.restore.find_backup_repository", return_value="test_repo")
     mocker.patch("starrocks_br.restore.get_tables_from_backup", return_value=["test_db.fact_table"])
     mocker.patch(
         "starrocks_br.restore.execute_restore_flow",
@@ -61,6 +62,7 @@ def test_restore_with_yes_flag_skips_confirmation(
     runner = CliRunner()
 
     mocker.patch("starrocks_br.restore.find_restore_pair", return_value=["test_backup"])
+    mocker.patch("starrocks_br.restore.find_backup_repository", return_value="test_repo")
     mocker.patch("starrocks_br.restore.get_tables_from_backup", return_value=["test_db.fact_table"])
 
     execute_restore_flow_mock = mocker.patch(
@@ -96,6 +98,7 @@ def test_restore_with_group_filter(
     runner = CliRunner()
 
     mocker.patch("starrocks_br.restore.find_restore_pair", return_value=["test_backup"])
+    mocker.patch("starrocks_br.restore.find_backup_repository", return_value="test_repo")
     mocker.patch(
         "starrocks_br.inventory_groups.get_group_id_by_name", return_value=42
     )
@@ -178,6 +181,7 @@ def test_restore_with_table_filter(
     runner = CliRunner()
 
     mocker.patch("starrocks_br.restore.find_restore_pair", return_value=["test_backup"])
+    mocker.patch("starrocks_br.restore.find_backup_repository", return_value="test_repo")
     get_tables_mock = mocker.patch(
         "starrocks_br.restore.get_tables_from_backup", return_value=["test_db.fact_table"]
     )

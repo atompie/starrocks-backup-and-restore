@@ -89,6 +89,7 @@ class Schedule(Base):
     inventory_group_id: Mapped[int] = mapped_column(
         ForeignKey("inventory_groups.id", ondelete="RESTRICT"), nullable=False, index=True
     )
+    repository: Mapped[str] = mapped_column(String(128), nullable=False)
     cadence: Mapped[str] = mapped_column(String(128), nullable=False)
     backend: Mapped[str | None] = mapped_column(String(64), nullable=True)
     enabled: Mapped[bool] = mapped_column(default=True, nullable=False)

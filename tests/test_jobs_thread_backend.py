@@ -42,8 +42,6 @@ def cluster_id(sqlite_store):
             port=9030,
             user="u",
             password_encrypted="enc",
-            database="db",
-            repository="repo",
         )
         session.add(cluster)
         session.flush()

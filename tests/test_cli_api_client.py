@@ -93,10 +93,6 @@ def test_cluster_add_prints_created_id(runner, monkeypatch):
             "u",
             "--password",
             "p",
-            "--database",
-            "db",
-            "--repository",
-            "repo",
         ],
     )
 
@@ -217,6 +213,8 @@ def test_schedule_add_resolves_group_name_to_id(runner, monkeypatch):
             "backup_full",
             "--group",
             "g1",
+            "--repository",
+            "s3_repo",
             "--cadence",
             "0 1 * * *",
         ],
@@ -249,6 +247,8 @@ def test_schedule_add_with_unresolvable_group_name_fails_clearly(runner, monkeyp
             "backup_full",
             "--group",
             "no_such_group",
+            "--repository",
+            "s3_repo",
             "--cadence",
             "0 1 * * *",
         ],

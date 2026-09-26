@@ -60,6 +60,10 @@ class TestBackupIncrementalExceptionHandling:
     ):
         runner = CliRunner()
         mocker.patch(
+            "starrocks_br.planner.find_tables_by_group",
+            return_value=[{"database": "test_db", "table": "*"}],
+        )
+        mocker.patch(
             "starrocks_br.planner.find_latest_full_backup",
             return_value=None,
         )
@@ -86,6 +90,10 @@ class TestBackupIncrementalExceptionHandling:
         mocker,
     ):
         runner = CliRunner()
+        mocker.patch(
+            "starrocks_br.planner.find_tables_by_group",
+            return_value=[{"database": "test_db", "table": "*"}],
+        )
         mocker.patch(
             "starrocks_br.planner.find_recent_partitions",
             side_effect=exceptions.BackupLabelNotFoundError("invalid_baseline", "test_repo"),
@@ -117,6 +125,10 @@ class TestBackupIncrementalExceptionHandling:
         mocker,
     ):
         runner = CliRunner()
+        mocker.patch(
+            "starrocks_br.planner.find_tables_by_group",
+            return_value=[{"database": "test_db", "table": "*"}],
+        )
         active_jobs = [("backup", "existing_backup", "ACTIVE")]
         mocker.patch(
             "starrocks_br.planner.find_latest_full_backup",
@@ -166,6 +178,10 @@ class TestBackupIncrementalExceptionHandling:
         baseline_flag,
     ):
         runner = CliRunner()
+        mocker.patch(
+            "starrocks_br.planner.find_tables_by_group",
+            return_value=[{"database": "test_db", "table": "*"}],
+        )
 
         mocker.patch(
             "starrocks_br.labels.determine_backup_label", return_value="test_backup_20251020"
@@ -240,6 +256,10 @@ class TestBackupIncrementalExceptionHandling:
         mocker,
     ):
         runner = CliRunner()
+        mocker.patch(
+            "starrocks_br.planner.find_tables_by_group",
+            return_value=[{"database": "test_db", "table": "*"}],
+        )
 
         mocker.patch(
             "starrocks_br.labels.determine_backup_label", return_value="test_backup_20251020"
@@ -291,6 +311,10 @@ class TestBackupIncrementalExceptionHandling:
         mocker,
     ):
         runner = CliRunner()
+        mocker.patch(
+            "starrocks_br.planner.find_tables_by_group",
+            return_value=[{"database": "test_db", "table": "*"}],
+        )
 
         mocker.patch(
             "starrocks_br.labels.determine_backup_label", return_value="test_backup_20251020"
@@ -433,6 +457,10 @@ class TestBackupIncrementalExceptionHandling:
         mocker,
     ):
         runner = CliRunner()
+        mocker.patch(
+            "starrocks_br.planner.find_tables_by_group",
+            return_value=[{"database": "test_db", "table": "*"}],
+        )
 
         mocker.patch("starrocks_br.labels.determine_backup_label", return_value="test_backup")
         mocker.patch("starrocks_br.concurrency.reserve_job_slot")
@@ -840,6 +868,7 @@ class TestRestoreExceptionHandling:
         expected_msg,
     ):
         runner = CliRunner()
+        mocker.patch("starrocks_br.restore.find_backup_repository", return_value="test_repo")
 
         if "find_restore_pair" in mock_behavior:
             mocker.patch(
@@ -936,8 +965,10 @@ class TestRestoreExceptionHandling:
         mock_resolved_cluster,  # noqa: ARG002
         mock_unhealthy_cluster,  # noqa: ARG002
         setup_password_env,  # noqa: ARG002
+        mocker,
     ):
         runner = CliRunner()
+        mocker.patch("starrocks_br.restore.find_backup_repository", return_value="test_repo")
 
         result = runner.invoke(
             cli.cli, ["restore", "--config", config_file, "--target-label", "test_backup"]
@@ -957,6 +988,7 @@ class TestRestoreExceptionHandling:
         mocker,
     ):
         runner = CliRunner()
+        mocker.patch("starrocks_br.restore.find_backup_repository", return_value="test_repo")
 
         mocker.patch("starrocks_br.restore.find_restore_pair", return_value=["test_backup"])
         mocker.patch(
@@ -1007,6 +1039,7 @@ class TestRestoreExceptionHandling:
         expected_line,
     ):
         runner = CliRunner()
+        mocker.patch("starrocks_br.restore.find_backup_repository", return_value="test_repo")
 
         mocker.patch("starrocks_br.restore.find_restore_pair", return_value=["test_backup"])
         mocker.patch("starrocks_br.restore.get_tables_from_backup", return_value=[])
@@ -1052,6 +1085,7 @@ class TestRestoreExceptionHandling:
         mocker,
     ):
         runner = CliRunner()
+        mocker.patch("starrocks_br.restore.find_backup_repository", return_value="test_repo")
 
         mocker.patch(
             "starrocks_br.restore.find_restore_pair",
@@ -1108,6 +1142,7 @@ class TestRestoreExceptionHandling:
         mocker,
     ):
         runner = CliRunner()
+        mocker.patch("starrocks_br.restore.find_backup_repository", return_value="test_repo")
 
         mocker.patch("starrocks_br.restore.find_restore_pair", return_value=["test_backup"])
         mocker.patch(

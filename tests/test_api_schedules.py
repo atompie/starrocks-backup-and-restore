@@ -21,8 +21,6 @@ CLUSTER_PAYLOAD = {
     "port": 9030,
     "user": "backup_svc",
     "password": "s3cret",
-    "database": "sales_db",
-    "repository": "s3_repo",
 }
 
 
@@ -40,7 +38,17 @@ def _create_group(api_client, cluster_id, name="g1") -> int:
     return response.json()["id"]
 
 
-def test_create_schedule_computes_next_run_at(api_client):
+def _mock_repository_check(monkeypatch):
+    """Bypass the synchronous live repository-existence check for schedule create/update."""
+    from starrocks_br.api.routes import schedules as schedules_module
+
+    monkeypatch.setattr(
+        schedules_module, "ensure_repository_exists", lambda cluster, repository_name: None
+    )
+
+
+def test_create_schedule_computes_next_run_at(api_client, monkeypatch):
+    _mock_repository_check(monkeypatch)
     cluster_id = _create_cluster(api_client)
     group_id = _create_group(api_client, cluster_id)
 
@@ -49,6 +57,7 @@ def test_create_schedule_computes_next_run_at(api_client):
         json={
             "job_type": "backup_full",
             "inventory_group_id": group_id,
+            "repository": "s3_repo",
             "cadence": "0 1 * * *",
         },
     )
@@ -57,6 +66,7 @@ def test_create_schedule_computes_next_run_at(api_client):
     body = response.json()
     assert body["cluster_id"] == cluster_id
     assert body["inventory_group_id"] == group_id
+    assert body["repository"] == "s3_repo"
     assert body["next_run_at"] is not None
     assert body["enabled"] is True
 
@@ -64,7 +74,12 @@ def test_create_schedule_computes_next_run_at(api_client):
 def test_create_schedule_unknown_cluster_404(api_client):
     response = api_client.post(
         "/cluster/999/schedules",
-        json={"job_type": "backup_full", "inventory_group_id": 1, "cadence": "0 1 * * *"},
+        json={
+            "job_type": "backup_full",
+            "inventory_group_id": 1,
+            "repository": "s3_repo",
+            "cadence": "0 1 * * *",
+        },
     )
     assert response.status_code == 404
 
@@ -74,12 +89,25 @@ def test_create_schedule_unknown_group_404(api_client):
 
     response = api_client.post(
         f"/backup/schedules/cluster/{cluster_id}",
-        json={"job_type": "backup_full", "inventory_group_id": 999, "cadence": "0 1 * * *"},
+        json={
+            "job_type": "backup_full",
+            "inventory_group_id": 999,
+            "repository": "s3_repo",
+            "cadence": "0 1 * * *",
+        },
     )
     assert response.status_code == 404
 
 
-def test_create_schedule_invalid_cadence_422(api_client):
+def test_create_schedule_unknown_repository_404(api_client, monkeypatch):
+    from starrocks_br.api.routes import _cluster_connect
+
+    monkeypatch.setattr(
+        _cluster_connect, "connect_or_503", lambda cluster: type(
+            "FakeDB", (), {"close": lambda self: None}
+        )()
+    )
+    monkeypatch.setattr(_cluster_connect.repository_module, "list_repositories", lambda db: [])
     cluster_id = _create_cluster(api_client)
     group_id = _create_group(api_client, cluster_id)
 
@@ -88,13 +116,43 @@ def test_create_schedule_invalid_cadence_422(api_client):
         json={
             "job_type": "backup_full",
             "inventory_group_id": group_id,
+            "repository": "missing_repo",
+            "cadence": "0 1 * * *",
+        },
+    )
+    assert response.status_code == 404
+
+
+def test_create_schedule_missing_repository_422(api_client):
+    cluster_id = _create_cluster(api_client)
+    group_id = _create_group(api_client, cluster_id)
+
+    response = api_client.post(
+        f"/backup/schedules/cluster/{cluster_id}",
+        json={"job_type": "backup_full", "inventory_group_id": group_id, "cadence": "0 1 * * *"},
+    )
+    assert response.status_code == 422
+
+
+def test_create_schedule_invalid_cadence_422(api_client, monkeypatch):
+    _mock_repository_check(monkeypatch)
+    cluster_id = _create_cluster(api_client)
+    group_id = _create_group(api_client, cluster_id)
+
+    response = api_client.post(
+        f"/backup/schedules/cluster/{cluster_id}",
+        json={
+            "job_type": "backup_full",
+            "inventory_group_id": group_id,
+            "repository": "s3_repo",
             "cadence": "not a cron expression",
         },
     )
     assert response.status_code == 422
 
 
-def test_list_schedules_scoped_to_cluster(api_client):
+def test_list_schedules_scoped_to_cluster(api_client, monkeypatch):
+    _mock_repository_check(monkeypatch)
     cluster_a = _create_cluster(api_client, "cluster-a")
     cluster_b = _create_cluster(api_client, "cluster-b")
     group_a = _create_group(api_client, cluster_a, "g1")
@@ -102,11 +160,21 @@ def test_list_schedules_scoped_to_cluster(api_client):
 
     api_client.post(
         f"/backup/schedules/cluster/{cluster_a}",
-        json={"job_type": "backup_full", "inventory_group_id": group_a, "cadence": "0 1 * * *"},
+        json={
+            "job_type": "backup_full",
+            "inventory_group_id": group_a,
+            "repository": "s3_repo",
+            "cadence": "0 1 * * *",
+        },
     )
     api_client.post(
         f"/backup/schedules/cluster/{cluster_b}",
-        json={"job_type": "backup_full", "inventory_group_id": group_b, "cadence": "0 1 * * *"},
+        json={
+            "job_type": "backup_full",
+            "inventory_group_id": group_b,
+            "repository": "s3_repo",
+            "cadence": "0 1 * * *",
+        },
     )
 
     response = api_client.get(f"/backup/schedules/cluster/{cluster_a}")
@@ -123,14 +191,20 @@ def test_list_schedules_unknown_cluster_404(api_client):
     assert response.status_code == 404
 
 
-def test_get_update_delete_schedule_via_wrong_cluster_404(api_client):
+def test_get_update_delete_schedule_via_wrong_cluster_404(api_client, monkeypatch):
+    _mock_repository_check(monkeypatch)
     cluster_a = _create_cluster(api_client, "cluster-a")
     cluster_b = _create_cluster(api_client, "cluster-b")
     group_a = _create_group(api_client, cluster_a)
 
     created = api_client.post(
         f"/backup/schedules/cluster/{cluster_a}",
-        json={"job_type": "backup_full", "inventory_group_id": group_a, "cadence": "0 1 * * *"},
+        json={
+            "job_type": "backup_full",
+            "inventory_group_id": group_a,
+            "repository": "s3_repo",
+            "cadence": "0 1 * * *",
+        },
     ).json()
 
     assert api_client.get(f"/backup/schedules/cluster/{cluster_b}/schedule_id/{created['id']}").status_code == 404
@@ -146,12 +220,18 @@ def test_get_update_delete_schedule_via_wrong_cluster_404(api_client):
     assert api_client.get(f"/backup/schedules/cluster/{cluster_a}/schedule_id/{created['id']}").status_code == 200
 
 
-def test_update_schedule_unknown_group_404(api_client):
+def test_update_schedule_unknown_group_404(api_client, monkeypatch):
+    _mock_repository_check(monkeypatch)
     cluster_id = _create_cluster(api_client)
     group_id = _create_group(api_client, cluster_id)
     created = api_client.post(
         f"/backup/schedules/cluster/{cluster_id}",
-        json={"job_type": "backup_full", "inventory_group_id": group_id, "cadence": "0 1 * * *"},
+        json={
+            "job_type": "backup_full",
+            "inventory_group_id": group_id,
+            "repository": "s3_repo",
+            "cadence": "0 1 * * *",
+        },
     ).json()
 
     response = api_client.patch(
@@ -161,9 +241,44 @@ def test_update_schedule_unknown_group_404(api_client):
     assert response.status_code == 404
 
 
+def test_update_schedule_unknown_repository_404(api_client, monkeypatch):
+    from starrocks_br.api.routes import _cluster_connect
+
+    _mock_repository_check(monkeypatch)
+    cluster_id = _create_cluster(api_client)
+    group_id = _create_group(api_client, cluster_id)
+    created = api_client.post(
+        f"/backup/schedules/cluster/{cluster_id}",
+        json={
+            "job_type": "backup_full",
+            "inventory_group_id": group_id,
+            "repository": "s3_repo",
+            "cadence": "0 1 * * *",
+        },
+    ).json()
+
+    from starrocks_br.api.routes import schedules as schedules_module
+
+    monkeypatch.setattr(schedules_module, "ensure_repository_exists", _cluster_connect.ensure_repository_exists)
+    monkeypatch.setattr(
+        _cluster_connect, "connect_or_503", lambda cluster: type(
+            "FakeDB", (), {"close": lambda self: None}
+        )()
+    )
+    monkeypatch.setattr(_cluster_connect.repository_module, "list_repositories", lambda db: [])
+
+    response = api_client.patch(
+        f"/backup/schedules/cluster/{cluster_id}/schedule_id/{created['id']}",
+        json={"repository": "missing_repo"},
+    )
+
+    assert response.status_code == 404
+
+
 def test_disable_schedule_excludes_it_from_run_due(api_client, monkeypatch):
     from starrocks_br.jobs import handlers
 
+    _mock_repository_check(monkeypatch)
     monkeypatch.setitem(
         handlers.JOB_HANDLERS, "backup_full", lambda cluster, params, on_progress=None: {}
     )
@@ -175,6 +290,7 @@ def test_disable_schedule_excludes_it_from_run_due(api_client, monkeypatch):
         json={
             "job_type": "backup_full",
             "inventory_group_id": group_id,
+            "repository": "s3_repo",
             "cadence": "* * * * *",
         },
     ).json()
@@ -186,7 +302,8 @@ def test_disable_schedule_excludes_it_from_run_due(api_client, monkeypatch):
     assert response.json()["triggered_count"] == 0
 
 
-def test_delete_schedule_removes_it(api_client):
+def test_delete_schedule_removes_it(api_client, monkeypatch):
+    _mock_repository_check(monkeypatch)
     cluster_id = _create_cluster(api_client)
     group_id = _create_group(api_client, cluster_id)
     created = api_client.post(
@@ -194,6 +311,7 @@ def test_delete_schedule_removes_it(api_client):
         json={
             "job_type": "backup_full",
             "inventory_group_id": group_id,
+            "repository": "s3_repo",
             "cadence": "0 1 * * *",
         },
     ).json()
@@ -209,6 +327,7 @@ def test_run_due_triggers_a_due_schedule(api_client, monkeypatch):
     from starrocks_br.store import session as session_module
     from starrocks_br.store.models import Schedule
 
+    _mock_repository_check(monkeypatch)
     monkeypatch.setitem(
         handlers.JOB_HANDLERS, "backup_full", lambda cluster, params, on_progress=None: {}
     )
@@ -220,6 +339,7 @@ def test_run_due_triggers_a_due_schedule(api_client, monkeypatch):
         json={
             "job_type": "backup_full",
             "inventory_group_id": group_id,
+            "repository": "s3_repo",
             "cadence": "0 1 * * *",
         },
     ).json()
@@ -242,7 +362,8 @@ def test_run_due_triggers_a_due_schedule(api_client, monkeypatch):
     assert updated["next_run_at"] > forced_past.isoformat()
 
 
-def test_run_due_skips_not_yet_due_schedule(api_client):
+def test_run_due_skips_not_yet_due_schedule(api_client, monkeypatch):
+    _mock_repository_check(monkeypatch)
     cluster_id = _create_cluster(api_client)
     group_id = _create_group(api_client, cluster_id)
     api_client.post(
@@ -250,6 +371,7 @@ def test_run_due_skips_not_yet_due_schedule(api_client):
         json={
             "job_type": "backup_full",
             "inventory_group_id": group_id,
+            "repository": "s3_repo",
             "cadence": "0 1 1 1 *",  # once a year - far in the future
         },
     )
@@ -271,6 +393,7 @@ def test_run_due_is_idempotent_under_concurrent_calls(api_client, monkeypatch):
     from starrocks_br.store import session as session_module
     from starrocks_br.store.models import Schedule
 
+    _mock_repository_check(monkeypatch)
     monkeypatch.setitem(
         handlers.JOB_HANDLERS, "backup_full", lambda cluster, params, on_progress=None: {}
     )
@@ -282,6 +405,7 @@ def test_run_due_is_idempotent_under_concurrent_calls(api_client, monkeypatch):
         json={
             "job_type": "backup_full",
             "inventory_group_id": group_id,
+            "repository": "s3_repo",
             "cadence": "0 1 * * *",
         },
     ).json()

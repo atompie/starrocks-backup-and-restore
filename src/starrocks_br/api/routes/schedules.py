@@ -34,7 +34,7 @@ from ...store.models import Schedule
 from ..auth import require_api_key
 from ..deps import get_db
 from ..schemas import RunDueResponse, ScheduleCreate, ScheduleRead, ScheduleUpdate
-from ._cluster_connect import get_cluster_or_404
+from ._cluster_connect import ensure_repository_exists, get_cluster_or_404
 
 router = APIRouter(tags=["schedules"], dependencies=[Depends(require_api_key)])
 
@@ -63,7 +63,7 @@ def _get_schedule_or_404(db: Session, cluster_id: int, schedule_id: int) -> Sche
     status_code=status.HTTP_201_CREATED,
 )
 def create_schedule(cluster_id: int, payload: ScheduleCreate, db: Session = Depends(get_db)) -> Schedule:
-    get_cluster_or_404(db, cluster_id)
+    cluster = get_cluster_or_404(db, cluster_id)
 
     if not inventory_groups.group_exists(db, cluster_id, payload.inventory_group_id):
         raise HTTPException(
@@ -71,12 +71,15 @@ def create_schedule(cluster_id: int, payload: ScheduleCreate, db: Session = Depe
             detail=f"Inventory group id {payload.inventory_group_id} not found on this cluster",
         )
 
+    ensure_repository_exists(cluster, payload.repository)
+
     next_run_at = _compute_next_run_at(payload.cadence)
 
     schedule = Schedule(
         cluster_id=cluster_id,
         job_type=payload.job_type,
         inventory_group_id=payload.inventory_group_id,
+        repository=payload.repository,
         cadence=payload.cadence,
         backend=payload.backend,
         enabled=payload.enabled,
@@ -110,7 +113,7 @@ def get_schedule(cluster_id: int, schedule_id: int, db: Session = Depends(get_db
 def update_schedule(
     cluster_id: int, schedule_id: int, payload: ScheduleUpdate, db: Session = Depends(get_db)
 ) -> Schedule:
-    get_cluster_or_404(db, cluster_id)
+    cluster = get_cluster_or_404(db, cluster_id)
     schedule = _get_schedule_or_404(db, cluster_id, schedule_id)
 
     updates = payload.model_dump(exclude_unset=True)
@@ -121,6 +124,8 @@ def update_schedule(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Inventory group id {updates['inventory_group_id']} not found on this cluster",
         )
+    if "repository" in updates:
+        ensure_repository_exists(cluster, updates["repository"])
     cadence_changed = "cadence" in updates
     for field, value in updates.items():
         setattr(schedule, field, value)

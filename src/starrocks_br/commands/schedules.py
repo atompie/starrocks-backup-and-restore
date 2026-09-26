@@ -56,7 +56,7 @@ def run_due_schedules(session: Session, now: datetime.datetime) -> tuple[list[in
             session,
             cluster,
             schedule.job_type,
-            {"group_id": schedule.inventory_group_id},
+            {"group_id": schedule.inventory_group_id, "repository": schedule.repository},
             schedule.backend,
         )
         schedule.last_run_job_id = job.id

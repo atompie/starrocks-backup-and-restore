@@ -36,9 +36,10 @@ def schedule_group():
 @click.option("--cluster", "cluster_id", required=True, type=int)
 @click.option("--type", "job_type", required=True, type=click.Choice(["backup_full", "backup_incremental"]))
 @click.option("--group", "group_name", required=True)
+@click.option("--repository", required=True, help="Destination repository for scheduled backups.")
 @click.option("--cadence", required=True, help="Cron expression, e.g. '0 1 * * *'.")
 @click.option("--backend", help="Override the execution backend for this schedule.")
-def schedule_add(api_url, api_key, cluster_id, job_type, group_name, cadence, backend):
+def schedule_add(api_url, api_key, cluster_id, job_type, group_name, repository, cadence, backend):
     """Create a recurring backup schedule."""
     with make_client(api_url, api_key) as client:
         group_id = resolve_group_id(client, cluster_id, group_name)
@@ -49,6 +50,7 @@ def schedule_add(api_url, api_key, cluster_id, job_type, group_name, cadence, ba
             json={
                 "job_type": job_type,
                 "inventory_group_id": group_id,
+                "repository": repository,
                 "cadence": cadence,
                 "backend": backend,
             },
@@ -68,8 +70,8 @@ def schedule_list(api_url, api_key, cluster_id):
         state = "enabled" if schedule["enabled"] else "disabled"
         logger.info(
             f"[{schedule['id']}] cluster={schedule['cluster_id']} {schedule['job_type']} "
-            f"group_id={schedule['inventory_group_id']} cadence='{schedule['cadence']}' "
-            f"next_run_at={schedule['next_run_at']} ({state})"
+            f"group_id={schedule['inventory_group_id']} repository={schedule['repository']} "
+            f"cadence='{schedule['cadence']}' next_run_at={schedule['next_run_at']} ({state})"
         )
 
 

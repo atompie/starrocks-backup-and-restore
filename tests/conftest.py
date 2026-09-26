@@ -92,8 +92,6 @@ def make_cluster(sqlite_session):
             port=9030,
             user="backup_svc",
             password_encrypted="token",
-            database="mydb",
-            repository="s3_repo",
         )
         sqlite_session.add(cluster)
         sqlite_session.commit()
@@ -159,8 +157,6 @@ def mock_resolved_cluster(mocker):
         port=9030,
         user="root",
         password_encrypted="token",
-        database="test_db",
-        repository="test_repo",
     )
     fake_session = mocker.Mock(name="fake_cli_session")
 

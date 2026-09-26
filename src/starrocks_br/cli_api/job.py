@@ -43,11 +43,13 @@ def job_group():
     type=click.Choice(list(_ENDPOINT_BY_TYPE)),
     help="Kind of job to submit.",
 )
-@click.option("--group", help="Inventory group (backups) or restore filter.")
+@click.option("--group", help="Inventory group (backups, or required for prune).")
+@click.option("--repository", help="Destination repository (backup-full/backup-incremental jobs).")
 @click.option("--name", help="Optional custom backup label.")
 @click.option("--baseline-backup", help="Baseline backup label (incremental backups).")
 @click.option("--target-label", help="Backup label to restore (restore jobs).")
 @click.option("--table", help="Single table to restore (restore jobs).")
+@click.option("--database", help="Database the --table belongs to (restore jobs, required with --table).")
 @click.option("--rename-suffix", default="_restored", help="Temporary-table suffix (restore jobs).")
 @click.option("--keep-last", type=int, help="Prune: keep last N backups.")
 @click.option("--older-than", help="Prune: delete backups older than this timestamp.")
@@ -62,10 +64,12 @@ def job_submit(
     cluster_id,
     job_type,
     group,
+    repository,
     name,
     baseline_backup,
     target_label,
     table,
+    database,
     rename_suffix,
     keep_last,
     older_than,
@@ -81,10 +85,12 @@ def job_submit(
 
         payload = {
             "group_id": group_id,
+            "repository": repository,
             "name": name,
             "baseline_backup": baseline_backup,
             "target_label": target_label,
             "table": table,
+            "database": database,
             "rename_suffix": rename_suffix,
             "keep_last": keep_last,
             "older_than": older_than,

@@ -57,8 +57,6 @@ def _make_cluster(name="prod-eu") -> Cluster:
         port=9030,
         user="backup_svc",
         password_encrypted="token",
-        database="mydb",
-        repository="s3_repo",
     )
 
 
@@ -106,6 +104,7 @@ def test_schedule_requires_existing_cluster(session):
         cluster_id=999,
         job_type="backup_full",
         inventory_group_id=1,
+        repository="repo",
         cadence="0 1 * * *",
         next_run_at=datetime.datetime.now(datetime.timezone.utc),
     )
@@ -126,6 +125,7 @@ def test_schedule_links_to_cluster(session):
         cluster_id=cluster.id,
         job_type="backup_full",
         inventory_group_id=group.id,
+        repository="repo",
         cadence="0 1 * * *",
         next_run_at=datetime.datetime.now(datetime.timezone.utc),
     )

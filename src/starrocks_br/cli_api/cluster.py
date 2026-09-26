@@ -30,12 +30,13 @@ def cluster_group():
 @click.option("--port", required=True, type=int)
 @click.option("--user", required=True)
 @click.option("--password", required=True, help="StarRocks user password (stored encrypted).")
-@click.option("--database", required=True, help="Default database on this cluster.")
-@click.option("--repository", required=True, help="StarRocks backup repository name.")
-@click.option("--default-backend", default="thread", help="Default job execution backend.")
-def cluster_add(
-    api_url, api_key, name, host, port, user, password, database, repository, default_backend
-):
+@click.option(
+    "--default-backend",
+    default="thread",
+    type=click.Choice(["thread", "job"]),
+    help="Default job execution backend.",
+)
+def cluster_add(api_url, api_key, name, host, port, user, password, default_backend):
     """Register a new StarRocks cluster with the API server."""
     with make_client(api_url, api_key) as client:
         response = request(
@@ -48,8 +49,6 @@ def cluster_add(
                 "port": port,
                 "user": user,
                 "password": password,
-                "database": database,
-                "repository": repository,
                 "default_backend": default_backend,
             },
         )
@@ -66,7 +65,7 @@ def cluster_list(api_url, api_key):
     for cluster in response.json():
         logger.info(
             f"[{cluster['id']}] {cluster['name']} - {cluster['host']}:{cluster['port']} "
-            f"(db={cluster['database']}, repo={cluster['repository']})"
+            f"(backend={cluster['default_backend']})"
         )
 
 

@@ -135,6 +135,7 @@ class JobRead(BaseModel):
 class ScheduleCreate(BaseModel):
     job_type: str = Field(pattern="^(backup_full|backup_incremental)$")
     inventory_group_id: int
+    repository: str = Field(min_length=1, max_length=128)
     cadence: str = Field(min_length=1, max_length=128)
     backend: Backend | None = None
     enabled: bool = True
@@ -143,6 +144,7 @@ class ScheduleCreate(BaseModel):
 class ScheduleUpdate(BaseModel):
     job_type: str | None = Field(default=None, pattern="^(backup_full|backup_incremental)$")
     inventory_group_id: int | None = None
+    repository: str | None = Field(default=None, min_length=1, max_length=128)
     cadence: str | None = Field(default=None, min_length=1, max_length=128)
     backend: Backend | None = None
     enabled: bool | None = None
@@ -155,6 +157,7 @@ class ScheduleRead(BaseModel):
     cluster_id: int
     job_type: str
     inventory_group_id: int
+    repository: str
     cadence: str
     backend: str | None
     enabled: bool

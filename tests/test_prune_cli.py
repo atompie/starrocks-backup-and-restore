@@ -31,11 +31,11 @@ def test_prune_keep_last_success(
 
     # Mock getting list of snapshots from backup_history
     mock_snapshots = [
-        {"label": "backup_20240101", "finished_at": "2024-01-01 00:00:00"},
-        {"label": "backup_20240102", "finished_at": "2024-01-02 00:00:00"},
-        {"label": "backup_20240103", "finished_at": "2024-01-03 00:00:00"},
-        {"label": "backup_20240104", "finished_at": "2024-01-04 00:00:00"},
-        {"label": "backup_20240105", "finished_at": "2024-01-05 00:00:00"},
+        {"label": "backup_20240101", "finished_at": "2024-01-01 00:00:00", "repository": "test_repo"},
+        {"label": "backup_20240102", "finished_at": "2024-01-02 00:00:00", "repository": "test_repo"},
+        {"label": "backup_20240103", "finished_at": "2024-01-03 00:00:00", "repository": "test_repo"},
+        {"label": "backup_20240104", "finished_at": "2024-01-04 00:00:00", "repository": "test_repo"},
+        {"label": "backup_20240105", "finished_at": "2024-01-05 00:00:00", "repository": "test_repo"},
     ]
 
     mocker.patch(
@@ -49,7 +49,7 @@ def test_prune_keep_last_success(
     # Auto-confirm with --yes flag
     result = runner.invoke(
         cli.prune_command,
-        ["--config", config_file, "--keep-last", "3", "--yes"],
+        ["--config", config_file, "--group", "g1", "--keep-last", "3", "--yes"],
     )
 
     assert result.exit_code == 0
@@ -76,9 +76,9 @@ def test_prune_older_than_success(
     runner = CliRunner()
 
     mock_snapshots = [
-        {"label": "backup_20231201", "finished_at": "2023-12-01 00:00:00"},
-        {"label": "backup_20240101", "finished_at": "2024-01-01 00:00:00"},
-        {"label": "backup_20240201", "finished_at": "2024-02-01 00:00:00"},
+        {"label": "backup_20231201", "finished_at": "2023-12-01 00:00:00", "repository": "test_repo"},
+        {"label": "backup_20240101", "finished_at": "2024-01-01 00:00:00", "repository": "test_repo"},
+        {"label": "backup_20240201", "finished_at": "2024-02-01 00:00:00", "repository": "test_repo"},
     ]
 
     mocker.patch(
@@ -91,7 +91,7 @@ def test_prune_older_than_success(
 
     result = runner.invoke(
         cli.prune_command,
-        ["--config", config_file, "--older-than", "2024-01-01 12:00:00", "--yes"],
+        ["--config", config_file, "--group", "g1", "--older-than", "2024-01-01 12:00:00", "--yes"],
     )
 
     assert result.exit_code == 0
@@ -115,8 +115,8 @@ def test_prune_single_snapshot_success(
     runner = CliRunner()
 
     mock_snapshots = [
-        {"label": "backup_20240101", "finished_at": "2024-01-01 00:00:00"},
-        {"label": "backup_20240102", "finished_at": "2024-01-02 00:00:00"},
+        {"label": "backup_20240101", "finished_at": "2024-01-01 00:00:00", "repository": "test_repo"},
+        {"label": "backup_20240102", "finished_at": "2024-01-02 00:00:00", "repository": "test_repo"},
     ]
 
     mocker.patch(
@@ -130,7 +130,7 @@ def test_prune_single_snapshot_success(
 
     result = runner.invoke(
         cli.prune_command,
-        ["--config", config_file, "--snapshot", "backup_20240101", "--yes"],
+        ["--config", config_file, "--group", "g1", "--snapshot", "backup_20240101", "--yes"],
     )
 
     assert result.exit_code == 0
@@ -152,10 +152,10 @@ def test_prune_multiple_snapshots_success(
     runner = CliRunner()
 
     mock_snapshots = [
-        {"label": "backup_20240101", "finished_at": "2024-01-01 00:00:00"},
-        {"label": "backup_20240102", "finished_at": "2024-01-02 00:00:00"},
-        {"label": "backup_20240103", "finished_at": "2024-01-03 00:00:00"},
-        {"label": "backup_20240104", "finished_at": "2024-01-04 00:00:00"},
+        {"label": "backup_20240101", "finished_at": "2024-01-01 00:00:00", "repository": "test_repo"},
+        {"label": "backup_20240102", "finished_at": "2024-01-02 00:00:00", "repository": "test_repo"},
+        {"label": "backup_20240103", "finished_at": "2024-01-03 00:00:00", "repository": "test_repo"},
+        {"label": "backup_20240104", "finished_at": "2024-01-04 00:00:00", "repository": "test_repo"},
     ]
 
     mocker.patch(
@@ -178,6 +178,8 @@ def test_prune_multiple_snapshots_success(
         [
             "--config",
             config_file,
+            "--group",
+            "g1",
             "--snapshots",
             "backup_20240101,backup_20240102,backup_20240103",
             "--yes",
@@ -207,9 +209,9 @@ def test_prune_dry_run_mode(
     runner = CliRunner()
 
     mock_snapshots = [
-        {"label": "backup_20240101", "finished_at": "2024-01-01 00:00:00"},
-        {"label": "backup_20240102", "finished_at": "2024-01-02 00:00:00"},
-        {"label": "backup_20240103", "finished_at": "2024-01-03 00:00:00"},
+        {"label": "backup_20240101", "finished_at": "2024-01-01 00:00:00", "repository": "test_repo"},
+        {"label": "backup_20240102", "finished_at": "2024-01-02 00:00:00", "repository": "test_repo"},
+        {"label": "backup_20240103", "finished_at": "2024-01-03 00:00:00", "repository": "test_repo"},
     ]
 
     mocker.patch(
@@ -222,7 +224,7 @@ def test_prune_dry_run_mode(
 
     result = runner.invoke(
         cli.prune_command,
-        ["--config", config_file, "--keep-last", "1", "--dry-run"],
+        ["--config", config_file, "--group", "g1", "--keep-last", "1", "--dry-run"],
     )
 
     assert result.exit_code == 0
@@ -247,8 +249,8 @@ def test_prune_confirmation_prompt_accept(
     runner = CliRunner()
 
     mock_snapshots = [
-        {"label": "backup_20240101", "finished_at": "2024-01-01 00:00:00"},
-        {"label": "backup_20240102", "finished_at": "2024-01-02 00:00:00"},
+        {"label": "backup_20240101", "finished_at": "2024-01-01 00:00:00", "repository": "test_repo"},
+        {"label": "backup_20240102", "finished_at": "2024-01-02 00:00:00", "repository": "test_repo"},
     ]
 
     mocker.patch(
@@ -262,7 +264,7 @@ def test_prune_confirmation_prompt_accept(
     # Simulate user typing 'y' at the prompt
     result = runner.invoke(
         cli.prune_command,
-        ["--config", config_file, "--keep-last", "1"],
+        ["--config", config_file, "--group", "g1", "--keep-last", "1"],
         input="y\n",
     )
 
@@ -286,8 +288,8 @@ def test_prune_confirmation_prompt_cancel(
     runner = CliRunner()
 
     mock_snapshots = [
-        {"label": "backup_20240101", "finished_at": "2024-01-01 00:00:00"},
-        {"label": "backup_20240102", "finished_at": "2024-01-02 00:00:00"},
+        {"label": "backup_20240101", "finished_at": "2024-01-01 00:00:00", "repository": "test_repo"},
+        {"label": "backup_20240102", "finished_at": "2024-01-02 00:00:00", "repository": "test_repo"},
     ]
 
     mocker.patch(
@@ -301,7 +303,7 @@ def test_prune_confirmation_prompt_cancel(
     # Simulate user typing 'n' at the prompt
     result = runner.invoke(
         cli.prune_command,
-        ["--config", config_file, "--keep-last", "1"],
+        ["--config", config_file, "--group", "g1", "--keep-last", "1"],
         input="n\n",
     )
 
@@ -385,7 +387,7 @@ def test_prune_snapshot_not_found(
     runner = CliRunner()
 
     mock_snapshots = [
-        {"label": "backup_20240101", "finished_at": "2024-01-01 00:00:00"},
+        {"label": "backup_20240101", "finished_at": "2024-01-01 00:00:00", "repository": "test_repo"},
     ]
 
     mocker.patch(
@@ -393,39 +395,9 @@ def test_prune_snapshot_not_found(
         return_value=mock_snapshots,
     )
 
-    mocker.patch(
-        "starrocks_br.prune.verify_snapshot_exists",
-        side_effect=Exception("Snapshot 'nonexistent_backup' not found"),
-    )
-
     result = runner.invoke(
         cli.prune_command,
-        ["--config", config_file, "--snapshot", "nonexistent_backup", "--yes"],
-    )
-
-    assert result.exit_code != 0
-
-
-def test_prune_repository_not_found(
-    config_file,
-    mock_db,
-    mock_resolved_cluster,
-    mock_healthy_cluster,
-    setup_password_env,
-    mocker,
-):
-    """Test error when repository doesn't exist."""
-    runner = CliRunner()
-
-    # Mock repository not found
-    mocker.patch(
-        "starrocks_br.repository.ensure_repository",
-        side_effect=RuntimeError("Repository 'test_repo' not found"),
-    )
-
-    result = runner.invoke(
-        cli.prune_command,
-        ["--config", config_file, "--snapshot", "backup_20240101", "--yes"],
+        ["--config", config_file, "--group", "g1", "--snapshot", "nonexistent_backup", "--yes"],
     )
 
     assert result.exit_code != 0
@@ -484,8 +456,8 @@ def test_prune_no_snapshots_to_delete(
     runner = CliRunner()
 
     mock_snapshots = [
-        {"label": "backup_20240101", "finished_at": "2024-01-01 00:00:00"},
-        {"label": "backup_20240102", "finished_at": "2024-01-02 00:00:00"},
+        {"label": "backup_20240101", "finished_at": "2024-01-01 00:00:00", "repository": "test_repo"},
+        {"label": "backup_20240102", "finished_at": "2024-01-02 00:00:00", "repository": "test_repo"},
     ]
 
     mocker.patch(
@@ -497,7 +469,7 @@ def test_prune_no_snapshots_to_delete(
 
     result = runner.invoke(
         cli.prune_command,
-        ["--config", config_file, "--keep-last", "10", "--yes"],
+        ["--config", config_file, "--group", "g1", "--keep-last", "10", "--yes"],
     )
 
     assert result.exit_code == 0
@@ -519,7 +491,7 @@ def test_prune_cleanup_history_after_deletion(
     runner = CliRunner()
 
     mock_snapshots = [
-        {"label": "backup_20240101", "finished_at": "2024-01-01 00:00:00"},
+        {"label": "backup_20240101", "finished_at": "2024-01-01 00:00:00", "repository": "test_repo"},
     ]
 
     mocker.patch(
@@ -533,7 +505,7 @@ def test_prune_cleanup_history_after_deletion(
 
     result = runner.invoke(
         cli.prune_command,
-        ["--config", config_file, "--snapshot", "backup_20240101", "--yes"],
+        ["--config", config_file, "--group", "g1", "--snapshot", "backup_20240101", "--yes"],
     )
 
     assert result.exit_code == 0
@@ -559,9 +531,9 @@ def test_prune_batch_aborts_on_first_failure(
     runner = CliRunner()
 
     mock_snapshots = [
-        {"label": "backup1", "finished_at": "2024-01-01 00:00:00"},
-        {"label": "backup2", "finished_at": "2024-01-02 00:00:00"},
-        {"label": "backup3", "finished_at": "2024-01-03 00:00:00"},
+        {"label": "backup1", "finished_at": "2024-01-01 00:00:00", "repository": "test_repo"},
+        {"label": "backup2", "finished_at": "2024-01-02 00:00:00", "repository": "test_repo"},
+        {"label": "backup3", "finished_at": "2024-01-03 00:00:00", "repository": "test_repo"},
     ]
 
     mocker.patch(
@@ -591,7 +563,7 @@ def test_prune_batch_aborts_on_first_failure(
 
     result = runner.invoke(
         cli.prune_command,
-        ["--config", config_file, "--snapshots", "backup1,backup2,backup3", "--yes"],
+        ["--config", config_file, "--group", "g1", "--snapshots", "backup1,backup2,backup3", "--yes"],
     )
 
     assert result.exit_code == 1
@@ -616,21 +588,25 @@ def test_prune_with_group_filter_keep_last(
             "label": "prod_backup_20240101",
             "finished_at": "2024-01-01 00:00:00",
             "inventory_group": "production_tables",
+            "repository": "test_repo",
         },
         {
             "label": "prod_backup_20240102",
             "finished_at": "2024-01-02 00:00:00",
             "inventory_group": "production_tables",
+            "repository": "test_repo",
         },
         {
             "label": "prod_backup_20240103",
             "finished_at": "2024-01-03 00:00:00",
             "inventory_group": "production_tables",
+            "repository": "test_repo",
         },
         {
             "label": "test_backup_20240101",
             "finished_at": "2024-01-01 00:00:00",
             "inventory_group": "test_tables",
+            "repository": "test_repo",
         },
     ]
 
@@ -675,16 +651,19 @@ def test_prune_with_group_filter_older_than(
             "label": "prod_backup_20231201",
             "finished_at": "2023-12-01 00:00:00",
             "inventory_group": "production_tables",
+            "repository": "test_repo",
         },
         {
             "label": "prod_backup_20240101",
             "finished_at": "2024-01-01 00:00:00",
             "inventory_group": "production_tables",
+            "repository": "test_repo",
         },
         {
             "label": "test_backup_20231201",
             "finished_at": "2023-12-01 00:00:00",
             "inventory_group": "test_tables",
+            "repository": "test_repo",
         },
     ]
 
@@ -720,7 +699,7 @@ def test_prune_with_group_filter_older_than(
     assert "test_backup" not in str(mock_execute.call_args_list)
 
 
-def test_prune_without_group_affects_all_backups(
+def test_prune_without_group_is_rejected(
     config_file,
     mock_db,
     mock_resolved_cluster,
@@ -729,50 +708,20 @@ def test_prune_without_group_affects_all_backups(
     setup_password_env,
     mocker,
 ):
-    """Test pruning without group filter affects ALL backups across all groups."""
+    """Prune must always be scoped to a group - omitting --group is a usage error,
+    not a "prune everything" fallback (see openspec/changes/decouple-database-and-
+    repository-from-cluster)."""
     runner = CliRunner()
 
-    mock_snapshots = [
-        {
-            "label": "prod_backup_20240101",
-            "finished_at": "2024-01-01 00:00:00",
-            "inventory_group": "production_tables",
-        },
-        {
-            "label": "test_backup_20240102",
-            "finished_at": "2024-01-02 00:00:00",
-            "inventory_group": "test_tables",
-        },
-        {
-            "label": "prod_backup_20240103",
-            "finished_at": "2024-01-03 00:00:00",
-            "inventory_group": "production_tables",
-        },
-        {
-            "label": "test_backup_20240104",
-            "finished_at": "2024-01-04 00:00:00",
-            "inventory_group": "test_tables",
-        },
-    ]
-
-    mocker.patch(
-        "starrocks_br.prune.get_successful_backups",
-        return_value=mock_snapshots,
-    )
-
-    mock_execute = mocker.patch("starrocks_br.prune.execute_drop_snapshot")
-    mocker.patch("starrocks_br.prune.cleanup_backup_history")
+    get_backups = mocker.patch("starrocks_br.prune.get_successful_backups")
 
     result = runner.invoke(
         cli.prune_command,
         ["--config", config_file, "--keep-last", "2", "--yes"],
     )
 
-    assert result.exit_code == 0
-
-    assert mock_execute.call_count == 2
-    mock_execute.assert_any_call(mock_db, "test_repo", "prod_backup_20240101")
-    mock_execute.assert_any_call(mock_db, "test_repo", "test_backup_20240102")
+    assert result.exit_code != 0
+    get_backups.assert_not_called()
 
 
 def test_prune_group_not_found(

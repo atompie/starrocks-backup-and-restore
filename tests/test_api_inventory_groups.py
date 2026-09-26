@@ -174,7 +174,13 @@ def test_delete_nonexistent_inventory_group_is_404(api_client):
     assert response.status_code == 404
 
 
-def test_delete_inventory_group_referenced_by_schedule_is_409(api_client):
+def test_delete_inventory_group_referenced_by_schedule_is_409(api_client, monkeypatch):
+    from starrocks_br.api.routes import schedules as schedules_module
+
+    monkeypatch.setattr(
+        schedules_module, "ensure_repository_exists", lambda cluster, repository_name: None
+    )
+
     cluster_id = _create_cluster(api_client)
     created = _create_group(api_client, cluster_id)
 
@@ -183,6 +189,7 @@ def test_delete_inventory_group_referenced_by_schedule_is_409(api_client):
         json={
             "job_type": "backup_full",
             "inventory_group_id": created["id"],
+            "repository": "s3_repo",
             "cadence": "0 1 * * *",
         },
     )

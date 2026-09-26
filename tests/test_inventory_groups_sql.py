@@ -218,6 +218,7 @@ def test_delete_group_raises_in_use_when_schedule_references_it(sqlite_session, 
         cluster_id=cluster.id,
         job_type="backup_full",
         inventory_group_id=group_id,
+        repository="repo",
         cadence="0 1 * * *",
         next_run_at=datetime.datetime.now(datetime.timezone.utc),
     )

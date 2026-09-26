@@ -38,6 +38,10 @@ def test_backup_incremental_success(
         },
     )
     mocker.patch(
+        "starrocks_br.planner.find_tables_by_group",
+        return_value=[{"database": "test_db", "table": "fact_table"}],
+    )
+    mocker.patch(
         "starrocks_br.planner.find_recent_partitions",
         return_value=[
             {"database": "test_db", "table": "fact_table", "partition_name": "p20251016"}
@@ -80,6 +84,10 @@ def test_backup_incremental_with_specific_baseline(
     """Test incremental backup with user-specified baseline."""
     runner = CliRunner()
 
+    mocker.patch(
+        "starrocks_br.planner.find_tables_by_group",
+        return_value=[{"database": "test_db", "table": "fact_table"}],
+    )
     mocker.patch(
         "starrocks_br.planner.find_recent_partitions",
         return_value=[
@@ -254,6 +262,10 @@ def test_backup_reserves_slot_before_recording_partitions(
         call_order.append("record_backup_partitions")
 
     mocker.patch("starrocks_br.labels.determine_backup_label", return_value="test_backup")
+    mocker.patch(
+        "starrocks_br.planner.find_tables_by_group",
+        return_value=[{"database": "test_db", "table": "fact_table"}],
+    )
     mocker.patch(
         "starrocks_br.planner.find_latest_full_backup",
         return_value={

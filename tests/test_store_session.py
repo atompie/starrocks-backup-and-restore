@@ -49,8 +49,6 @@ def test_session_scope_round_trip(sqlite_env):
                 port=9030,
                 user="u",
                 password_encrypted="enc",
-                database="db",
-                repository="repo",
             )
         )
 
@@ -72,8 +70,6 @@ def test_session_scope_rolls_back_on_error(sqlite_env):
                     port=9030,
                     user="u",
                     password_encrypted="enc",
-                    database="db",
-                    repository="repo",
                 )
             )
             raise ValueError("boom")

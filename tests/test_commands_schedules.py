@@ -22,7 +22,6 @@ def sqlite_store(tmp_path, monkeypatch):
 def _make_cluster(session) -> Cluster:
     cluster = Cluster(
         name="c1", host="h", port=9030, user="u", password_encrypted="enc",
-        database="db", repository="repo",
     )
     session.add(cluster)
     session.flush()
@@ -63,6 +62,7 @@ def test_run_due_schedules_triggers_due_schedule_and_advances_next_run_at(sqlite
             cluster_id=cluster.id,
             job_type="backup_full",
             inventory_group_id=group.id,
+            repository="repo",
             cadence="* * * * *",
             backend="thread",
             enabled=True,
@@ -81,7 +81,7 @@ def test_run_due_schedules_triggers_due_schedule_and_advances_next_run_at(sqlite
         args = submit_job.call_args.args
         assert args[1].id == cluster.id
         assert args[2] == "backup_full"
-        assert args[3] == {"group_id": group.id}
+        assert args[3] == {"group_id": group.id, "repository": "repo"}
         assert args[4] == "thread"
 
 
@@ -96,6 +96,7 @@ def test_run_due_schedules_skips_not_yet_due_schedule(sqlite_store, mocker):
                 cluster_id=cluster.id,
                 job_type="backup_full",
                 inventory_group_id=group.id,
+                repository="repo",
                 cadence="* * * * *",
                 backend="thread",
                 enabled=True,
@@ -124,6 +125,7 @@ def test_run_due_schedules_is_idempotent_when_already_advanced(sqlite_store, moc
             cluster_id=cluster.id,
             job_type="backup_full",
             inventory_group_id=group.id,
+            repository="repo",
             cadence="* * * * *",
             backend="thread",
             enabled=True,

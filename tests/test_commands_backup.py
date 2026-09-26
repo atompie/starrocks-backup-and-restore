@@ -16,8 +16,6 @@ def cluster():
         port=9030,
         user="root",
         password_encrypted="encrypted-token",
-        database="test_db",
-        repository="test_repo",
         default_backend="thread",
     )
 
@@ -70,7 +68,7 @@ def test_run_backup_full_builds_same_command_as_cli(
         return_value={"success": True, "final_status": {"state": "FINISHED"}},
     )
 
-    result = backup.run_backup_full(cluster, {"group_id": 42})
+    result = backup.run_backup_full(cluster, {"group_id": 42, "repository": "test_repo"})
 
     assert result == {"label": "test_db_20251016_full", "final_status": {"state": "FINISHED"}}
     execute_backup.assert_called_once()
@@ -88,7 +86,7 @@ def test_run_backup_full_raises_on_unhealthy_cluster(
     cluster, mock_decrypt, mock_db, fake_session, mock_unhealthy_cluster
 ):
     with pytest.raises(RuntimeError, match="health check failed"):
-        backup.run_backup_full(cluster, {"group_id": 42})
+        backup.run_backup_full(cluster, {"group_id": 42, "repository": "test_repo"})
 
 
 def test_run_backup_full_propagates_snapshot_exists_as_domain_exception(
@@ -111,7 +109,7 @@ def test_run_backup_full_propagates_snapshot_exists_as_domain_exception(
     )
 
     with pytest.raises(exceptions.SnapshotAlreadyExistsError) as excinfo:
-        backup.run_backup_full(cluster, {"group_id": 42})
+        backup.run_backup_full(cluster, {"group_id": 42, "repository": "test_repo"})
     assert excinfo.value.snapshot_name == "lbl"
 
 
@@ -131,13 +129,17 @@ def test_run_backup_full_propagates_other_execute_backup_failure_as_domain_excep
     )
 
     with pytest.raises(exceptions.BackupExecutionError, match="boom"):
-        backup.run_backup_full(cluster, {"group_id": 42})
+        backup.run_backup_full(cluster, {"group_id": 42, "repository": "test_repo"})
 
 
 def test_run_backup_incremental_passes_baseline_and_progress_callback(
     cluster, mock_decrypt, mock_db, fake_session, mock_healthy_cluster, mock_repo_exists, mocker
 ):
     mocker.patch("starrocks_br.labels.determine_backup_label", return_value="lbl_inc")
+    mocker.patch(
+        "starrocks_br.planner.find_tables_by_group",
+        return_value=[{"database": "d", "table": "t"}],
+    )
     mocker.patch(
         "starrocks_br.planner.find_recent_partitions",
         return_value=[{"database": "d", "table": "t", "partition_name": "p1"}],
@@ -154,7 +156,9 @@ def test_run_backup_incremental_passes_baseline_and_progress_callback(
 
     progress_cb = mocker.Mock()
     backup.run_backup_incremental(
-        cluster, {"group_id": 42, "baseline_backup": "base_lbl"}, on_progress=progress_cb
+        cluster,
+        {"group_id": 42, "repository": "test_repo", "baseline_backup": "base_lbl"},
+        on_progress=progress_cb,
     )
 
     assert execute_backup.call_args.kwargs["on_progress"] is progress_cb
