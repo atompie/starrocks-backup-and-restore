@@ -9,6 +9,7 @@ used by direct API job submission". Raises `jobs.backend.UnknownBackendError`
 
 import json
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..jobs.backend import get_registry
@@ -41,3 +42,32 @@ def submit_job(
 
     registry.get(backend_name).enqueue(job.id)
     return job
+
+
+def list_jobs(
+    db: Session,
+    cluster_id: int,
+    job_type: str | list[str] | None = None,
+    status: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> list[Job]:
+    """List jobs for a cluster, most recently created first.
+
+    `job_type` may be a single type or a list of types (e.g. the default
+    backup-history scope of `backup_full`/`backup_incremental`).
+    """
+    query = select(Job).where(Job.cluster_id == cluster_id)
+
+    if job_type is not None:
+        if isinstance(job_type, list):
+            query = query.where(Job.job_type.in_(job_type))
+        else:
+            query = query.where(Job.job_type == job_type)
+
+    if status is not None:
+        query = query.where(Job.status == status)
+
+    query = query.order_by(Job.created_at.desc()).limit(limit).offset(offset)
+
+    return list(db.scalars(query).all())

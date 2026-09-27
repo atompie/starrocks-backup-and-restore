@@ -1,9 +1,9 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from ... import inventory_groups
-from ...commands.jobs import submit_job
+from ...commands.jobs import list_jobs, submit_job
 from ...jobs.backend import UnknownBackendError
 from ...store.models import Job
 from ..auth import require_api_key
@@ -19,6 +19,8 @@ from ._cluster_connect import ensure_repository_exists as _ensure_repository_exi
 from ._cluster_connect import get_cluster_or_404 as _get_cluster_or_404
 
 router = APIRouter(tags=["manual-backups"], dependencies=[Depends(require_api_key)])
+
+_DEFAULT_BACKUP_JOB_TYPES = ["backup_full", "backup_incremental"]
 
 
 def _submit(
@@ -135,3 +137,23 @@ def get_job(job_id: int, db: Session = Depends(get_db)) -> Job:
     if job is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
     return job
+
+
+@router.get("/backup/history/cluster/{cluster_id}", response_model=list[JobRead])
+def list_backup_history(
+    cluster_id: int,
+    job_type: str | None = Query(default=None),
+    status_filter: str | None = Query(default=None, alias="status"),
+    limit: int = Query(default=50),
+    offset: int = Query(default=0),
+    db: Session = Depends(get_db),
+) -> list[Job]:
+    _get_cluster_or_404(db, cluster_id)
+    return list_jobs(
+        db,
+        cluster_id,
+        job_type=job_type if job_type is not None else _DEFAULT_BACKUP_JOB_TYPES,
+        status=status_filter,
+        limit=limit,
+        offset=offset,
+    )

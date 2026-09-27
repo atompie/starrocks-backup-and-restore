@@ -363,3 +363,115 @@ def test_submit_prune_extra_field_is_422(api_client):
     )
 
     assert response.status_code == 422
+
+
+def _submit_backup_full(api_client, monkeypatch, cluster_id):
+    from starrocks_br.jobs import handlers
+
+    _mock_group_check(monkeypatch)
+    _mock_repository_check(monkeypatch)
+    monkeypatch.setitem(
+        handlers.JOB_HANDLERS, "backup_full", lambda cluster, params, on_progress=None: {}
+    )
+    submitted = api_client.post(
+        f"/backup/manual/full/cluster/{cluster_id}", json={"group_id": 1, "repository": "s3_repo"}
+    ).json()
+    return _wait_for_terminal(api_client, submitted["id"])
+
+
+def _submit_prune(api_client, monkeypatch, cluster_id):
+    from starrocks_br.jobs import handlers
+
+    _mock_group_check(monkeypatch)
+    monkeypatch.setitem(
+        handlers.JOB_HANDLERS, "prune", lambda cluster, params, on_progress=None: {}
+    )
+    submitted = api_client.post(
+        f"/backup/manual/prune/cluster/{cluster_id}", json={"group_id": 1, "keep_last": 3}
+    ).json()
+    return _wait_for_terminal(api_client, submitted["id"])
+
+
+def test_backup_history_empty_for_cluster_with_no_jobs(api_client):
+    cluster_id = _create_cluster(api_client)
+
+    response = api_client.get(f"/backup/history/cluster/{cluster_id}")
+
+    assert response.status_code == 200
+    assert response.json() == []
+
+
+def test_backup_history_unknown_cluster_is_404(api_client):
+    response = api_client.get("/backup/history/cluster/999")
+
+    assert response.status_code == 404
+
+
+def test_backup_history_defaults_to_backup_job_types(api_client, monkeypatch):
+    cluster_id = _create_cluster(api_client)
+    backup_job = _submit_backup_full(api_client, monkeypatch, cluster_id)
+    _submit_prune(api_client, monkeypatch, cluster_id)
+
+    response = api_client.get(f"/backup/history/cluster/{cluster_id}")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert [job["id"] for job in body] == [backup_job["id"]]
+
+
+def test_backup_history_filters_by_job_type(api_client, monkeypatch):
+    cluster_id = _create_cluster(api_client)
+    _submit_backup_full(api_client, monkeypatch, cluster_id)
+    prune_job = _submit_prune(api_client, monkeypatch, cluster_id)
+
+    response = api_client.get(f"/backup/history/cluster/{cluster_id}", params={"job_type": "prune"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert [job["id"] for job in body] == [prune_job["id"]]
+
+
+def test_backup_history_filters_by_status(api_client, monkeypatch):
+    from starrocks_br.jobs import handlers
+
+    cluster_id = _create_cluster(api_client)
+    _mock_group_check(monkeypatch)
+    _mock_repository_check(monkeypatch)
+
+    monkeypatch.setitem(
+        handlers.JOB_HANDLERS,
+        "backup_full",
+        lambda cluster, params, on_progress=None: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+    failed = api_client.post(
+        f"/backup/manual/full/cluster/{cluster_id}", json={"group_id": 1, "repository": "s3_repo"}
+    ).json()
+    _wait_for_terminal(api_client, failed["id"])
+
+    monkeypatch.setitem(
+        handlers.JOB_HANDLERS, "backup_full", lambda cluster, params, on_progress=None: {}
+    )
+    succeeded = api_client.post(
+        f"/backup/manual/full/cluster/{cluster_id}", json={"group_id": 1, "repository": "s3_repo"}
+    ).json()
+    _wait_for_terminal(api_client, succeeded["id"])
+
+    response = api_client.get(f"/backup/history/cluster/{cluster_id}", params={"status": "FAILED"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert [job["id"] for job in body] == [failed["id"]]
+
+
+def test_backup_history_orders_most_recent_first_and_paginates(api_client, monkeypatch):
+    cluster_id = _create_cluster(api_client)
+    jobs = [_submit_backup_full(api_client, monkeypatch, cluster_id) for _ in range(3)]
+    expected_order = list(reversed(jobs))
+
+    response = api_client.get(
+        f"/backup/history/cluster/{cluster_id}", params={"limit": 2, "offset": 1}
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert [job["id"] for job in body] == [expected_order[1]["id"], expected_order[2]["id"]]
