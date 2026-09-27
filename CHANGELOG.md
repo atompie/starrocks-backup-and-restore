@@ -38,6 +38,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   data existed in supported deployments yet). Run `alembic upgrade head`
   against your metastore, then re-run `starrocks-br init` for each
   standalone-CLI-managed cluster before its next backup/restore/prune.
+- **Alembic migration history was flattened into a single baseline
+  revision** matching the current schema (this remains a pre-release
+  project with no production data to preserve across the old chain). Any
+  local/dev SQLite metastore created against the previous multi-revision
+  chain is no longer upgradable in place - delete the file and re-run
+  `alembic upgrade head` against the new baseline.
 
 ## [0.7.0a1] - 2026-02-04 (Alpha)
 
