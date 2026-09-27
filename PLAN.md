@@ -1,6 +1,6 @@
 # PLAN — StarRocks Backup System, path to SPEC.md
 
-Context: `SPEC.md` describes the target domain model. `TODO.md` is the gap analysis. This plan
+Context: `SPEC.md` describes the target domain model. This plan
 merges both with the current code into one ordered tick list. Ticked items were checked against
 the code, and the test suite passes on 2026-09-27: about 582 unit tests and 22 integration tests
 against a live StarRocks and S3 stack, with 0 failures and 0 skips.
@@ -13,7 +13,7 @@ builds only on earlier ones.
 
 ## 0. Decisions (answered 2026-09-27)
 
-- [x] 0.1 Repository: persist a `repositories` table (cluster-owned); `Schedule.repository_id` is an FK. Repository delete is blocked while schedules reference it.
+- [x] 0.1 ~~Repository: persist a `repositories` table (cluster-owned); `Schedule.repository_id` is an FK. Repository delete is blocked while schedules reference it.~~ — **reversed 2026-09-27**: StarRocks itself is the single source of truth for repositories. Repository is never persisted in the metadata DB; it is referenced everywhere as `(cluster_id, name)` and validated live against `SHOW REPOSITORIES`, matching the existing pass-through implementation. Uniqueness of `(cluster, name)` is enforced by StarRocks itself (`CREATE REPOSITORY` rejects a duplicate name on that cluster), so no local uniqueness constraint is needed.
 - [x] 0.2 ~~Inventory: one database per inventory~~ — **reversed 2026-09-27**: an inventory may span multiple databases, as `SPEC.md` §5 originally showed. Multi-database backup execution (one `BACKUP DATABASE` per database under one Backup Job, several Backup References) is real implementation work — see section 3.
 - [x] 0.3 Schedule delete: validated synchronously (409 on an active job, or on a dependent-incremental baseline — see Q2/Q5), then accepted and run as an async cleanup job that deletes the schedule's jobs, their events and references, and drops their snapshots from the repository (S3).
 - [x] 0.4 Manual backup = one-shot schedule (`cadence = null`) with an expiry policy defined on the schedule: never, or after N days. When it expires, it is deleted like 0.3.
@@ -37,7 +37,7 @@ builds only on earlier ones.
 ## 1. Baseline — already done and verified
 
 - [x] 1.1 Cluster: model, CRUD, verify endpoints, encrypted password, delete guard (`commands/clusters.py`; integration `test_clusters_live.py`)
-- [x] 1.2 Repository: create/list/delete via StarRocks `CREATE/DROP/SHOW REPOSITORY`, S3 verify, delete guard when snapshots exist (integration `test_repositories_live.py`). Not persisted in the metadata DB yet (see 3.1).
+- [x] 1.2 Repository: create/list/delete via StarRocks `CREATE/DROP/SHOW REPOSITORY`, S3 verify, delete guard when snapshots exist (integration `test_repositories_live.py`). Not persisted in the metadata DB by design — StarRocks is the source of truth (see §3, 0.1).
 - [x] 1.3 Inventory: `InventoryGroup` + `TableInventory`, `*` = whole database, CRUD routes, delete blocked by referencing schedules (integration `test_inventory_live.py`)
 - [x] 1.4 Recurring Schedule: cron `cadence`, CRUD under `/backup/schedules/cluster/{id}`, inventory checked against the same cluster, `POST /backup/schedules/run` with idempotent conditional `next_run_at` advance (`commands/schedules.py`)
 - [x] 1.5 Job model with types `backup_full/backup_incremental/restore/prune` and status `PENDING/RUNNING/SUCCESS/FAILED`, thread backend, `GET /job/{id}`
@@ -55,13 +55,16 @@ OpenSpec change: `record-lifecycle-decisions-in-domain-spec` (docs-only, `skip_s
 - [x] 2.2 Update `AGENTS.md`'s "Parallel execution and metadata" paragraph: backup serialization per cluster is the confirmed policy (not a gap); retention shares the `backup` scope; schedule/cluster delete follow the same synchronous-accept-then-async-job pattern as backup submission.
 - [x] 2.3 No `openspec/specs/api-*` changes in this section — those land alongside the endpoint behavior changes in sections 8 and 12.
 
-## 3. Persisted repositories
+## 3. Repository reference hardening
 
-- [ ] 3.1 Add a `repositories` table (`id`, `cluster_id` FK, `name`, `location`, `created_at`; no S3 secrets), unique per (cluster, name), with a migration
-- [ ] 3.2 Repository create writes the row after StarRocks `CREATE REPOSITORY` succeeds; list reads the table and reports StarRocks status; delete removes both
-- [ ] 3.3 Replace `Schedule.repository` (string) with `Schedule.repository_id` (FK, `RESTRICT`); validate the same-cluster rule for inventory and repository on schedule create/update
-- [ ] 3.4 Repository delete → 409 while any schedule references it
-- [ ] 3.5 Tests: repository persistence, delete guard, cross-cluster schedule rejected
+Repository is not a persisted entity in this system's metadata store — StarRocks is the single
+source of truth (0.1, reversed 2026-09-27). This section formalizes and hardens the existing
+live-validation pattern rather than adding schema.
+
+- [ ] 3.1 Confirm `Schedule.repository` (string) stays as-is; both create and update validate it live against `SHOW REPOSITORIES` on the schedule's cluster (already implemented via `ensure_repository_exists`)
+- [ ] 3.2 Add a same-cluster cross-check test: a schedule cannot reference a repository name that only exists on a different cluster
+- [ ] 3.3 Document the `(cluster_id, name)` reference pattern in `SPEC.md` §4, and note it applies wherever a repository is referenced (Schedule, Backup Reference, restore target)
+- [ ] 3.4 Tests: repository validated live on schedule create/update; cross-cluster repository name rejected
 
 ## 4. Job event log (Backup, Restore and Retention History)
 
@@ -83,7 +86,7 @@ OpenSpec change: `record-lifecycle-decisions-in-domain-spec` (docs-only, `skip_s
 
 ## 6. Backup References
 
-- [ ] 6.1 Add a `backup_references` table (`job_id` FK `ON DELETE CASCADE`, `repository_id`, `snapshot_label`, `database`, `table`, `partition` nullable, `snapshot_timestamp`, `deleted_at` nullable). Migrate `backup_partitions` into it or add `job_id` to it.
+- [ ] 6.1 Add a `backup_references` table (`job_id` FK `ON DELETE CASCADE`, `repository` (string name; cluster resolved via `job.cluster_id` — 0.1), `snapshot_label`, `database`, `table`, `partition` nullable, `snapshot_timestamp`, `deleted_at` nullable). Migrate `backup_partitions` into it or add `job_id` to it.
 - [ ] 6.2 Write references when the StarRocks backup reaches `FINISHED`; a failed job's references are never restorable (§16)
 - [ ] 6.3 Add `GET /job/{job_id}/references`
 - [ ] 6.4 Tests: a successful job has references; a failed job has none that are restorable
@@ -137,7 +140,7 @@ OpenSpec change: `record-lifecycle-decisions-in-domain-spec` (docs-only, `skip_s
 
 ## 12. Consistency and integrity
 
-- [ ] 12.1 Add job type `cluster_cleanup`: given a cluster id, delete its repositories, inventories, remaining jobs (and their events/references, dropping S3 snapshots), and restore jobs where it is source or target (Q7); finally delete the cluster row
+- [ ] 12.1 Add job type `cluster_cleanup`: given a cluster id, delete its inventories, remaining jobs (and their events/references, dropping S3 snapshots), and restore jobs where it is source or target (Q7); finally delete the cluster row. Repositories the system created on that cluster are **not** deleted or unregistered — they remain in StarRocks untouched (0.1, `SPEC.md` §24); cleanup never calls `DROP REPOSITORY`.
 - [ ] 12.2 Cluster delete (`commands/clusters.delete_cluster` / `DELETE /cluster/{id}`): 409 while the cluster has **any** schedule, enabled or disabled (0.8); otherwise submit a `cluster_cleanup` job and respond `202` with the job id (a **BREAKING** change to today's synchronous delete; update `api-cluster-registry`). Enable SQLite `PRAGMA foreign_keys=ON` so per-row cascades inside the cleanup job behave the same on SQLite and Postgres/MySQL, and test it.
 - [ ] 12.3 Move inventory-group routes and pre-validation behind `commands/`, keeping behaviour
 - [ ] 12.4 Add a `/backup/history` `restorable=true` filter; add `last_success_job_id` and last-run info to the schedule read model
@@ -147,7 +150,7 @@ OpenSpec change: `record-lifecycle-decisions-in-domain-spec` (docs-only, `skip_s
 - [ ] 13.1 Finish the open change `add-scheduled-backup-restore-integration-test`, adapted to `source_job_id` restore
 - [ ] 13.2 Integration: recurring schedule → N successes → retention job drops the oldest snapshot from S3; one-shot expiry; schedule delete removes S3 data; restore from a non-latest job; restore into a second cluster
 - [ ] 13.3 Sync every `openspec/specs/api-*/spec.md` and archive each change
-- [ ] 13.4 Update `docs/` (scheduling, API, configuration: scheduler env vars, migrations on startup); remove `TODO.md` since this plan replaces it
+- [ ] 13.4 Update `docs/` (scheduling, API, configuration: scheduler env vars, migrations on startup); 
 
 ## Verification (after each section)
 

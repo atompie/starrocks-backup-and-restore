@@ -162,6 +162,14 @@ A Schedule points to a specific Repository.
 
 This allows one Cluster to have different backup storage locations, while different Schedules can use different repositories.
 
+## Reference
+
+A Repository is not tracked as a separate entity in the system's own metadata; StarRocks itself
+is the source of truth for what repositories exist. Wherever the system needs to point at one —
+a Schedule, a Backup Reference, a restore target — it does so by `(cluster, repository name)`,
+validated live against that cluster's repositories. StarRocks enforces the name's uniqueness
+within a cluster, so no separate uniqueness constraint is needed.
+
 ---
 
 # 5. Inventory
@@ -859,8 +867,10 @@ source backup is gone.
 
 Deleting a Cluster follows the same two-step shape. A Cluster can only be deleted once it has no
 Schedules at all — enabled or disabled. Once that condition holds, deleting it cascades the same
-way: every remaining Backup Job, Retention Job, Restore Job (whether the Cluster was its source
-or its target), and Repository belonging to that Cluster is removed.
+way: every remaining Backup Job, Retention Job, and Restore Job (whether the Cluster was its
+source or its target) belonging to that Cluster is removed. Any Repository registered on that
+Cluster is left as-is in StarRocks — Repository is not owned by this system's metadata (see §4),
+so deleting a Cluster does not attempt to unregister or drop it.
 
 ---
 
