@@ -64,6 +64,7 @@ class Job(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     cluster_id: Mapped[int] = mapped_column(ForeignKey("clusters.id"), nullable=False, index=True)
     job_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    group_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     params_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     backend: Mapped[str] = mapped_column(String(64), nullable=False)
     status: Mapped[str] = mapped_column(

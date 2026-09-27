@@ -365,7 +365,7 @@ def test_submit_prune_extra_field_is_422(api_client):
     assert response.status_code == 422
 
 
-def _submit_backup_full(api_client, monkeypatch, cluster_id):
+def _submit_backup_full(api_client, monkeypatch, cluster_id, group_id=1):
     from starrocks_br.jobs import handlers
 
     _mock_group_check(monkeypatch)
@@ -374,12 +374,13 @@ def _submit_backup_full(api_client, monkeypatch, cluster_id):
         handlers.JOB_HANDLERS, "backup_full", lambda cluster, params, on_progress=None: {}
     )
     submitted = api_client.post(
-        f"/backup/manual/full/cluster/{cluster_id}", json={"group_id": 1, "repository": "s3_repo"}
+        f"/backup/manual/full/cluster/{cluster_id}",
+        json={"group_id": group_id, "repository": "s3_repo"},
     ).json()
     return _wait_for_terminal(api_client, submitted["id"])
 
 
-def _submit_prune(api_client, monkeypatch, cluster_id):
+def _submit_prune(api_client, monkeypatch, cluster_id, group_id=1):
     from starrocks_br.jobs import handlers
 
     _mock_group_check(monkeypatch)
@@ -387,7 +388,8 @@ def _submit_prune(api_client, monkeypatch, cluster_id):
         handlers.JOB_HANDLERS, "prune", lambda cluster, params, on_progress=None: {}
     )
     submitted = api_client.post(
-        f"/backup/manual/prune/cluster/{cluster_id}", json={"group_id": 1, "keep_last": 3}
+        f"/backup/manual/prune/cluster/{cluster_id}",
+        json={"group_id": group_id, "keep_last": 3},
     ).json()
     return _wait_for_terminal(api_client, submitted["id"])
 
@@ -470,6 +472,83 @@ def test_backup_history_orders_most_recent_first_and_paginates(api_client, monke
 
     response = api_client.get(
         f"/backup/history/cluster/{cluster_id}", params={"limit": 2, "offset": 1}
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert [job["id"] for job in body] == [expected_order[1]["id"], expected_order[2]["id"]]
+
+
+def test_backup_history_filters_by_job_id(api_client, monkeypatch):
+    cluster_id = _create_cluster(api_client)
+    first = _submit_backup_full(api_client, monkeypatch, cluster_id)
+    _submit_backup_full(api_client, monkeypatch, cluster_id)
+
+    response = api_client.get(
+        f"/backup/history/cluster/{cluster_id}", params={"job_id": first["id"]}
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert [job["id"] for job in body] == [first["id"]]
+
+
+def test_backup_history_filters_by_job_id_with_no_match(api_client, monkeypatch):
+    cluster_id = _create_cluster(api_client)
+    _submit_backup_full(api_client, monkeypatch, cluster_id)
+
+    response = api_client.get(f"/backup/history/cluster/{cluster_id}", params={"job_id": 999999})
+
+    assert response.status_code == 200
+    assert response.json() == []
+
+
+def test_backup_history_filters_by_group_id(api_client, monkeypatch):
+    cluster_id = _create_cluster(api_client)
+    group_1_job = _submit_backup_full(api_client, monkeypatch, cluster_id, group_id=1)
+    _submit_backup_full(api_client, monkeypatch, cluster_id, group_id=2)
+
+    response = api_client.get(f"/backup/history/cluster/{cluster_id}", params={"group_id": 1})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert [job["id"] for job in body] == [group_1_job["id"]]
+
+
+def test_backup_history_filters_by_group_id_with_no_match(api_client, monkeypatch):
+    cluster_id = _create_cluster(api_client)
+    _submit_backup_full(api_client, monkeypatch, cluster_id, group_id=1)
+
+    response = api_client.get(f"/backup/history/cluster/{cluster_id}", params={"group_id": 999999})
+
+    assert response.status_code == 200
+    assert response.json() == []
+
+
+def test_backup_history_filters_by_group_id_and_job_type_combined(api_client, monkeypatch):
+    cluster_id = _create_cluster(api_client)
+    backup_job = _submit_backup_full(api_client, monkeypatch, cluster_id, group_id=1)
+    _submit_prune(api_client, monkeypatch, cluster_id, group_id=1)
+
+    response = api_client.get(
+        f"/backup/history/cluster/{cluster_id}",
+        params={"group_id": 1, "job_type": "backup_full"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert [job["id"] for job in body] == [backup_job["id"]]
+
+
+def test_backup_history_filters_by_group_id_paginates(api_client, monkeypatch):
+    cluster_id = _create_cluster(api_client)
+    jobs = [_submit_backup_full(api_client, monkeypatch, cluster_id, group_id=1) for _ in range(3)]
+    _submit_backup_full(api_client, monkeypatch, cluster_id, group_id=2)
+    expected_order = list(reversed(jobs))
+
+    response = api_client.get(
+        f"/backup/history/cluster/{cluster_id}",
+        params={"group_id": 1, "limit": 2, "offset": 1},
     )
 
     assert response.status_code == 200

@@ -144,6 +144,8 @@ def list_backup_history(
     cluster_id: int,
     job_type: str | None = Query(default=None),
     status_filter: str | None = Query(default=None, alias="status"),
+    job_id: int | None = Query(default=None),
+    group_id: int | None = Query(default=None),
     limit: int = Query(default=50),
     offset: int = Query(default=0),
     db: Session = Depends(get_db),
@@ -154,6 +156,8 @@ def list_backup_history(
         cluster_id,
         job_type=job_type if job_type is not None else _DEFAULT_BACKUP_JOB_TYPES,
         status=status_filter,
+        job_id=job_id,
+        group_id=group_id,
         limit=limit,
         offset=offset,
     )

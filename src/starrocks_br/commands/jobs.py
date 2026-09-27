@@ -30,6 +30,7 @@ def submit_job(
     job = Job(
         cluster_id=cluster.id,
         job_type=job_type,
+        group_id=params.get("group_id"),
         params_json=json.dumps(params),
         backend=backend_name,
     )
@@ -49,13 +50,18 @@ def list_jobs(
     cluster_id: int,
     job_type: str | list[str] | None = None,
     status: str | None = None,
+    job_id: int | None = None,
+    group_id: int | None = None,
     limit: int = 50,
     offset: int = 0,
 ) -> list[Job]:
     """List jobs for a cluster, most recently created first.
 
     `job_type` may be a single type or a list of types (e.g. the default
-    backup-history scope of `backup_full`/`backup_incremental`).
+    backup-history scope of `backup_full`/`backup_incremental`). `group_id`
+    only matches jobs whose params carried a group id; jobs with no
+    recorded group id (including any submitted before that column existed)
+    never match it.
     """
     query = select(Job).where(Job.cluster_id == cluster_id)
 
@@ -67,6 +73,12 @@ def list_jobs(
 
     if status is not None:
         query = query.where(Job.status == status)
+
+    if job_id is not None:
+        query = query.where(Job.id == job_id)
+
+    if group_id is not None:
+        query = query.where(Job.group_id == group_id)
 
     query = query.order_by(Job.created_at.desc()).limit(limit).offset(offset)
 
