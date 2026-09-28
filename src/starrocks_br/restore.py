@@ -12,14 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import datetime
 import time
 from collections.abc import Callable
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from . import concurrency, exceptions, logger, utils
+from . import concurrency, exceptions, logger
+from .dal.db import restore as restore_dal
 from .dal.metadata import history
 from .store.models import BackupPartition, Job, JobStatus, TableInventory
 from .store.session import get_session_factory
@@ -83,24 +83,7 @@ def get_snapshot_timestamp(db, repo_name: str, snapshot_name: str) -> str:
     Raises:
         ValueError: If snapshot is not found in the repository
     """
-    query = f"SHOW SNAPSHOT ON {utils.quote_identifier(repo_name)} WHERE Snapshot = {utils.quote_value(snapshot_name)}"
-
-    rows = db.query(query)
-    if not rows:
-        raise exceptions.SnapshotNotFoundError(snapshot_name, repo_name)
-
-    # The result should be a single row with columns: Snapshot, Timestamp, Status
-    result = rows[0]
-
-    if isinstance(result, dict):
-        timestamp = result.get("Timestamp")
-    else:
-        timestamp = result[1] if len(result) > 1 else None
-
-    if not timestamp:
-        raise ValueError(f"Could not extract timestamp for snapshot '{snapshot_name}'")
-
-    return timestamp
+    return restore_dal.get_snapshot_timestamp(db, repo_name, snapshot_name)
 
 
 def build_partition_restore_command(
@@ -112,11 +95,9 @@ def build_partition_restore_command(
     backup_timestamp: str,
 ) -> str:
     """Build RESTORE command for single partition recovery."""
-    return f"""RESTORE SNAPSHOT {utils.quote_identifier(backup_label)}
-    FROM {utils.quote_identifier(repository)}
-    DATABASE {utils.quote_identifier(database)}
-    ON (TABLE {utils.quote_identifier(table)} PARTITION ({utils.quote_identifier(partition)}))
-    PROPERTIES ("backup_timestamp" = "{backup_timestamp}")"""
+    return restore_dal.build_partition_restore_command(
+        database, table, partition, backup_label, repository, backup_timestamp
+    )
 
 
 def build_table_restore_command(
@@ -127,11 +108,7 @@ def build_table_restore_command(
     backup_timestamp: str,
 ) -> str:
     """Build RESTORE command for full table recovery."""
-    return f"""RESTORE SNAPSHOT {utils.quote_identifier(backup_label)}
-    FROM {utils.quote_identifier(repository)}
-    DATABASE {utils.quote_identifier(database)}
-    ON (TABLE {utils.quote_identifier(table)})
-    PROPERTIES ("backup_timestamp" = "{backup_timestamp}")"""
+    return restore_dal.build_table_restore_command(database, table, backup_label, repository, backup_timestamp)
 
 
 def build_database_restore_command(
@@ -141,10 +118,7 @@ def build_database_restore_command(
     backup_timestamp: str,
 ) -> str:
     """Build RESTORE command for full database recovery."""
-    return f"""RESTORE SNAPSHOT {utils.quote_identifier(backup_label)}
-    FROM {utils.quote_identifier(repository)}
-    DATABASE {utils.quote_identifier(database)}
-    PROPERTIES ("backup_timestamp" = "{backup_timestamp}")"""
+    return restore_dal.build_database_restore_command(database, backup_label, repository, backup_timestamp)
 
 
 def poll_restore_status(
@@ -179,7 +153,6 @@ def poll_restore_status(
     Returns dictionary with keys: state, label
     Possible states: FINISHED, CANCELLED, TIMEOUT, ERROR, LOST
     """
-    query = f"SHOW RESTORE FROM {utils.quote_identifier(database)}"
     first_poll = True
     last_state = None
     poll_count = 0
@@ -188,7 +161,7 @@ def poll_restore_status(
     for _ in range(max_polls):
         poll_count += 1
         try:
-            rows = db.query(query)
+            rows = restore_dal.show_restore(db, database)
 
             if not rows:
                 time.sleep(current_interval)
@@ -281,7 +254,7 @@ def execute_restore(
     Returns dictionary with keys: success, final_status, error_message
     """
     try:
-        db.execute(restore_command.strip())
+        restore_dal.submit(db, restore_command.strip())
     except Exception as e:
         logger.error(f"Failed to submit restore command: {str(e)}")
         return {
@@ -493,9 +466,8 @@ def get_tables_from_backup(
         group_tables = set()
         for database_name, table_name in group_rows:
             if table_name == "*":
-                show_tables_query = f"SHOW TABLES FROM {utils.quote_identifier(database_name)}"
                 try:
-                    tables_rows = db.query(show_tables_query)
+                    tables_rows = restore_dal.show_tables(db, database_name)
                     for table_row in tables_rows:
                         group_tables.add(f"{database_name}.{table_row[0]}")
                 except Exception:
@@ -744,39 +716,18 @@ def _build_restore_command_with_rename(
     backup_timestamp: str,
 ) -> str:
     """Build restore command with AS clause for temporary table names."""
-    table_clauses = []
-    for table in tables:
-        _, table_name = table.split(".", 1)
-        temp_table_name = f"{table_name}{rename_suffix}"
-        table_clauses.append(
-            f"TABLE {utils.quote_identifier(table_name)} AS {utils.quote_identifier(temp_table_name)}"
-        )
-
-    on_clause = ",\n    ".join(table_clauses)
-
-    return f"""RESTORE SNAPSHOT {utils.quote_identifier(backup_label)}
-    FROM {utils.quote_identifier(repo_name)}
-    DATABASE {utils.quote_identifier(database)}
-    ON ({on_clause})
-    PROPERTIES ("backup_timestamp" = "{backup_timestamp}")"""
+    return restore_dal.build_restore_command_with_rename(
+        backup_label, repo_name, tables, rename_suffix, database, backup_timestamp
+    )
 
 
 def _build_restore_command_without_rename(
     backup_label: str, repo_name: str, tables: list[str], database: str, backup_timestamp: str
 ) -> str:
     """Build restore command without AS clause (for incremental restores to existing temp tables)."""
-    table_clauses = []
-    for table in tables:
-        _, table_name = table.split(".", 1)
-        table_clauses.append(f"TABLE {utils.quote_identifier(table_name)}")
-
-    on_clause = ",\n    ".join(table_clauses)
-
-    return f"""RESTORE SNAPSHOT {utils.quote_identifier(backup_label)}
-    FROM {utils.quote_identifier(repo_name)}
-    DATABASE {utils.quote_identifier(database)}
-    ON ({on_clause})
-    PROPERTIES ("backup_timestamp" = "{backup_timestamp}")"""
+    return restore_dal.build_restore_command_without_rename(
+        backup_label, repo_name, tables, database, backup_timestamp
+    )
 
 
 def _build_partition_restore_command(
@@ -802,60 +753,11 @@ def _build_partition_restore_command(
     Returns:
         SQL RESTORE command string
     """
-    _, table_name = table.split(".", 1)
-
-    # Build partition list
-    partition_list = ", ".join([utils.quote_identifier(p) for p in partitions])
-
-    # Build table clause
-    if rename_suffix:
-        # Table only in incremental: use AS clause
-        temp_table_name = f"{table_name}{rename_suffix}"
-        table_clause = f"TABLE {utils.quote_identifier(table_name)} PARTITION ({partition_list}) AS {utils.quote_identifier(temp_table_name)}"
-    else:
-        # Table in base: target the _restored table directly (no AS)
-        table_clause = f"TABLE {utils.quote_identifier(table_name)} PARTITION ({partition_list})"
-
-    return f"""RESTORE SNAPSHOT {utils.quote_identifier(backup_label)}
-    FROM {utils.quote_identifier(repo_name)}
-    DATABASE {utils.quote_identifier(database)}
-    ON ({table_clause})
-    PROPERTIES ("backup_timestamp" = "{backup_timestamp}")"""
-
-
-def _generate_timestamped_backup_name(table_name: str) -> str:
-    """Generate a timestamped backup table name.
-
-    Args:
-        table_name: Original table name
-
-    Returns:
-        Timestamped backup name in format: {table_name}_backup_YYYYMMDD_HHMMSS
-    """
-    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    return f"{table_name}_backup_{timestamp}"
+    return restore_dal.build_partition_restore_command_for_incremental(
+        backup_label, repo_name, table, partitions, database, backup_timestamp, rename_suffix
+    )
 
 
 def _perform_atomic_rename(db, tables: list[str], rename_suffix: str) -> dict:
     """Perform atomic rename of temporary tables to make them live."""
-    try:
-        rename_statements = []
-        for table in tables:
-            database, table_name = table.split(".", 1)
-            temp_table_name = f"{table_name}{rename_suffix}"
-            backup_table_name = _generate_timestamped_backup_name(table_name)
-
-            rename_statements.append(
-                f"ALTER TABLE {utils.build_qualified_table_name(database, table_name)} RENAME {utils.quote_identifier(backup_table_name)}"
-            )
-            rename_statements.append(
-                f"ALTER TABLE {utils.build_qualified_table_name(database, temp_table_name)} RENAME {utils.quote_identifier(table_name)}"
-            )
-
-        for statement in rename_statements:
-            db.execute(statement)
-
-        return {"success": True}
-
-    except Exception as e:
-        return {"success": False, "error_message": f"Failed to perform atomic rename: {str(e)}"}
+    return restore_dal.perform_atomic_rename(db, tables, rename_suffix)

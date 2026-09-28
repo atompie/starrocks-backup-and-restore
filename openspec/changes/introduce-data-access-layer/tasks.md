@@ -33,10 +33,10 @@
 
 ## 7. restore.py extraction
 
-- [ ] 7.1 Create `dal/db/restore.py` with `get_snapshot_timestamp`'s `SHOW SNAPSHOT` call and `poll_restore_status`'s `SHOW RESTORE FROM` call, moved verbatim (already correctly quoted); verify `tests/unit` restore-status tests pass unchanged.
-- [ ] 7.2 Move `build_partition_restore_command`, `build_table_restore_command`, `build_database_restore_command`, `_build_restore_command_with_rename`, `_build_restore_command_without_rename`, `_build_partition_restore_command` into `dal/db/restore.py`; update `restore.py` to call through it; verify `tests/unit` tests for restore command construction pass unchanged.
-- [ ] 7.3 Move `execute_restore`'s `db.execute` call and `_perform_atomic_rename`'s `ALTER TABLE ... RENAME` construction/execution into `dal/db/restore.py`; verify `tests/unit` tests for restore execution and atomic rename pass unchanged.
-- [ ] 7.4 Split `get_tables_from_backup`: move its `SHOW TABLES FROM` (group-wildcard) StarRocks call into `dal/db/restore.py`, leaving its `session.execute(select(BackupPartition...))` ORM calls in `restore.py`, with `restore.py` composing both; keep `find_restore_pair`, `find_backup_repository`, `get_partitions_from_backup` (ORM) in place; verify `tests/unit` tests for backup-table lookup pass unchanged.
+- [x] 7.1 Create `dal/db/restore.py` with `get_snapshot_timestamp`'s `SHOW SNAPSHOT` call and `poll_restore_status`'s `SHOW RESTORE FROM` call, moved verbatim (already correctly quoted); verify `tests/unit` restore-status tests pass unchanged.
+- [x] 7.2 Move `build_partition_restore_command`, `build_table_restore_command`, `build_database_restore_command`, `_build_restore_command_with_rename`, `_build_restore_command_without_rename`, `_build_partition_restore_command` into `dal/db/restore.py`; update `restore.py` to call through it; verify `tests/unit` tests for restore command construction pass unchanged.
+- [x] 7.3 Move `execute_restore`'s `db.execute` call and `_perform_atomic_rename`'s `ALTER TABLE ... RENAME` construction/execution into `dal/db/restore.py`; verify `tests/unit` tests for restore execution and atomic rename pass unchanged.
+- [x] 7.4 Split `get_tables_from_backup`: move its `SHOW TABLES FROM` (group-wildcard) StarRocks call into `dal/db/restore.py`, leaving its `session.execute(select(BackupPartition...))` ORM calls in `restore.py`, with `restore.py` composing both; keep `find_restore_pair`, `find_backup_repository`, `get_partitions_from_backup` (ORM) in place; verify `tests/unit` tests for backup-table lookup pass unchanged.
 
 ## 8. concurrency.py extraction
 
