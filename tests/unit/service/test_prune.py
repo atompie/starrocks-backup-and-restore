@@ -19,22 +19,22 @@ import datetime as dt
 import pytest
 
 from starrocks_br import prune
-from starrocks_br.store.models import BackupHistory, BackupPartition, InventoryGroup, TableInventory
+from starrocks_br.store.models import BackupPartition, InventoryGroup, Job, JobStatus, TableInventory
 
 
 def _add_backup_history(session, cluster_id, label, finished_at, repository="test_repo", status="FINISHED"):
-    session.add(
-        BackupHistory(
-            cluster_id=cluster_id,
-            label=label,
-            backup_type="full",
-            status=status,
-            repository=repository,
-            started_at=finished_at,
-            finished_at=finished_at,
-        )
+    job = Job(
+        cluster_id=cluster_id,
+        job_type="backup_full",
+        backend="thread",
+        status=JobStatus.SUCCESS.value if status == "FINISHED" else JobStatus.FAILED.value,
+        label=label,
+        repository=repository,
+        finished_at=finished_at,
     )
+    session.add(job)
     session.commit()
+    return job
 
 
 class TestGetSuccessfulBackups:
@@ -392,7 +392,7 @@ class TestCleanupBackupHistory:
 
         prune.cleanup_backup_history(sqlite_session, cluster.id, "backup1")
 
-        assert sqlite_session.query(BackupHistory).filter_by(cluster_id=cluster.id, label="backup1").count() == 0
+        assert sqlite_session.query(Job).filter_by(cluster_id=cluster.id, label="backup1").count() == 0
         assert sqlite_session.query(BackupPartition).filter_by(cluster_id=cluster.id, label="backup1").count() == 0
 
     def test_cleanup_scoped_by_cluster(self, sqlite_session, make_cluster):
@@ -404,8 +404,8 @@ class TestCleanupBackupHistory:
 
         prune.cleanup_backup_history(sqlite_session, cluster_a.id, "shared-label")
 
-        assert sqlite_session.query(BackupHistory).filter_by(cluster_id=cluster_a.id).count() == 0
-        assert sqlite_session.query(BackupHistory).filter_by(cluster_id=cluster_b.id).count() == 1
+        assert sqlite_session.query(Job).filter_by(cluster_id=cluster_a.id, label="shared-label").count() == 0
+        assert sqlite_session.query(Job).filter_by(cluster_id=cluster_b.id, label="shared-label").count() == 1
 
     def test_cleanup_failure_does_not_raise(self, sqlite_session, make_cluster, mocker):
         """Test cleanup when deletion fails (should not raise)."""

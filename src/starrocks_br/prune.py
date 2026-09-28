@@ -18,11 +18,11 @@ from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
 from . import logger
-from .store.models import BackupHistory, BackupPartition, TableInventory
+from .store.models import BackupPartition, Job, JobStatus, TableInventory
 
 
 def get_successful_backups(session: Session, cluster_id: int, group: int) -> list[dict]:
-    """Get all successful backups belonging to an inventory group's backup history.
+    """Get all successful backups belonging to an inventory group's backup catalog.
 
     Per specs/api-job-execution "Prune requests specify exactly one pruning strategy",
     prune is always scoped to one inventory group - there is no cluster-level default
@@ -30,9 +30,13 @@ def get_successful_backups(session: Session, cluster_id: int, group: int) -> lis
     recorded `repository` instead (see openspec/changes/decouple-database-and-
     repository-from-cluster/design.md "`group_id` becomes required for prune").
 
+    Backup metadata is resolved from `Job` (`label`/`repository`/`status`/`finished_at`)
+    rather than a separate backup catalog - see add-job-history-log's design.md "The backup
+    catalog moves from `backup_history` to two new columns on `Job`".
+
     Args:
         session: SQLite metastore session
-        cluster_id: Cluster this backup history belongs to
+        cluster_id: Cluster this backup belongs to
         group: Inventory group id to filter by
 
     Returns:
@@ -40,13 +44,13 @@ def get_successful_backups(session: Session, cluster_id: int, group: int) -> lis
     """
     rows = session.execute(
         select(
-            BackupHistory.label,
-            BackupHistory.finished_at,
-            BackupHistory.repository,
+            Job.label,
+            Job.finished_at,
+            Job.repository,
             TableInventory.inventory_group_id,
         )
         .distinct()
-        .join(BackupPartition, BackupPartition.label == BackupHistory.label)
+        .join(BackupPartition, BackupPartition.label == Job.label)
         .join(
             TableInventory,
             and_(
@@ -56,12 +60,12 @@ def get_successful_backups(session: Session, cluster_id: int, group: int) -> lis
             ),
         )
         .where(
-            BackupHistory.cluster_id == cluster_id,
+            Job.cluster_id == cluster_id,
             BackupPartition.cluster_id == cluster_id,
-            BackupHistory.status == "FINISHED",
+            Job.status == JobStatus.SUCCESS.value,
             TableInventory.inventory_group_id == group,
         )
-        .order_by(BackupHistory.finished_at.asc())
+        .order_by(Job.finished_at.asc())
     ).all()
 
     return [
@@ -196,12 +200,18 @@ def execute_drop_snapshot(db, repository: str, snapshot_name: str) -> None:
 
 
 def cleanup_backup_history(session: Session, cluster_id: int, snapshot_label: str) -> None:
-    """Remove backup history entry after snapshot deletion.
+    """Remove a pruned snapshot's catalog entry and partition manifest.
+
+    Deletes the `Job` row for this backup label rather than a `backup_history` row - that
+    table is now an immutable execution log (see add-job-history-log's design.md "Pruning a
+    snapshot deletes its `Job` row instead of a `backup_history` row"). Deleting the `Job`
+    row cascades to its `backup_history` rows via the existing `ON DELETE CASCADE`, removing
+    the pruned backup's full execution log along with its catalog entry.
 
     Args:
         session: SQLite metastore session
-        cluster_id: Cluster this backup history belongs to
-        snapshot_label: Snapshot label to remove from history
+        cluster_id: Cluster this backup belongs to
+        snapshot_label: Snapshot label to remove from the catalog
     """
     try:
         session.execute(
@@ -209,11 +219,11 @@ def cleanup_backup_history(session: Session, cluster_id: int, snapshot_label: st
                 BackupPartition.cluster_id == cluster_id, BackupPartition.label == snapshot_label
             )
         )
-        session.execute(
-            BackupHistory.__table__.delete().where(
-                BackupHistory.cluster_id == cluster_id, BackupHistory.label == snapshot_label
-            )
-        )
+        job = session.scalars(
+            select(Job).where(Job.cluster_id == cluster_id, Job.label == snapshot_label)
+        ).first()
+        if job is not None:
+            session.delete(job)
         session.flush()
         logger.debug(f"Cleaned up backup history for: {snapshot_label}")
     except Exception as e:

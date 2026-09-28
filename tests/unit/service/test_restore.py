@@ -19,24 +19,28 @@ from unittest.mock import Mock, patch
 import pytest
 
 from starrocks_br import history, restore
-from starrocks_br.store.models import BackupHistory, BackupPartition, RestoreHistory, TableInventory
+from starrocks_br.store.models import BackupPartition, Job, JobStatus, TableInventory
+
+_BACKUP_TYPE_TO_JOB_TYPE = {"full": "backup_full", "incremental": "backup_incremental"}
 
 
-def _add_backup_history(session, cluster_id, label, backup_type, finished_at, status="FINISHED"):
+def _add_backup_history(session, cluster_id, label, backup_type, finished_at, status="FINISHED", repository="repo"):
+    """Persist a `Job` row standing in for a completed backup (see design.md's
+    "backup catalog moves from `backup_history` to two new columns on `Job`")."""
     if isinstance(finished_at, str):
         finished_at = datetime.strptime(finished_at, "%Y-%m-%d %H:%M:%S")
-    session.add(
-        BackupHistory(
-            cluster_id=cluster_id,
-            label=label,
-            backup_type=backup_type,
-            status=status,
-            repository="repo",
-            started_at=finished_at,
-            finished_at=finished_at,
-        )
+    job = Job(
+        cluster_id=cluster_id,
+        job_type=_BACKUP_TYPE_TO_JOB_TYPE.get(backup_type, backup_type),
+        backend="thread",
+        status=JobStatus.SUCCESS.value if status == "FINISHED" else JobStatus.FAILED.value,
+        label=label,
+        repository=repository,
+        finished_at=finished_at,
     )
+    session.add(job)
     session.commit()
+    return job
 
 
 def _add_backup_partition(session, cluster_id, label, database_name, table_name, partition_name="p1"):
@@ -226,26 +230,16 @@ def test_should_query_correct_show_restore_syntax(mocker):
     assert "SHOW RESTORE FROM `test_db`" in query
 
 
-def test_should_log_restore_history(sqlite_session, make_cluster):
+def test_should_log_restore_history(sqlite_session, make_cluster, make_job, history_session_factory):
+    from starrocks_br.store.models import RestoreHistory
+
     cluster = make_cluster()
+    job = make_job(cluster.id, job_type="restore")
 
-    entry = {
-        "job_id": "restore-1",
-        "backup_label": "sales_db_20251015_incremental",
-        "restore_type": "partition",
-        "status": "FINISHED",
-        "repository": "my_repo",
-        "started_at": "2025-10-15 02:00:00",
-        "finished_at": "2025-10-15 02:10:00",
-        "error_message": None,
-    }
+    history.append_restore_event(history_session_factory, job.id, "FINISHED")
 
-    history.log_restore(sqlite_session, cluster.id, entry)
-    sqlite_session.commit()
-
-    row = sqlite_session.query(RestoreHistory).filter_by(cluster_id=cluster.id).one()
-    assert row.job_id == "restore-1"
-    assert row.backup_label == "sales_db_20251015_incremental"
+    row = sqlite_session.query(RestoreHistory).filter_by(job_id=job.id).one()
+    assert row.status == "FINISHED"
 
 
 def test_should_execute_restore_workflow(mocker, db_with_timezone, sqlite_session, make_cluster):
@@ -257,7 +251,6 @@ def test_should_execute_restore_workflow(mocker, db_with_timezone, sqlite_sessio
     ]
     cluster = make_cluster()
 
-    mocker.patch("starrocks_br.history.log_restore")
     mocker.patch("starrocks_br.concurrency.complete_job_slot")
 
     restore_command = """
@@ -273,11 +266,10 @@ def test_should_execute_restore_workflow(mocker, db_with_timezone, sqlite_sessio
         cluster.id,
         restore_command,
         backup_label="sales_db_20251015_incremental",
-        restore_type="partition",
-        repository="my_repo",
         database="sales_db",
         max_polls=5,
         poll_interval=0.001,
+        job_id=1,
     )
 
     assert result["success"] is True
@@ -481,11 +473,10 @@ def test_should_execute_restore_with_custom_polling_parameters(db_with_timezone,
         cluster.id,
         restore_command,
         backup_label="restore_job",
-        restore_type="partition",
-        repository="custom_repo",
         database="test_db",
         max_polls=10,
         poll_interval=0.001,
+        job_id=1,
     )
 
     assert result["success"] is True
@@ -502,10 +493,10 @@ def test_should_execute_restore_with_history_logging_failure(db_with_timezone, s
     ]
     cluster = make_cluster()
 
-    log_restore = Mock(side_effect=Exception("Logging failed"))
+    append_restore_event = Mock(side_effect=Exception("Logging failed"))
     complete_slot = Mock()
 
-    with patch("starrocks_br.restore.history.log_restore", log_restore):
+    with patch("starrocks_br.restore.history.append_restore_event", append_restore_event):
         with patch("starrocks_br.restore.concurrency.complete_job_slot", complete_slot):
             result = restore.execute_restore(
                 db,
@@ -513,16 +504,15 @@ def test_should_execute_restore_with_history_logging_failure(db_with_timezone, s
                 cluster.id,
                 "RESTORE SNAPSHOT restore_job FROM repo",
                 backup_label="restore_job",
-                restore_type="partition",
-                repository="test_repo",
                 database="test_db",
                 max_polls=3,
                 poll_interval=0.001,
+                job_id=1,
             )
 
     assert result["success"] is True
     assert result["final_status"]["state"] == "FINISHED"
-    assert log_restore.call_count == 1
+    assert append_restore_event.call_count == 3  # RUNNING + FINISHED via on_progress, plus terminal SUCCESS
     assert complete_slot.call_count == 1
 
 
@@ -553,27 +543,23 @@ def test_should_execute_restore_with_job_slot_completion_failure(db_with_timezon
     ]
     cluster = make_cluster()
 
-    log_restore = Mock()
     complete_slot = Mock(side_effect=Exception("Slot completion failed"))
 
-    with patch("starrocks_br.restore.history.log_restore", log_restore):
-        with patch("starrocks_br.restore.concurrency.complete_job_slot", complete_slot):
-            result = restore.execute_restore(
-                db,
-                sqlite_session,
-                cluster.id,
-                "RESTORE SNAPSHOT restore_job FROM repo",
-                backup_label="restore_job",
-                restore_type="partition",
-                repository="test_repo",
-                database="test_db",
-                max_polls=3,
-                poll_interval=0.001,
-            )
+    with patch("starrocks_br.restore.concurrency.complete_job_slot", complete_slot):
+        result = restore.execute_restore(
+            db,
+            sqlite_session,
+            cluster.id,
+            "RESTORE SNAPSHOT restore_job FROM repo",
+            backup_label="restore_job",
+            database="test_db",
+            max_polls=3,
+            poll_interval=0.001,
+            job_id=1,
+        )
 
     assert result["success"] is True
     assert result["final_status"]["state"] == "FINISHED"
-    assert log_restore.call_count == 1
     assert complete_slot.call_count == 1
 
 
@@ -587,10 +573,10 @@ def test_should_execute_restore_with_both_logging_and_slot_failures(db_with_time
     ]
     cluster = make_cluster()
 
-    log_restore = Mock(side_effect=Exception("Logging failed"))
+    append_restore_event = Mock(side_effect=Exception("Logging failed"))
     complete_slot = Mock(side_effect=Exception("Slot completion failed"))
 
-    with patch("starrocks_br.restore.history.log_restore", log_restore):
+    with patch("starrocks_br.restore.history.append_restore_event", append_restore_event):
         with patch("starrocks_br.restore.concurrency.complete_job_slot", complete_slot):
             result = restore.execute_restore(
                 db,
@@ -598,16 +584,15 @@ def test_should_execute_restore_with_both_logging_and_slot_failures(db_with_time
                 cluster.id,
                 "RESTORE SNAPSHOT restore_job FROM repo",
                 backup_label="restore_job",
-                restore_type="partition",
-                repository="test_repo",
                 database="test_db",
                 max_polls=3,
                 poll_interval=0.001,
+                job_id=1,
             )
 
     assert result["success"] is True
     assert result["final_status"]["state"] == "FINISHED"
-    assert log_restore.call_count == 1
+    assert append_restore_event.call_count == 3
     assert complete_slot.call_count == 1
 
 
@@ -626,11 +611,10 @@ def test_should_handle_restore_execution_with_very_long_polling(db_with_timezone
         cluster.id,
         restore_command,
         backup_label="restore_job",
-        restore_type="partition",
-        repository="test_repo",
         database="test_db",
         max_polls=3,
         poll_interval=0.001,
+        job_id=1,
     )
 
     assert result["success"] is False
@@ -652,11 +636,10 @@ def test_should_handle_restore_execution_with_zero_polls(db_with_timezone, sqlit
         cluster.id,
         restore_command,
         backup_label="restore_job",
-        restore_type="partition",
-        repository="test_repo",
         database="test_db",
         max_polls=0,
         poll_interval=0.001,
+        job_id=1,
     )
 
     assert result["success"] is False
@@ -687,12 +670,11 @@ def test_should_execute_restore_with_different_scope_values(db_with_timezone, sq
             cluster.id,
             restore_command,
             backup_label="restore_job",
-            restore_type="partition",
-            repository="test_repo",
             database="test_db",
             scope=scope,
             max_polls=3,
             poll_interval=0.001,
+            job_id=1,
         )
 
     assert result["success"] is True
@@ -722,11 +704,10 @@ def test_should_handle_restore_execution_with_intermittent_query_failures(db_wit
         cluster.id,
         restore_command,
         backup_label="restore_job",
-        restore_type="partition",
-        repository="test_repo",
         database="test_db",
         max_polls=5,
         poll_interval=0.001,
+        job_id=1,
     )
 
     assert result["success"] is False
@@ -747,9 +728,8 @@ def test_should_handle_restore_command_submission_failure(db_with_timezone, sqli
         cluster.id,
         restore_command,
         backup_label="restore_job",
-        restore_type="partition",
-        repository="test_repo",
         database="test_db",
+        job_id=1,
     )
 
     assert result["success"] is False
@@ -781,11 +761,10 @@ def test_should_execute_restore_with_multiline_command(db_with_timezone, sqlite_
         cluster.id,
         multiline_command,
         backup_label="complex_backup_2025-01-15",
-        restore_type="partition",
-        repository="my_repo",
         database="sales_db",
         max_polls=3,
         poll_interval=0.001,
+        job_id=1,
     )
 
     assert result["success"] is True
@@ -814,11 +793,10 @@ def test_should_execute_restore_with_special_characters_in_names(db_with_timezon
         cluster.id,
         restore_command,
         backup_label="restore-job_2025.01.15",
-        restore_type="table",
-        repository="repo-with-special.chars",
         database="test_db",
         max_polls=3,
         poll_interval=0.001,
+        job_id=1,
     )
 
     assert result["success"] is True
@@ -835,10 +813,10 @@ def test_should_log_restore_history_with_correct_parameters(db_with_timezone, sq
     ]
     cluster = make_cluster()
 
-    log_restore = Mock()
+    append_restore_event = Mock()
     complete_slot = Mock()
 
-    with patch("starrocks_br.restore.history.log_restore", log_restore):
+    with patch("starrocks_br.restore.history.append_restore_event", append_restore_event):
         with patch("starrocks_br.restore.concurrency.complete_job_slot", complete_slot):
             result = restore.execute_restore(
                 db,
@@ -846,21 +824,18 @@ def test_should_log_restore_history_with_correct_parameters(db_with_timezone, sq
                 cluster.id,
                 "RESTORE SNAPSHOT restore_job FROM repo",
                 backup_label="restore_job",
-                restore_type="partition",
-                repository="test_repo",
                 database="test_db",
                 scope="restore",
                 max_polls=3,
                 poll_interval=0.001,
+                job_id=1,
             )
 
     assert result["success"] is True
 
-    entry = log_restore.call_args[0][2]
-    assert entry["job_id"] == "restore_job"
-    assert entry["status"] == "FINISHED"
-    assert entry["repository"] == "test_repo"
-    assert entry["restore_type"] == "partition"
+    calls = [call.args for call in append_restore_event.call_args_list]
+    assert calls[0] == (append_restore_event.call_args_list[0].args[0], 1, "RUNNING")
+    assert calls[-1] == (append_restore_event.call_args_list[0].args[0], 1, "SUCCESS")
 
 
 def test_should_log_restore_history_with_failure_state(db_with_timezone, sqlite_session, make_cluster):
@@ -873,10 +848,10 @@ def test_should_log_restore_history_with_failure_state(db_with_timezone, sqlite_
     ]
     cluster = make_cluster()
 
-    log_restore = Mock()
+    append_restore_event = Mock()
     complete_slot = Mock()
 
-    with patch("starrocks_br.restore.history.log_restore", log_restore):
+    with patch("starrocks_br.restore.history.append_restore_event", append_restore_event):
         with patch("starrocks_br.restore.concurrency.complete_job_slot", complete_slot):
             result = restore.execute_restore(
                 db,
@@ -884,20 +859,18 @@ def test_should_log_restore_history_with_failure_state(db_with_timezone, sqlite_
                 cluster.id,
                 "RESTORE SNAPSHOT restore_job FROM repo",
                 backup_label="restore_job",
-                restore_type="partition",
-                repository="test_repo",
                 database="test_db",
                 max_polls=3,
                 poll_interval=0.001,
+                job_id=1,
             )
 
     assert result["success"] is False
 
-    entry = log_restore.call_args[0][2]
-    assert entry["job_id"] == "restore_job"
-    assert entry["status"] == "CANCELLED"
-    assert entry["repository"] == "test_repo"
-    assert entry["restore_type"] == "partition"
+    last_call = append_restore_event.call_args_list[-1]
+    assert last_call.args[1] == 1
+    assert last_call.args[2] == "FAILED"
+    assert last_call.kwargs == {"message": "CANCELLED"}
 
 
 def test_should_find_restore_pair_for_full_backup(sqlite_session, make_cluster):
@@ -1268,7 +1241,8 @@ def test_should_execute_restore_flow_with_full_backup(mocker, sqlite_session, ma
     mocker.patch("builtins.input", return_value="y")
 
     result = restore.execute_restore_flow(
-        db, sqlite_session, cluster.id, repo_name, restore_pair, tables_to_restore, rename_suffix
+        db, sqlite_session, cluster.id, repo_name, restore_pair, tables_to_restore, rename_suffix,
+        job_id=1,
     )
 
     assert result["success"] is True
@@ -1301,7 +1275,8 @@ def test_should_execute_restore_flow_with_incremental_backup(mocker, sqlite_sess
     mocker.patch("builtins.input", return_value="y")
 
     result = restore.execute_restore_flow(
-        db, sqlite_session, cluster.id, repo_name, restore_pair, tables_to_restore, rename_suffix
+        db, sqlite_session, cluster.id, repo_name, restore_pair, tables_to_restore, rename_suffix,
+        job_id=1,
     )
 
     assert result["success"] is True
@@ -1327,7 +1302,7 @@ def test_should_cancel_restore_flow_when_user_says_no(mocker, sqlite_session, ma
     mocker.patch("builtins.input", return_value="n")
 
     with pytest.raises(exceptions.RestoreOperationCancelledError, match="cancelled by user"):
-        restore.execute_restore_flow(db, sqlite_session, cluster.id, repo_name, restore_pair, tables_to_restore)
+        restore.execute_restore_flow(db, sqlite_session, cluster.id, repo_name, restore_pair, tables_to_restore, job_id=1)
 
 
 def test_should_skip_confirmation_when_skip_confirmation_is_true(mocker, sqlite_session, make_cluster):
@@ -1350,7 +1325,8 @@ def test_should_skip_confirmation_when_skip_confirmation_is_true(mocker, sqlite_
     input_mock = mocker.patch("builtins.input")
 
     result = restore.execute_restore_flow(
-        db, sqlite_session, cluster.id, repo_name, restore_pair, tables_to_restore, skip_confirmation=True
+        db, sqlite_session, cluster.id, repo_name, restore_pair, tables_to_restore, skip_confirmation=True,
+        job_id=1,
     )
 
     assert result["success"] is True
@@ -1379,7 +1355,7 @@ def test_should_fail_restore_flow_when_base_restore_fails(mocker, sqlite_session
 
     mocker.patch("builtins.input", return_value="y")
 
-    result = restore.execute_restore_flow(db, sqlite_session, cluster.id, repo_name, restore_pair, tables_to_restore)
+    result = restore.execute_restore_flow(db, sqlite_session, cluster.id, repo_name, restore_pair, tables_to_restore, job_id=1)
 
     assert result["success"] is False
     assert "Base restore failed" in result["error_message"]
@@ -1407,10 +1383,10 @@ def test_should_fail_restore_flow_when_incremental_restore_fails(mocker, sqlite_
         cluster_id,
         command,
         backup_label,
-        restore_type,
-        repo,
         database,
         scope="restore",
+        *,
+        job_id,
         on_progress=None,
     ):
         if "full" in backup_label:
@@ -1422,7 +1398,7 @@ def test_should_fail_restore_flow_when_incremental_restore_fails(mocker, sqlite_
 
     mocker.patch("builtins.input", return_value="y")
 
-    result = restore.execute_restore_flow(db, sqlite_session, cluster.id, repo_name, restore_pair, tables_to_restore)
+    result = restore.execute_restore_flow(db, sqlite_session, cluster.id, repo_name, restore_pair, tables_to_restore, job_id=1)
 
     assert result["success"] is False
     assert "Incremental restore failed" in result["error_message"]
@@ -1450,7 +1426,7 @@ def test_should_fail_restore_flow_when_atomic_rename_fails(mocker, sqlite_sessio
 
     mocker.patch("builtins.input", return_value="y")
 
-    result = restore.execute_restore_flow(db, sqlite_session, cluster.id, repo_name, restore_pair, tables_to_restore)
+    result = restore.execute_restore_flow(db, sqlite_session, cluster.id, repo_name, restore_pair, tables_to_restore, job_id=1)
 
     assert result["success"] is False
     assert "Atomic rename failed" in result["error_message"]
@@ -1463,13 +1439,14 @@ def test_should_validate_restore_flow_inputs(mocker, sqlite_session, make_cluste
     repo_name = "my_repo"
 
     # Test empty restore pair
-    result = restore.execute_restore_flow(db, sqlite_session, cluster.id, repo_name, [], ["sales_db.fact_sales"])
+    result = restore.execute_restore_flow(db, sqlite_session, cluster.id, repo_name, [], ["sales_db.fact_sales"], job_id=1)
     assert result["success"] is False
     assert "No restore pair provided" in result["error_message"]
 
     # Test empty tables list
     result = restore.execute_restore_flow(
-        db, sqlite_session, cluster.id, repo_name, ["sales_db_20251015_full"], []
+        db, sqlite_session, cluster.id, repo_name, ["sales_db_20251015_full"], [],
+        job_id=1,
     )
     assert result["success"] is False
     assert "No tables to restore" in result["error_message"]
@@ -1496,7 +1473,7 @@ def test_should_include_correct_timestamp_in_restore_commands(mocker, sqlite_ses
 
     mocker.patch("builtins.input", return_value="y")
 
-    result = restore.execute_restore_flow(db, sqlite_session, cluster.id, repo_name, restore_pair, tables_to_restore)
+    result = restore.execute_restore_flow(db, sqlite_session, cluster.id, repo_name, restore_pair, tables_to_restore, job_id=1)
 
     assert result["success"] is True
 
@@ -1505,41 +1482,6 @@ def test_should_include_correct_timestamp_in_restore_commands(mocker, sqlite_ses
 
     assert f'PROPERTIES ("backup_timestamp" = "{mock_timestamp}")' in restore_command
     assert "DATABASE `sales_db`" in restore_command
-
-
-def test_should_use_cluster_timezone_for_restore_timestamps(mocker, sqlite_session, make_cluster):
-    """Test that execute_restore uses cluster timezone for timestamps, not local time."""
-    db = mocker.Mock()
-    db.timezone = "Asia/Shanghai"
-    db.execute.return_value = None
-    db.query.return_value = [{"Label": "test_label", "State": "FINISHED"}]
-    cluster = make_cluster()
-
-    log_restore = mocker.patch("starrocks_br.history.log_restore")
-    mocker.patch("starrocks_br.concurrency.complete_job_slot")
-    mock_get_time = mocker.patch("starrocks_br.timezone.get_current_time_in_cluster_tz")
-    mock_get_time.return_value = "2025-11-20 15:30:00"
-
-    restore.execute_restore(
-        db,
-        sqlite_session,
-        cluster.id,
-        "RESTORE SNAPSHOT test FROM repo",
-        backup_label="test_label",
-        restore_type="full",
-        repository="repo",
-        database="test_db",
-        max_polls=5,
-        poll_interval=0.001,
-    )
-
-    assert mock_get_time.call_count == 2
-    assert mock_get_time.call_args_list[0][0][0] == "Asia/Shanghai"
-    assert mock_get_time.call_args_list[1][0][0] == "Asia/Shanghai"
-
-    log_restore_call = log_restore.call_args[0][2]
-    assert log_restore_call["started_at"] == "2025-11-20 15:30:00"
-    assert log_restore_call["finished_at"] == "2025-11-20 15:30:00"
 
 
 # Exponential backoff tests
@@ -1731,7 +1673,8 @@ def test_should_restore_table_that_only_exists_in_incremental_backup(mocker, sql
     mocker.patch("builtins.input", return_value="y")
 
     result = restore.execute_restore_flow(
-        db, sqlite_session, cluster.id, repo_name, restore_pair, tables_to_restore, rename_suffix
+        db, sqlite_session, cluster.id, repo_name, restore_pair, tables_to_restore, rename_suffix,
+        job_id=1,
     )
 
     # Should succeed
@@ -1824,7 +1767,8 @@ def test_should_restore_table_in_both_backups_using_partition_level_incremental(
     mocker.patch("builtins.input", return_value="y")
 
     result = restore.execute_restore_flow(
-        db, sqlite_session, cluster.id, repo_name, restore_pair, tables_to_restore, rename_suffix
+        db, sqlite_session, cluster.id, repo_name, restore_pair, tables_to_restore, rename_suffix,
+        job_id=1,
     )
 
     # Should succeed

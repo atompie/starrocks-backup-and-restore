@@ -33,6 +33,7 @@ def submit_job(
         group_id=params.get("group_id"),
         params_json=json.dumps(params),
         backend=backend_name,
+        repository=params.get("repository"),
     )
     db.add(job)
     db.flush()

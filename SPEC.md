@@ -609,17 +609,19 @@ Backup Job
 
 History is an **execution log for the Job**, not just a single status field.
 
-A single Job can have multiple entries:
+A single Job can have multiple entries. Each entry's status is the state StarRocks itself reports
+while the backup runs (via `SHOW BACKUP`), plus a final `SUCCESS` or `FAILED` entry this system
+adds once the Job completes; a new entry is recorded only when the state changes, so the log stays
+short. The exact set of intermediate states StarRocks reports is an implementation detail (see
+`PLAN.md` §4).
 
 ```text
 Job 123
 
-10:00:01 STARTED
-10:00:02 CONNECTING
-10:00:03 BACKUP_STARTED
-10:00:15 DATABASE_STARTED
-10:00:20 TABLE_COMPLETED
-10:01:00 BACKUP_FINISHED
+10:00:01 PENDING
+10:00:03 SNAPSHOTING
+10:00:20 UPLOADING
+10:01:00 SAVE_META
 10:01:01 SUCCESS
 
 ```
@@ -629,10 +631,8 @@ In case of an error:
 ```text
 Job 124
 
-10:00:01 STARTED
-10:00:02 CONNECTING
-10:00:03 BACKUP_STARTED
-10:00:18 ERROR
+10:00:01 PENDING
+10:00:03 SNAPSHOTING
 10:00:18 FAILED
 
 ```
@@ -965,14 +965,16 @@ Restore Job
 
 ```
 
+As with Backup History, each entry's status is the state StarRocks itself reports while the
+restore runs (via `SHOW RESTORE`), plus a final `SUCCESS` or `FAILED` entry this system adds once
+the Job completes; a new entry is recorded only when the state changes.
+
 Example:
 
 ```text
-10:00:01 RESTORE_STARTED
-10:00:02 CONNECTING
-10:00:05 DATABASE_RESTORING
-10:00:30 TABLE_RESTORED
-10:01:00 RESTORE_FINISHED
+10:00:01 PENDING
+10:00:05 DOWNLOADING
+10:00:30 COMMITTING
 10:01:01 SUCCESS
 
 ```
@@ -980,9 +982,8 @@ Example:
 In case of an error:
 
 ```text
-10:00:01 RESTORE_STARTED
-10:00:02 CONNECTING
-10:00:10 ERROR
+10:00:01 PENDING
+10:00:10 DOWNLOADING
 10:00:10 FAILED
 
 ```

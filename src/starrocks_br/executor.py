@@ -19,7 +19,8 @@ from typing import Literal
 
 from sqlalchemy.orm import Session
 
-from . import concurrency, history, logger, timezone
+from . import concurrency, history, logger
+from .store.session import get_session_factory
 
 MAX_POLLS = 86400  # 1 day
 
@@ -240,6 +241,7 @@ def execute_backup(
     backup_type: Literal["incremental", "full"] = None,
     scope: str = "backup",
     database: str | None = None,
+    job_id: int,
     on_progress: Callable[[dict], None] | None = None,
 ) -> dict:
     """Execute a complete backup workflow: submit command and monitor progress.
@@ -255,6 +257,9 @@ def execute_backup(
         backup_type: Type of backup (for logging)
         scope: Job scope (for concurrency control)
         database: Database name (required for SHOW BACKUP)
+        job_id: Job this backup belongs to; every distinct StarRocks state
+            reported during polling, plus a final SUCCESS/FAILED row, is
+            appended to that job's `backup_history` log.
         on_progress: Optional callback forwarded to poll_backup_status; see
             its docstring. Defaults to None (no behavior change).
 
@@ -264,9 +269,6 @@ def execute_backup(
 
     if not database:
         database = _extract_database_from_command(backup_command)
-
-    cluster_tz = db.timezone
-    started_at = timezone.get_current_time_in_cluster_tz(cluster_tz)
 
     success, submit_error, error_details = submit_backup_command(db, backup_command)
     if not success:
@@ -279,27 +281,29 @@ def execute_backup(
             result["error_details"] = error_details
         return result
 
+    session_factory = get_session_factory()
+
+    def _on_progress(update: dict) -> None:
+        try:
+            history.append_backup_event(session_factory, job_id, update["state"])
+        except Exception:
+            logger.error(f"Failed to append backup history for job {job_id}")
+        if on_progress is not None:
+            on_progress(update)
+
     try:
         final_status = poll_backup_status(
-            db, label, database, max_polls, poll_interval, on_progress=on_progress
+            db, label, database, max_polls, poll_interval, on_progress=_on_progress
         )
 
         success = final_status["state"] == "FINISHED"
 
         try:
-            finished_at = timezone.get_current_time_in_cluster_tz(cluster_tz)
-            history.log_backup(
-                session,
-                cluster_id,
-                {
-                    "label": label,
-                    "backup_type": backup_type,
-                    "status": final_status["state"],
-                    "repository": repository,
-                    "started_at": started_at,
-                    "finished_at": finished_at,
-                    "error_message": None if success else (final_status["state"] or ""),
-                },
+            history.append_backup_event(
+                session_factory,
+                job_id,
+                "SUCCESS" if success else "FAILED",
+                message=None if success else final_status["state"],
             )
         except Exception:
             pass

@@ -101,6 +101,67 @@ def make_cluster(sqlite_session):
 
 
 @pytest.fixture
+def history_session_factory(sqlite_session):
+    """A `session_factory` callable that always yields the shared `sqlite_session`.
+
+    `history.append_backup_event`/`append_restore_event` are called with a real
+    `session_factory` (normally `store.session.get_session_factory()`, bound to the
+    app's single configured database). Tests that exercise `executor.execute_backup`/
+    `restore.execute_restore`/`execute_restore_flow` against the isolated in-memory
+    `sqlite_session` fixture instead patch `get_session_factory` in the module under
+    test (e.g. `mocker.patch("starrocks_br.executor.get_session_factory",
+    return_value=history_session_factory)`) so history writes land in that same
+    session rather than the real app database.
+    """
+
+    class _NoCloseSession:
+        def __init__(self, session):
+            self._session = session
+
+        def __enter__(self):
+            return self._session
+
+        def __exit__(self, *exc_info):
+            return False
+
+    return lambda: _NoCloseSession(sqlite_session)
+
+
+@pytest.fixture
+def make_job(sqlite_session):
+    """Factory fixture: persist a minimal Job row and return it.
+
+    Used by tests covering the append-only history log and the backup catalog
+    now carried on `Job.label`/`Job.repository` (see add-job-history-log).
+    """
+    from starrocks_br.store.models import Job, JobStatus
+
+    def _make(
+        cluster_id: int,
+        job_type: str = "backup_full",
+        status: str = JobStatus.SUCCESS.value,
+        label: str | None = None,
+        repository: str | None = None,
+        finished_at=None,
+    ) -> Job:
+        job = Job(
+            cluster_id=cluster_id,
+            job_type=job_type,
+            params_json="{}",
+            backend="thread",
+            status=status,
+            label=label,
+            repository=repository,
+            finished_at=finished_at,
+        )
+        sqlite_session.add(job)
+        sqlite_session.commit()
+        return job
+
+    return _make
+
+
+@pytest.fixture
 def make_group(sqlite_session):
     """Factory fixture: persist a minimal InventoryGroup row and return its id."""
     from starrocks_br.store.models import InventoryGroup

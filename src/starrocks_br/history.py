@@ -12,82 +12,74 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import datetime
+import json
 
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
-from . import logger
 from .store.models import BackupHistory, RestoreHistory
 
-
-def _parse_timestamp(value: str | None) -> datetime.datetime | None:
-    """Parse a 'YYYY-MM-DD HH:MM:SS' cluster-local timestamp string, if present."""
-    if not value or value == "NULL":
-        return None
-    return datetime.datetime.strptime(value, "%Y-%m-%d %H:%M:%S")
+# Terminal rows are always appended, bypassing the unchanged-state dedup
+# check - StarRocks itself never reports these two values, so they can never
+# collide with a StarRocks-native state already recorded for the job.
+TERMINAL_STATUSES = {"SUCCESS", "FAILED"}
 
 
-def log_backup(session: Session, cluster_id: int, entry: dict[str, str | None]) -> None:
-    """Write a backup history entry to the backup_history table.
+def _append_event(
+    model: type[BackupHistory] | type[RestoreHistory],
+    session_factory: sessionmaker[Session],
+    job_id: int,
+    status: str,
+    message: str | None,
+    details: dict | None,
+) -> None:
+    with session_factory() as session:
+        if status not in TERMINAL_STATUSES:
+            last = (
+                session.query(model)
+                .filter_by(job_id=job_id)
+                .order_by(model.id.desc())
+                .first()
+            )
+            if last is not None and last.status == status:
+                return
 
-    Expected keys in entry:
-      - label
-      - backup_type (incremental|full)
-      - status (FINISHED|FAILED|CANCELLED)
-      - repository
-      - started_at (YYYY-MM-DD HH:MM:SS)
-      - finished_at (YYYY-MM-DD HH:MM:SS)
-      - error_message (nullable)
-    """
-    try:
         session.add(
-            BackupHistory(
-                cluster_id=cluster_id,
-                label=entry.get("label", ""),
-                backup_type=entry.get("backup_type", ""),
-                status=entry.get("status", ""),
-                repository=entry.get("repository", ""),
-                started_at=_parse_timestamp(entry.get("started_at")),
-                finished_at=_parse_timestamp(entry.get("finished_at")),
-                error_message=entry.get("error_message"),
+            model(
+                job_id=job_id,
+                status=status,
+                message=message,
+                details_json=json.dumps(details) if details is not None else None,
             )
         )
-        session.flush()
-    except Exception as e:
-        logger.error(f"Failed to log backup history: {str(e)}")
-        raise
+        session.commit()
 
 
-def log_restore(session: Session, cluster_id: int, entry: dict[str, str | None]) -> None:
-    """Write a restore history entry to the restore_history table.
+def append_backup_event(
+    session_factory: sessionmaker[Session],
+    job_id: int,
+    status: str,
+    message: str | None = None,
+    details: dict | None = None,
+) -> None:
+    """Append a state-change row to a backup job's history, if it isn't a duplicate.
 
-    Expected keys in entry:
-      - job_id
-      - backup_label
-      - restore_type (partition|table|database)
-      - status (FINISHED|FAILED|CANCELLED)
-      - repository
-      - started_at (YYYY-MM-DD HH:MM:SS)
-      - finished_at (YYYY-MM-DD HH:MM:SS)
-      - error_message (nullable)
-      - verification_checksum (optional)
+    Opens its own short-lived session (see AGENTS.md's parallel-execution
+    rules). A no-op when `status` matches the job's most recently recorded
+    row, except for a terminal `SUCCESS`/`FAILED` row, which is always
+    appended.
     """
-    try:
-        session.add(
-            RestoreHistory(
-                cluster_id=cluster_id,
-                job_id=entry.get("job_id", ""),
-                backup_label=entry.get("backup_label", ""),
-                restore_type=entry.get("restore_type", ""),
-                status=entry.get("status", ""),
-                repository=entry.get("repository", ""),
-                started_at=_parse_timestamp(entry.get("started_at")),
-                finished_at=_parse_timestamp(entry.get("finished_at")),
-                error_message=entry.get("error_message"),
-                verification_checksum=entry.get("verification_checksum"),
-            )
-        )
-        session.flush()
-    except Exception as e:
-        logger.error(f"Failed to log restore history: {str(e)}")
-        raise
+    _append_event(BackupHistory, session_factory, job_id, status, message, details)
+
+
+def append_restore_event(
+    session_factory: sessionmaker[Session],
+    job_id: int,
+    status: str,
+    message: str | None = None,
+    details: dict | None = None,
+) -> None:
+    """Append a state-change row to a restore job's history, if it isn't a duplicate.
+
+    Mirrors `append_backup_event` for `restore_history`.
+    """
+    _append_event(RestoreHistory, session_factory, job_id, status, message, details)

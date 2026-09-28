@@ -10,11 +10,25 @@ from typing import Any
 
 from .. import concurrency, executor, labels, planner
 from ..exceptions import BackupExecutionError, SnapshotAlreadyExistsError
-from ..store.models import Cluster
+from ..store.models import Cluster, Job
 from ..store.session import session_scope
 from ._shared import connect, ensure_ready
 
 OnProgress = Callable[[dict], None] | None
+
+
+def _set_job_label(job_id: int, label: str) -> None:
+    """Persist the backup label onto the job's row once determined.
+
+    `restore.find_restore_pair`/`find_backup_repository` resolve restore lineage from
+    `Job.label` (see design.md) rather than a separate backup catalog; the label isn't
+    known until `labels.determine_backup_label` computes it, so it's written here rather
+    than at job submission time.
+    """
+    with session_scope() as session:
+        job = session.get(Job, job_id)
+        if job is not None:
+            job.label = label
 
 
 def _raise_for_backup_failure(result: dict) -> None:
@@ -30,7 +44,9 @@ def _raise_for_backup_failure(result: dict) -> None:
     raise BackupExecutionError(result["error_message"], final_status=result.get("final_status"))
 
 
-def run_backup_full(cluster: Cluster, params: dict[str, Any], on_progress: OnProgress = None) -> dict:
+def run_backup_full(
+    cluster: Cluster, params: dict[str, Any], job_id: int, on_progress: OnProgress = None
+) -> dict:
     group = params.get("group_id")
     if not group:
         raise ValueError("'group_id' is required for backup_full")
@@ -49,6 +65,7 @@ def run_backup_full(cluster: Cluster, params: dict[str, Any], on_progress: OnPro
             label = labels.determine_backup_label(
                 session, cluster.id, "full", group_database, custom_name=name
             )
+            _set_job_label(job_id, label)
 
             tables = planner.find_tables_by_group(session, cluster.id, group)
             planner.validate_tables_exist(database, group_database, tables, group)
@@ -76,6 +93,7 @@ def run_backup_full(cluster: Cluster, params: dict[str, Any], on_progress: OnPro
                 backup_type="full",
                 scope="backup",
                 database=group_database,
+                job_id=job_id,
                 on_progress=on_progress,
             )
 
@@ -86,7 +104,7 @@ def run_backup_full(cluster: Cluster, params: dict[str, Any], on_progress: OnPro
 
 
 def run_backup_incremental(
-    cluster: Cluster, params: dict[str, Any], on_progress: OnProgress = None
+    cluster: Cluster, params: dict[str, Any], job_id: int, on_progress: OnProgress = None
 ) -> dict:
     group = params.get("group_id")
     if not group:
@@ -107,6 +125,7 @@ def run_backup_incremental(
             label = labels.determine_backup_label(
                 session, cluster.id, "incremental", group_database, custom_name=name
             )
+            _set_job_label(job_id, label)
 
             if baseline_backup:
                 if on_progress:
@@ -146,6 +165,7 @@ def run_backup_incremental(
                 backup_type="incremental",
                 scope="backup",
                 database=group_database,
+                job_id=job_id,
                 on_progress=on_progress,
             )
 

@@ -39,7 +39,7 @@ def fake_session(mocker):
 
 def test_run_restore_rejects_group_and_table_together(cluster, mock_decrypt):
     with pytest.raises(ValueError, match="Cannot specify both"):
-        restore_command.run_restore(cluster, {"target_label": "lbl", "group_id": 42, "table": "t"})
+        restore_command.run_restore(cluster, {"target_label": "lbl", "group_id": 42, "table": "t"}, job_id=1)
 
 
 def test_run_restore_delegates_to_execute_restore_flow(
@@ -52,7 +52,7 @@ def test_run_restore_delegates_to_execute_restore_flow(
         return_value={"success": True, "message": "done"},
     )
 
-    result = restore_command.run_restore(cluster, {"target_label": "full_lbl"})
+    result = restore_command.run_restore(cluster, {"target_label": "full_lbl"}, job_id=1)
 
     assert result["restore_pair"] == ["full_lbl"]
     assert result["tables"] == ["d.t"]
@@ -75,7 +75,7 @@ def test_run_restore_honors_skip_confirmation_false(
         return_value={"success": True, "message": "done"},
     )
 
-    restore_command.run_restore(cluster, {"target_label": "full_lbl"}, skip_confirmation=False)
+    restore_command.run_restore(cluster, {"target_label": "full_lbl"}, job_id=1, skip_confirmation=False)
 
     assert execute_flow.call_args.kwargs["skip_confirmation"] is False
 
@@ -87,7 +87,7 @@ def test_run_restore_raises_no_tables_found_error_when_backup_has_no_matching_ta
     mocker.patch("starrocks_br.restore.get_tables_from_backup", return_value=[])
 
     with pytest.raises(exceptions.NoTablesFoundError):
-        restore_command.run_restore(cluster, {"target_label": "full_lbl", "group_id": 42})
+        restore_command.run_restore(cluster, {"target_label": "full_lbl", "group_id": 42}, job_id=1)
 
 
 def test_run_restore_raises_restore_execution_error_on_flow_failure(
@@ -101,4 +101,4 @@ def test_run_restore_raises_restore_execution_error_on_flow_failure(
     )
 
     with pytest.raises(exceptions.RestoreExecutionError, match="permission denied"):
-        restore_command.run_restore(cluster, {"target_label": "full_lbl"})
+        restore_command.run_restore(cluster, {"target_label": "full_lbl"}, job_id=1)

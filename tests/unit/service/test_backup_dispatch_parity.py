@@ -68,7 +68,7 @@ def _wait_for_terminal(api_client, job_id, timeout=2.0):
 
 
 def _capture_handler(calls: list[tuple], result=None):
-    def _handler(cluster, params, on_progress=None):
+    def _handler(cluster, params, job_id, on_progress=None):
         calls.append((cluster, dict(params)))
         return result or {}
 

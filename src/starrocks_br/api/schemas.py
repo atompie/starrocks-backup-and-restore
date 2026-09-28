@@ -132,6 +132,17 @@ class JobRead(BaseModel):
     finished_at: datetime.datetime | None
 
 
+class HistoryEntryRead(BaseModel):
+    """One recorded state in a backup/restore job's append-only execution history."""
+
+    id: int
+    job_id: int
+    ts: datetime.datetime
+    status: str
+    message: str | None
+    details: dict | None = None
+
+
 class ScheduleCreate(BaseModel):
     job_type: str = Field(pattern="^(backup_full|backup_incremental)$")
     inventory_group_id: int

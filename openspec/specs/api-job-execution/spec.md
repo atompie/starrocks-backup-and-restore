@@ -211,6 +211,31 @@ and SHALL respond with HTTP 404 without returning any listing if the cluster id 
 - **THEN** the system responds with HTTP 200 and excludes those older jobs from the filtered
   result, since they have no recorded group id
 
+### Requirement: A job's execution history can be retrieved
+The system SHALL expose an endpoint to retrieve the append-only execution history of a backup or
+restore job, returned as an ordered list from oldest to newest, each entry carrying the status
+recorded at that point in time, a timestamp, and an optional message and detail payload. History
+entries are never modified or removed once recorded; the endpoint always reflects every entry
+recorded so far for that job.
+
+#### Scenario: Retrieving history for a completed backup job
+- **WHEN** an authenticated client requests the history of a backup job that has finished
+- **THEN** the system responds with HTTP 200 and a time-ordered list of that job's recorded
+  status entries, ending with its final `SUCCESS` or `FAILED` entry
+
+#### Scenario: Retrieving history for a running job
+- **WHEN** an authenticated client requests the history of a job that is still `RUNNING`
+- **THEN** the system responds with HTTP 200 and the entries recorded so far, without a terminal
+  `SUCCESS`/`FAILED` entry
+
+#### Scenario: Retrieving history for an unknown job
+- **WHEN** an authenticated client requests the history of a job id that does not exist
+- **THEN** the system responds with HTTP 404
+
+#### Scenario: Repeated identical status is not duplicated
+- **WHEN** the underlying StarRocks operation reports the same status on consecutive polls
+- **THEN** the job's history contains only one entry for that status, not one entry per poll
+
 ### Requirement: Job execution backend is selectable with a configured default
 The system SHALL execute each submitted job using one of a set of registered execution backends, SHALL use a configured default backend when a request does not specify one, and SHALL allow a request to override the backend for that job as long as the requested backend is enabled on the server. A submitted backend value, whether the cluster's `default_backend` or a per-job override, MUST be one of the recognized backend identifiers `"thread"` or `"job"`; the system SHALL reject any other value with HTTP 422 before any job is created, independent of whether that backend is currently enabled on the server.
 
@@ -245,6 +270,6 @@ given backup/restore/prune operation regardless of which execution backend runs 
 #### Scenario: API-submitted full backup is indistinguishable from a CLI backup
 - **WHEN** the same full backup (same cluster, inventory group, and repository) is submitted via
   the API twice, once to each of two enabled execution backends
-- **THEN** the resulting snapshot label, SQLite-backed `backup_history` record (scoped to that
-  cluster), and repository snapshot are equivalent for the same inputs, regardless of which
-  backend executed the operation
+- **THEN** the resulting snapshot label, the backup job's own recorded label/repository and
+  execution history, and the repository snapshot are equivalent for the same inputs, regardless
+  of which backend executed the operation

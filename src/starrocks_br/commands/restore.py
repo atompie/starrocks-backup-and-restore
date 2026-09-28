@@ -18,6 +18,7 @@ OnProgress = Callable[[dict], None] | None
 def run_restore(
     cluster: Cluster,
     params: dict[str, Any],
+    job_id: int,
     on_progress: OnProgress = None,
     *,
     skip_confirmation: bool = True,
@@ -65,6 +66,7 @@ def run_restore(
                 tables_to_restore,
                 rename_suffix,
                 skip_confirmation=skip_confirmation,
+                job_id=job_id,
                 on_progress=on_progress,
             )
 

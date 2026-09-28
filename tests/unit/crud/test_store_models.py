@@ -156,50 +156,30 @@ def test_table_inventory_uniqueness_per_cluster(session):
         session.commit()
 
 
-def test_backup_history_uniqueness_per_cluster(session):
-    cluster = _make_cluster()
-    session.add(cluster)
-    session.commit()
-
-    now = datetime.datetime.now(datetime.timezone.utc)
-    session.add(
-        BackupHistory(
-            cluster_id=cluster.id, label="lbl1", backup_type="full", status="FINISHED",
-            repository="repo", started_at=now,
-        )
-    )
-    session.commit()
-
-    session.add(
-        BackupHistory(
-            cluster_id=cluster.id, label="lbl1", backup_type="full", status="FINISHED",
-            repository="repo", started_at=now,
-        )
-    )
+def test_backup_history_requires_existing_job(session):
+    session.add(BackupHistory(job_id=999, status="PENDING"))
     with pytest.raises(IntegrityError):
         session.commit()
 
 
-def test_restore_history_uniqueness_per_cluster(session):
+def test_backup_history_allows_multiple_rows_per_job(session):
+    """`backup_history` is an append-only log: many rows per job_id, not one."""
     cluster = _make_cluster()
     session.add(cluster)
     session.commit()
-
-    now = datetime.datetime.now(datetime.timezone.utc)
-    session.add(
-        RestoreHistory(
-            cluster_id=cluster.id, job_id="job1", backup_label="lbl1", restore_type="table",
-            status="FINISHED", repository="repo", started_at=now,
-        )
-    )
+    job = Job(cluster_id=cluster.id, job_type="backup_full", backend="thread")
+    session.add(job)
     session.commit()
 
-    session.add(
-        RestoreHistory(
-            cluster_id=cluster.id, job_id="job1", backup_label="lbl1", restore_type="table",
-            status="FINISHED", repository="repo", started_at=now,
-        )
-    )
+    session.add(BackupHistory(job_id=job.id, status="PENDING"))
+    session.add(BackupHistory(job_id=job.id, status="SNAPSHOTING"))
+    session.commit()  # must not raise
+
+    assert session.query(BackupHistory).filter_by(job_id=job.id).count() == 2
+
+
+def test_restore_history_requires_existing_job(session):
+    session.add(RestoreHistory(job_id=999, status="PENDING"))
     with pytest.raises(IntegrityError):
         session.commit()
 
@@ -263,12 +243,16 @@ def test_ops_tables_are_not_unique_across_different_clusters(session):
 def test_deleting_cluster_cascades_to_all_ops_tables(session):
     """Validates PRAGMA foreign_keys=ON wiring in store/session.py, not just the model
     declarations - if this fails, suspect the pragma event hook first. Also covers the
-    two-level cascade: cluster -> inventory_groups -> table_inventory."""
+    two-level cascade: cluster -> inventory_groups -> table_inventory.
+
+    `backup_history`/`restore_history` no longer cascade directly from `Cluster` - they
+    cascade from `Job` (see `test_deleting_job_cascades_to_its_history_tables`), and
+    `Job.cluster_id` itself has no `ondelete=CASCADE` (deleting a cluster with jobs on
+    record is a separate, guarded operation - see `commands/clusters.delete_cluster`)."""
     cluster = _make_cluster()
     session.add(cluster)
     session.commit()
     cluster_id = cluster.id
-    now = datetime.datetime.now(datetime.timezone.utc)
     group = InventoryGroup(cluster_id=cluster_id, name="g1")
     session.add(group)
     session.commit()
@@ -276,18 +260,6 @@ def test_deleting_cluster_cascades_to_all_ops_tables(session):
 
     session.add(
         TableInventory(cluster_id=cluster_id, inventory_group_id=group_id, database_name="db1", table_name="t1")
-    )
-    session.add(
-        BackupHistory(
-            cluster_id=cluster_id, label="lbl1", backup_type="full", status="FINISHED",
-            repository="repo", started_at=now,
-        )
-    )
-    session.add(
-        RestoreHistory(
-            cluster_id=cluster_id, job_id="job1", backup_label="lbl1", restore_type="table",
-            status="FINISHED", repository="repo", started_at=now,
-        )
     )
     session.add(RunStatus(cluster_id=cluster_id, scope="backup", label="lbl1"))
     session.add(
@@ -302,8 +274,31 @@ def test_deleting_cluster_cascades_to_all_ops_tables(session):
     session.commit()
 
     assert session.query(TableInventory).filter_by(cluster_id=cluster_id).count() == 0
-    assert session.query(BackupHistory).filter_by(cluster_id=cluster_id).count() == 0
-    assert session.query(RestoreHistory).filter_by(cluster_id=cluster_id).count() == 0
     assert session.query(RunStatus).filter_by(cluster_id=cluster_id).count() == 0
     assert session.query(BackupPartition).filter_by(cluster_id=cluster_id).count() == 0
     assert session.query(InventoryGroup).filter_by(cluster_id=cluster_id).count() == 0
+
+
+def test_deleting_job_cascades_to_its_history_tables(session):
+    """Two-level cascade: cluster -> job -> backup_history/restore_history.
+
+    Pruning a snapshot deletes its `Job` row (see `prune.cleanup_backup_history`), which
+    must take that job's execution log with it via `ON DELETE CASCADE`."""
+    cluster = _make_cluster()
+    session.add(cluster)
+    session.commit()
+
+    job = Job(cluster_id=cluster.id, job_type="backup_full", backend="thread")
+    session.add(job)
+    session.commit()
+    job_id = job.id
+
+    session.add(BackupHistory(job_id=job_id, status="PENDING"))
+    session.add(RestoreHistory(job_id=job_id, status="PENDING"))
+    session.commit()
+
+    session.delete(job)
+    session.commit()
+
+    assert session.query(BackupHistory).filter_by(job_id=job_id).count() == 0
+    assert session.query(RestoreHistory).filter_by(job_id=job_id).count() == 0

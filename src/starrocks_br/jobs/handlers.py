@@ -30,7 +30,7 @@ from ..store.models import Cluster
 
 OnProgress = Callable[[dict], None] | None
 
-JOB_HANDLERS: dict[str, Callable[[Cluster, dict[str, Any], OnProgress], dict]] = {
+JOB_HANDLERS: dict[str, Callable[[Cluster, dict[str, Any], int, OnProgress], dict]] = {
     "backup_full": run_backup_full,
     "backup_incremental": run_backup_incremental,
     "restore": run_restore,

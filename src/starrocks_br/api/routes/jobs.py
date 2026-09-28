@@ -1,16 +1,20 @@
+import json
+
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ... import inventory_groups
 from ...commands.jobs import list_jobs, submit_job
 from ...jobs.backend import UnknownBackendError
-from ...store.models import Job
+from ...store.models import BackupHistory, Job, RestoreHistory
 from ..auth import require_api_key
 from ..deps import get_db
 from ..schemas import (
     BackupFullRequest,
     BackupIncrementalRequest,
+    HistoryEntryRead,
     JobRead,
     PruneRequest,
     RestoreRequest,
@@ -137,6 +141,39 @@ def get_job(job_id: int, db: Session = Depends(get_db)) -> Job:
     if job is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
     return job
+
+
+@router.get("/job/{job_id}/history", response_model=list[HistoryEntryRead])
+def get_job_history(job_id: int, db: Session = Depends(get_db)) -> list[HistoryEntryRead]:
+    """Return a backup/restore job's append-only execution history, oldest first.
+
+    Per specs/api-job-execution "A job's execution history can be retrieved": the log
+    table is chosen by the job's `job_type`; a job type with no log table (e.g. `prune`)
+    has an empty history rather than a 404.
+    """
+    job = db.get(Job, job_id)
+    if job is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
+
+    if job.job_type in _DEFAULT_BACKUP_JOB_TYPES:
+        model = BackupHistory
+    elif job.job_type == "restore":
+        model = RestoreHistory
+    else:
+        return []
+
+    rows = db.scalars(select(model).where(model.job_id == job_id).order_by(model.ts.asc())).all()
+    return [
+        HistoryEntryRead(
+            id=row.id,
+            job_id=row.job_id,
+            ts=row.ts,
+            status=row.status,
+            message=row.message,
+            details=json.loads(row.details_json) if row.details_json is not None else None,
+        )
+        for row in rows
+    ]
 
 
 @router.get("/backup/history/cluster/{cluster_id}", response_model=list[JobRead])

@@ -19,8 +19,9 @@ from collections.abc import Callable
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from . import concurrency, exceptions, history, logger, timezone, utils
-from .store.models import BackupHistory, BackupPartition, TableInventory
+from . import concurrency, exceptions, history, logger, utils
+from .store.models import BackupPartition, Job, JobStatus, TableInventory
+from .store.session import get_session_factory
 
 MAX_POLLS = 86400  # 1 day
 
@@ -247,12 +248,12 @@ def execute_restore(
     cluster_id: int,
     restore_command: str,
     backup_label: str,
-    restore_type: str,
-    repository: str,
     database: str,
     max_polls: int = MAX_POLLS,
     poll_interval: float = 1.0,
     scope: str = "restore",
+    *,
+    job_id: int,
     on_progress: Callable[[dict], None] | None = None,
 ) -> dict:
     """Execute a complete restore workflow: submit command and monitor progress.
@@ -263,20 +264,21 @@ def execute_restore(
         cluster_id: Cluster this restore belongs to
         restore_command: Restore SQL command to execute
         backup_label: Label of the backup being restored
-        restore_type: Type of restore operation
-        repository: Repository name
         database: Database name
         max_polls: Maximum polling attempts
         poll_interval: Seconds between polls
         scope: Job scope (for concurrency control)
+        job_id: Job this restore step belongs to; every distinct StarRocks state
+            reported during polling, plus a final SUCCESS/FAILED row, is appended
+            to that job's `restore_history` log. A multi-step restore
+            (`execute_restore_flow`'s base + incremental) shares one `job_id`
+            across its `execute_restore` calls, so its history interleaves both
+            steps in time order.
         on_progress: Optional callback forwarded to poll_restore_status.
             Defaults to None (no behavior change).
 
     Returns dictionary with keys: success, final_status, error_message
     """
-    cluster_tz = db.timezone
-    started_at = timezone.get_current_time_in_cluster_tz(cluster_tz)
-
     try:
         db.execute(restore_command.strip())
     except Exception as e:
@@ -288,29 +290,29 @@ def execute_restore(
         }
 
     label = backup_label
+    session_factory = get_session_factory()
+
+    def _on_progress(update: dict) -> None:
+        try:
+            history.append_restore_event(session_factory, job_id, update["state"])
+        except Exception:
+            logger.error(f"Failed to append restore history for job {job_id}")
+        if on_progress is not None:
+            on_progress(update)
 
     try:
         final_status = poll_restore_status(
-            db, label, database, max_polls, poll_interval, on_progress=on_progress
+            db, label, database, max_polls, poll_interval, on_progress=_on_progress
         )
 
         success = final_status["state"] == "FINISHED"
-        finished_at = timezone.get_current_time_in_cluster_tz(cluster_tz)
 
         try:
-            history.log_restore(
-                session,
-                cluster_id,
-                {
-                    "job_id": label,
-                    "backup_label": backup_label,
-                    "restore_type": restore_type,
-                    "status": final_status["state"],
-                    "repository": repository,
-                    "started_at": started_at,
-                    "finished_at": finished_at,
-                    "error_message": None if success else final_status["state"],
-                },
+            history.append_restore_event(
+                session_factory,
+                job_id,
+                "SUCCESS" if success else "FAILED",
+                message=None if success else final_status["state"],
             )
         except Exception as e:
             logger.error(f"Failed to log restore history: {str(e)}")
@@ -339,12 +341,19 @@ def execute_restore(
         return {"success": False, "final_status": None, "error_message": str(e)}
 
 
+_BACKUP_JOB_TYPE_TO_BACKUP_TYPE = {"backup_full": "full", "backup_incremental": "incremental"}
+
+
 def find_restore_pair(session: Session, cluster_id: int, target_label: str) -> list[str]:
     """Find the correct sequence of backups needed for restore.
 
+    Backup lineage is resolved from `Job` (`label`/`job_type`/`status`/`finished_at`) rather
+    than a separate backup catalog - see add-job-history-log's design.md "The backup catalog
+    moves from `backup_history` to two new columns on `Job`".
+
     Args:
         session: SQLite metastore session
-        cluster_id: Cluster this backup history belongs to
+        cluster_id: Cluster this backup belongs to
         target_label: The backup label to restore to
 
     Returns:
@@ -354,63 +363,65 @@ def find_restore_pair(session: Session, cluster_id: int, target_label: str) -> l
     Raises:
         ValueError: If target label not found or incremental has no preceding full backup
     """
-    target_row = session.scalars(
-        select(BackupHistory).where(
-            BackupHistory.cluster_id == cluster_id,
-            BackupHistory.label == target_label,
-            BackupHistory.status == "FINISHED",
+    target_job = session.scalars(
+        select(Job).where(
+            Job.cluster_id == cluster_id,
+            Job.label == target_label,
+            Job.status == JobStatus.SUCCESS.value,
         )
     ).first()
-    if target_row is None:
+    if target_job is None:
         raise exceptions.BackupLabelNotFoundError(target_label)
 
-    if target_row.backup_type == "full":
+    backup_type = _BACKUP_JOB_TYPE_TO_BACKUP_TYPE.get(target_job.job_type)
+
+    if backup_type == "full":
         return [target_label]
 
-    if target_row.backup_type == "incremental":
+    if backup_type == "incremental":
         database_name = target_label.split("_")[0]
 
-        base_row = session.scalars(
-            select(BackupHistory)
+        base_job = session.scalars(
+            select(Job)
             .where(
-                BackupHistory.cluster_id == cluster_id,
-                BackupHistory.backup_type == "full",
-                BackupHistory.status == "FINISHED",
-                BackupHistory.label.like(f"{database_name}_%"),
-                BackupHistory.finished_at < target_row.finished_at,
+                Job.cluster_id == cluster_id,
+                Job.job_type == "backup_full",
+                Job.status == JobStatus.SUCCESS.value,
+                Job.label.like(f"{database_name}_%"),
+                Job.finished_at < target_job.finished_at,
             )
-            .order_by(BackupHistory.finished_at.desc())
+            .order_by(Job.finished_at.desc())
             .limit(1)
         ).first()
-        if base_row is None:
+        if base_job is None:
             raise exceptions.NoSuccessfulFullBackupFoundError(target_label)
 
-        return [base_row.label, target_label]
+        return [base_job.label, target_label]
 
-    raise ValueError(f"Unknown backup type '{target_row.backup_type}' for label '{target_label}'")
+    raise ValueError(f"Unknown backup type '{target_job.job_type}' for label '{target_label}'")
 
 
 def find_backup_repository(session: Session, cluster_id: int, target_label: str) -> str:
-    """Resolve the repository a backup was stored in from its own recorded history.
+    """Resolve the repository a backup was stored in from its own recorded job.
 
     Per specs/api-job-execution "Restore requests accept at most one of group or
     table", restore determines which repository holds the target backup from
-    `backup_history` rather than from any client-supplied field or a cluster-level
+    `Job.repository` rather than from any client-supplied field or a cluster-level
     default - see openspec/changes/decouple-database-and-repository-from-cluster.
 
     Raises:
-        BackupLabelNotFoundError: If target_label has no finished backup on record.
+        BackupLabelNotFoundError: If target_label has no successful backup job on record.
     """
-    row = session.scalars(
-        select(BackupHistory).where(
-            BackupHistory.cluster_id == cluster_id,
-            BackupHistory.label == target_label,
-            BackupHistory.status == "FINISHED",
+    job = session.scalars(
+        select(Job).where(
+            Job.cluster_id == cluster_id,
+            Job.label == target_label,
+            Job.status == JobStatus.SUCCESS.value,
         )
     ).first()
-    if row is None:
+    if job is None:
         raise exceptions.BackupLabelNotFoundError(target_label)
-    return row.repository
+    return job.repository
 
 
 def get_tables_from_backup(
@@ -533,6 +544,8 @@ def execute_restore_flow(
     tables_to_restore: list[str],
     rename_suffix: str = "_restored",
     skip_confirmation: bool = False,
+    *,
+    job_id: int,
     on_progress: Callable[[dict], None] | None = None,
 ) -> dict:
     """Execute the complete restore flow with safety measures.
@@ -546,6 +559,9 @@ def execute_restore_flow(
         tables_to_restore: List of tables to restore (format: database.table)
         rename_suffix: Suffix for temporary tables
         skip_confirmation: If True, skip interactive confirmation prompt
+        job_id: Job this restore belongs to; forwarded to each underlying
+            `execute_restore` call (base backup, then incremental if any), whose
+            history rows interleave in time order under this one `job_id`.
         on_progress: Optional callback forwarded to each underlying
             execute_restore call (base backup, then incremental if any).
             Defaults to None (no behavior change).
@@ -605,10 +621,9 @@ def execute_restore_flow(
                 cluster_id,
                 base_restore_command,
                 base_label,
-                "full",
-                repo_name,
                 database_name,
                 scope="restore",
+                job_id=job_id,
                 on_progress=on_progress,
             )
 
@@ -684,10 +699,9 @@ def execute_restore_flow(
                         cluster_id,
                         incremental_restore_command,
                         incremental_label,
-                        "incremental",
-                        repo_name,
                         database_name,
                         scope="restore",
+                        job_id=job_id,
                         on_progress=on_progress,
                     )
 

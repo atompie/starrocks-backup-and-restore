@@ -16,18 +16,17 @@ import datetime as dt
 from datetime import datetime
 
 from starrocks_br import labels
-from starrocks_br.store.models import BackupHistory
+from starrocks_br.store.models import Job, JobStatus
 
 
 def _add_history(session, cluster_id, label):
     session.add(
-        BackupHistory(
+        Job(
             cluster_id=cluster_id,
+            job_type="backup_full",
+            backend="thread",
+            status=JobStatus.SUCCESS.value,
             label=label,
-            backup_type="full",
-            status="FINISHED",
-            repository="repo",
-            started_at=dt.datetime(2025, 1, 1),
             finished_at=dt.datetime(2025, 1, 1, 1),
         )
     )

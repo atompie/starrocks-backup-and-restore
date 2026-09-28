@@ -46,7 +46,7 @@ def test_submit_backup_full_returns_202_with_job(api_client, monkeypatch):
     _mock_group_check(monkeypatch)
     _mock_repository_check(monkeypatch)
     monkeypatch.setitem(
-        handlers.JOB_HANDLERS, "backup_full", lambda cluster, params, on_progress=None: {"label": "x"}
+        handlers.JOB_HANDLERS, "backup_full", lambda cluster, params, job_id, on_progress=None: {"label": "x"}
     )
 
     cluster_id = _create_cluster(api_client)
@@ -75,7 +75,7 @@ def test_get_unknown_job_is_404(api_client):
 def test_submit_then_poll_to_terminal_state_success(api_client, monkeypatch):
     from starrocks_br.jobs import handlers
 
-    def handler(cluster, params, on_progress=None):
+    def handler(cluster, params, job_id, on_progress=None):
         return {"label": "done"}
 
     _mock_group_check(monkeypatch)
@@ -99,7 +99,7 @@ def test_poll_reports_progress_mid_run_then_terminal(api_client, monkeypatch):
 
     release = threading.Event()
 
-    def handler(cluster, params, on_progress=None):
+    def handler(cluster, params, job_id, on_progress=None):
         on_progress({"state": "UPLOADING", "progress_pct": 55})
         release.wait(timeout=2)
         return {}
@@ -136,7 +136,7 @@ def test_no_progress_phase_reports_running_without_percentage(api_client, monkey
 
     release = threading.Event()
 
-    def handler(cluster, params, on_progress=None):
+    def handler(cluster, params, job_id, on_progress=None):
         on_progress({"state": "PENDING", "progress_pct": None})
         release.wait(timeout=2)
         return {}
@@ -170,7 +170,7 @@ def test_no_progress_phase_reports_running_without_percentage(api_client, monkey
 def test_submit_job_failure_is_reported(api_client, monkeypatch):
     from starrocks_br.jobs import handlers
 
-    def failing_handler(cluster, params, on_progress=None):
+    def failing_handler(cluster, params, job_id, on_progress=None):
         raise RuntimeError("connection refused")
 
     _mock_group_check(monkeypatch)
@@ -194,7 +194,7 @@ def test_backend_override_is_honored(api_client, monkeypatch):
     _mock_group_check(monkeypatch)
     _mock_repository_check(monkeypatch)
     monkeypatch.setitem(
-        handlers.JOB_HANDLERS, "backup_full", lambda cluster, params, on_progress=None: {}
+        handlers.JOB_HANDLERS, "backup_full", lambda cluster, params, job_id, on_progress=None: {}
     )
 
     cluster_id = _create_cluster(api_client)
@@ -326,7 +326,7 @@ def test_submit_restore_neither_group_nor_table_succeeds(api_client, monkeypatch
     from starrocks_br.jobs import handlers
 
     monkeypatch.setitem(
-        handlers.JOB_HANDLERS, "restore", lambda cluster, params, on_progress=None: {}
+        handlers.JOB_HANDLERS, "restore", lambda cluster, params, job_id, on_progress=None: {}
     )
 
     cluster_id = _create_cluster(api_client)
@@ -371,7 +371,7 @@ def _submit_backup_full(api_client, monkeypatch, cluster_id, group_id=1):
     _mock_group_check(monkeypatch)
     _mock_repository_check(monkeypatch)
     monkeypatch.setitem(
-        handlers.JOB_HANDLERS, "backup_full", lambda cluster, params, on_progress=None: {}
+        handlers.JOB_HANDLERS, "backup_full", lambda cluster, params, job_id, on_progress=None: {}
     )
     submitted = api_client.post(
         f"/backup/manual/full/cluster/{cluster_id}",
@@ -385,7 +385,7 @@ def _submit_prune(api_client, monkeypatch, cluster_id, group_id=1):
 
     _mock_group_check(monkeypatch)
     monkeypatch.setitem(
-        handlers.JOB_HANDLERS, "prune", lambda cluster, params, on_progress=None: {}
+        handlers.JOB_HANDLERS, "prune", lambda cluster, params, job_id, on_progress=None: {}
     )
     submitted = api_client.post(
         f"/backup/manual/prune/cluster/{cluster_id}",
@@ -443,7 +443,7 @@ def test_backup_history_filters_by_status(api_client, monkeypatch):
     monkeypatch.setitem(
         handlers.JOB_HANDLERS,
         "backup_full",
-        lambda cluster, params, on_progress=None: (_ for _ in ()).throw(RuntimeError("boom")),
+        lambda cluster, params, job_id, on_progress=None: (_ for _ in ()).throw(RuntimeError("boom")),
     )
     failed = api_client.post(
         f"/backup/manual/full/cluster/{cluster_id}", json={"group_id": 1, "repository": "s3_repo"}
@@ -451,7 +451,7 @@ def test_backup_history_filters_by_status(api_client, monkeypatch):
     _wait_for_terminal(api_client, failed["id"])
 
     monkeypatch.setitem(
-        handlers.JOB_HANDLERS, "backup_full", lambda cluster, params, on_progress=None: {}
+        handlers.JOB_HANDLERS, "backup_full", lambda cluster, params, job_id, on_progress=None: {}
     )
     succeeded = api_client.post(
         f"/backup/manual/full/cluster/{cluster_id}", json={"group_id": 1, "repository": "s3_repo"}
@@ -554,3 +554,111 @@ def test_backup_history_filters_by_group_id_paginates(api_client, monkeypatch):
     assert response.status_code == 200
     body = response.json()
     assert [job["id"] for job in body] == [expected_order[1]["id"], expected_order[2]["id"]]
+
+
+def test_get_job_history_for_unknown_job_is_404(api_client):
+    assert api_client.get("/job/999/history").status_code == 404
+
+
+def test_get_job_history_empty_for_pending_job(api_client, monkeypatch):
+    """A job with no recorded history yet (still PENDING) returns an empty list with 200."""
+    release = threading.Event()
+
+    def handler(cluster, params, job_id, on_progress=None):
+        release.wait(timeout=2)
+        return {}
+
+    from starrocks_br.jobs import handlers
+
+    _mock_group_check(monkeypatch)
+    _mock_repository_check(monkeypatch)
+    monkeypatch.setitem(handlers.JOB_HANDLERS, "backup_full", handler)
+
+    cluster_id = _create_cluster(api_client)
+    submitted = api_client.post(
+        f"/backup/manual/full/cluster/{cluster_id}", json={"group_id": 1, "repository": "s3_repo"}
+    ).json()
+
+    try:
+        response = api_client.get(f"/job/{submitted['id']}/history")
+        assert response.status_code == 200
+        assert response.json() == []
+    finally:
+        release.set()
+        _wait_for_terminal(api_client, submitted["id"])
+
+
+def test_get_backup_job_history_returns_time_ordered_entries(api_client, monkeypatch):
+    from starrocks_br import history
+    from starrocks_br.jobs import handlers
+    from starrocks_br.store.session import get_session_factory
+
+    def handler(cluster, params, job_id, on_progress=None):
+        history.append_backup_event(get_session_factory(), job_id, "SNAPSHOTING")
+        history.append_backup_event(get_session_factory(), job_id, "UPLOADING")
+        return {}
+
+    _mock_group_check(monkeypatch)
+    _mock_repository_check(monkeypatch)
+    monkeypatch.setitem(handlers.JOB_HANDLERS, "backup_full", handler)
+
+    cluster_id = _create_cluster(api_client)
+    submitted = api_client.post(
+        f"/backup/manual/full/cluster/{cluster_id}", json={"group_id": 1, "repository": "s3_repo"}
+    ).json()
+
+    _wait_for_terminal(api_client, submitted["id"])
+
+    response = api_client.get(f"/job/{submitted['id']}/history")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert [entry["status"] for entry in body] == ["SNAPSHOTING", "UPLOADING"]
+    assert all(entry["job_id"] == submitted["id"] for entry in body)
+
+
+def test_get_restore_job_history_uses_restore_history_table(api_client, monkeypatch):
+    from starrocks_br import history
+    from starrocks_br.jobs import handlers
+    from starrocks_br.store.session import get_session_factory
+
+    def handler(cluster, params, job_id, on_progress=None):
+        history.append_restore_event(get_session_factory(), job_id, "DOWNLOADING")
+        return {}
+
+    monkeypatch.setitem(handlers.JOB_HANDLERS, "restore", handler)
+
+    cluster_id = _create_cluster(api_client)
+    submitted = api_client.post(
+        f"/backup/manual/restore/cluster/{cluster_id}", json={"target_label": "some_label"}
+    ).json()
+
+    _wait_for_terminal(api_client, submitted["id"])
+
+    response = api_client.get(f"/job/{submitted['id']}/history")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert [entry["status"] for entry in body] == ["DOWNLOADING"]
+
+
+def test_get_prune_job_history_is_empty_no_log_table(api_client, monkeypatch):
+    """Retention/prune jobs have no log table; history is an empty 200, not 404."""
+    from starrocks_br.jobs import handlers
+
+    _mock_group_check(monkeypatch)
+    monkeypatch.setitem(
+        handlers.JOB_HANDLERS, "prune", lambda cluster, params, job_id, on_progress=None: {}
+    )
+
+    cluster_id = _create_cluster(api_client)
+    submitted = api_client.post(
+        f"/backup/manual/prune/cluster/{cluster_id}", json={"group_id": 1, "keep_last": 1}
+    ).json()
+
+    _wait_for_terminal(api_client, submitted["id"])
+
+    response = api_client.get(f"/job/{submitted['id']}/history")
+
+    assert response.status_code == 200
+    assert response.json() == []

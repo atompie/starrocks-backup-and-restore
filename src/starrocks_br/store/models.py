@@ -74,6 +74,8 @@ class Job(Base):
     state_detail: Mapped[str | None] = mapped_column(String(64), nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     result_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    label: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
+    repository: Mapped[str | None] = mapped_column(String(128), nullable=True)
     created_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     started_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     finished_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -144,37 +146,37 @@ class TableInventory(Base):
 
 
 class BackupHistory(Base):
+    """Append-only log of a backup job's StarRocks-reported states.
+
+    One row per distinct state (see `history.append_backup_event`); never
+    updated or deleted after being written.
+    """
+
     __tablename__ = "backup_history"
-    __table_args__ = (UniqueConstraint("cluster_id", "label", name="uq_backup_history_cluster_label"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    cluster_id: Mapped[int] = mapped_column(ForeignKey("clusters.id", ondelete="CASCADE"), nullable=False, index=True)
-    label: Mapped[str] = mapped_column(String(255), nullable=False)
-    backup_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    job_id: Mapped[int] = mapped_column(ForeignKey("jobs.id", ondelete="CASCADE"), nullable=False, index=True)
+    ts: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
-    repository: Mapped[str] = mapped_column(String(128), nullable=False)
-    started_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    finished_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    details_json: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class RestoreHistory(Base):
+    """Append-only log of a restore job's StarRocks-reported states.
+
+    One row per distinct state (see `history.append_restore_event`); never
+    updated or deleted after being written.
+    """
+
     __tablename__ = "restore_history"
-    __table_args__ = (UniqueConstraint("cluster_id", "job_id", name="uq_restore_history_cluster_job"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    cluster_id: Mapped[int] = mapped_column(ForeignKey("clusters.id", ondelete="CASCADE"), nullable=False, index=True)
-    job_id: Mapped[str] = mapped_column(String(128), nullable=False)
-    backup_label: Mapped[str] = mapped_column(String(255), nullable=False)
-    restore_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    job_id: Mapped[int] = mapped_column(ForeignKey("jobs.id", ondelete="CASCADE"), nullable=False, index=True)
+    ts: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
-    repository: Mapped[str] = mapped_column(String(128), nullable=False)
-    started_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    finished_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
-    verification_checksum: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    created_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    details_json: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class RunStatus(Base):

@@ -66,14 +66,36 @@ live-validation pattern rather than adding schema.
 - [x] 3.3 Document the `(cluster_id, name)` reference pattern in `SPEC.md` §4, and note it applies wherever a repository is referenced (Schedule, Backup Reference, restore target)
 - [x] 3.4 Tests: repository validated live on schedule create/update; cross-cluster repository name rejected
 
-## 4. Job event log (Backup, Restore and Retention History)
+## 4. Job history log (Backup History, Restore History)
 
-- [ ] 4.1 Add a `job_events` table (`id`, `job_id` FK `ON DELETE CASCADE`, `ts`, `event`, `message`, `details_json`) for all job types, with a migration
-- [ ] 4.2 Add a `history.append_event(job_id, event, ...)` helper that runs in its own short-lived session and only ever inserts
-- [ ] 4.3 Emit backup events (§17): `STARTED`, `CONNECTING`, `BACKUP_STARTED`, `DATABASE_STARTED`, `TABLE_COMPLETED`, `BACKUP_FINISHED`, `SUCCESS` / `ERROR`, `FAILED`. Forward `executor` progress callbacks into events.
-- [ ] 4.4 Emit restore events (§26): `RESTORE_STARTED`, `CONNECTING`, `DATABASE_RESTORING`, `TABLE_RESTORED`, `RESTORE_FINISHED`, `SUCCESS` / `ERROR`, `FAILED`
-- [ ] 4.5 Add `GET /job/{job_id}/history` that returns the event log in time order
-- [ ] 4.6 Unit tests: success path and failure path event sequences; confirm events are never updated
+Repurposes the existing `BackupHistory`/`RestoreHistory` tables (today: one best-effort summary
+row per run, keyed by `(cluster_id, label)`, not linked to `Job.id`) into genuine append-only
+logs keyed by `job_id`. No log table for Retention Jobs — `Job.status` alone covers them.
+
+- [x] 4.1 Repurpose `backup_history`/`restore_history`: replace the `(cluster_id, label)` keying
+  with `job_id` (FK `ON DELETE CASCADE` to `jobs.id`; cluster is reached via `Job.cluster_id`, no
+  duplicated column), and replace the single summary row's columns with `ts`, `status`, `message`
+  (nullable), `details_json` (nullable). Migration drops the old unique constraint/columns and
+  adds the FK.
+- [x] 4.2 Add a `history.append_backup_event(job_id, status, ...)` / `append_restore_event(...)`
+  helper (one per table) that runs in its own short-lived session and only ever inserts. Each
+  helper skips the insert if `status` is unchanged from that job's last row (dedup on state
+  change, keeps row volume small); a terminal `SUCCESS`/`FAILED` row is always appended
+  regardless of dedup.
+- [x] 4.3 Wire `executor.poll_backup_status`'s existing `on_progress` callback into
+  `append_backup_event`: one row per distinct StarRocks-native `SHOW BACKUP` state
+  (`PENDING`/`SNAPSHOTING`/`UPLOADING`/`SAVE_META`/`UPLOAD_INFO`/...), plus a final `SUCCESS` or
+  `FAILED` row when `execute_backup` completes (`message`/`details_json` carry the StarRocks error
+  detail, `progress_pct`, `unfinished_tasks` on failure). Remove the old best-effort single-row
+  `history.log_backup` write it replaces.
+- [x] 4.4 Same for restore: wire `restore.poll_restore_status`'s `on_progress` into
+  `append_restore_event`, fed by `SHOW RESTORE`'s native states, with a final `SUCCESS`/`FAILED`
+  row. Remove the old best-effort single-row `history.log_restore` write it replaces.
+- [x] 4.5 Add `GET /job/{job_id}/history` that returns the matching table's rows (by the job's
+  `job_type`) in time order
+- [x] 4.6 Unit tests: state-change dedup (repeated identical poll state writes no row), a
+  terminal `SUCCESS`/`FAILED` row is always appended even after several intermediate rows,
+  confirm rows are never updated, cluster-scoped history query via join through `Job.cluster_id`
 
 ## 5. Link jobs to schedules; retention and expiry fields
 

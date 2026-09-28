@@ -66,7 +66,7 @@ def _run_job(job_id: int) -> None:
     on_progress = _make_progress_callback(job_id)
 
     try:
-        result = handler(cluster, params, on_progress)
+        result = handler(cluster, params, job_id, on_progress)
     except Exception as e:
         with session_scope() as session:
             job = session.get(Job, job_id)

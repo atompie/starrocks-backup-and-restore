@@ -14,8 +14,10 @@ from ._shared import connect, ensure_ready
 OnProgress = Callable[[dict], None] | None
 
 
-def run_prune(cluster: Cluster, params: dict[str, Any], on_progress: OnProgress = None) -> dict:
-    del on_progress  # prune has no long-running per-snapshot progress to report
+def run_prune(
+    cluster: Cluster, params: dict[str, Any], job_id: int, on_progress: OnProgress = None
+) -> dict:
+    del job_id, on_progress  # prune has no per-job history log and no per-snapshot progress
 
     group = params.get("group_id")
     if not group:

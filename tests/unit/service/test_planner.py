@@ -19,7 +19,7 @@ from unittest.mock import Mock
 import pytest
 
 from starrocks_br import exceptions, planner
-from starrocks_br.store.models import BackupHistory, BackupPartition, TableInventory
+from starrocks_br.store.models import BackupPartition, Job, JobStatus, TableInventory
 
 
 @pytest.fixture
@@ -29,15 +29,18 @@ def db_with_timezone():
     return db
 
 
+_BACKUP_TYPE_TO_JOB_TYPE = {"full": "backup_full", "incremental": "backup_incremental"}
+
+
 def _add_backup_history(session, cluster_id, label, backup_type, finished_at, status="FINISHED"):
     session.add(
-        BackupHistory(
+        Job(
             cluster_id=cluster_id,
+            job_type=_BACKUP_TYPE_TO_JOB_TYPE[backup_type],
+            backend="thread",
+            status=JobStatus.SUCCESS.value if status == "FINISHED" else JobStatus.FAILED.value,
             label=label,
-            backup_type=backup_type,
-            status=status,
             repository="repo",
-            started_at=finished_at,
             finished_at=finished_at,
         )
     )

@@ -61,7 +61,7 @@ def _wait_until_terminal(job_id: int, timeout: float = 2.0) -> Job:
 
 
 def test_thread_backend_success_path(cluster_id, monkeypatch):
-    def fake_handler(cluster, params, on_progress=None):
+    def fake_handler(cluster, params, job_id, on_progress=None):
         if on_progress:
             on_progress({"state": "UPLOADING", "progress_pct": 50})
         return {"ok": True}
@@ -89,7 +89,7 @@ def test_thread_backend_success_path(cluster_id, monkeypatch):
 
 
 def test_thread_backend_failure_path(cluster_id, monkeypatch):
-    def failing_handler(cluster, params, on_progress=None):
+    def failing_handler(cluster, params, job_id, on_progress=None):
         raise RuntimeError("boom")
 
     monkeypatch.setitem(handlers.JOB_HANDLERS, "backup_full", failing_handler)
@@ -114,7 +114,7 @@ def test_thread_backend_failure_path(cluster_id, monkeypatch):
 def test_progress_callback_updates_job_row_mid_run(cluster_id, monkeypatch):
     seen_mid_run = {}
 
-    def handler_with_progress(cluster, params, on_progress=None):
+    def handler_with_progress(cluster, params, job_id, on_progress=None):
         on_progress({"state": "UPLOADING", "progress_pct": 77})
         with session_module.session_scope() as session:
             job = session.query(Job).filter_by(cluster_id=cluster.id).first()

@@ -38,12 +38,12 @@ def fake_session(mocker):
 
 def test_run_prune_requires_group(cluster, mock_decrypt):
     with pytest.raises(ValueError, match="'group_id' is required"):
-        prune_command.run_prune(cluster, {"keep_last": 1})
+        prune_command.run_prune(cluster, {"keep_last": 1}, job_id=1)
 
 
 def test_run_prune_requires_exactly_one_strategy(cluster, mock_decrypt):
     with pytest.raises(ValueError, match="exactly one"):
-        prune_command.run_prune(cluster, {"group_id": 1})
+        prune_command.run_prune(cluster, {"group_id": 1}, job_id=1)
 
 
 def test_run_prune_deletes_matching_snapshots(
@@ -63,7 +63,7 @@ def test_run_prune_deletes_matching_snapshots(
     drop = mocker.patch("starrocks_br.prune.execute_drop_snapshot")
     cleanup = mocker.patch("starrocks_br.prune.cleanup_backup_history")
 
-    result = prune_command.run_prune(cluster, {"group_id": 1, "keep_last": 1})
+    result = prune_command.run_prune(cluster, {"group_id": 1, "keep_last": 1}, job_id=1)
 
     assert result == {"deleted": ["a"], "kept_count": 1}
     get_backups.assert_called_once_with(fake_session, cluster.id, 1)
@@ -89,7 +89,7 @@ def test_run_prune_dry_run_reports_would_delete_without_deleting(
     drop = mocker.patch("starrocks_br.prune.execute_drop_snapshot")
     cleanup = mocker.patch("starrocks_br.prune.cleanup_backup_history")
 
-    result = prune_command.run_prune(cluster, {"group_id": 1, "keep_last": 1, "dry_run": True})
+    result = prune_command.run_prune(cluster, {"group_id": 1, "keep_last": 1, "dry_run": True}, job_id=1)
 
     assert result == {"deleted": [], "would_delete": ["a"], "kept_count": 1}
     drop.assert_not_called()
@@ -102,7 +102,7 @@ def test_run_prune_no_backups_at_all_omits_would_delete_key(
     """CLI distinguishes "no backups exist" from "nothing matched" by this key's absence."""
     mocker.patch("starrocks_br.prune.get_successful_backups", return_value=[])
 
-    result = prune_command.run_prune(cluster, {"group_id": 1, "keep_last": 1, "dry_run": True})
+    result = prune_command.run_prune(cluster, {"group_id": 1, "keep_last": 1, "dry_run": True}, job_id=1)
 
     assert result == {"deleted": [], "kept_count": 0}
     assert "would_delete" not in result

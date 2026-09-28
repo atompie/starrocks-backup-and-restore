@@ -18,7 +18,7 @@ from typing import Literal
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .store.models import BackupHistory
+from .store.models import Job
 
 
 def determine_backup_label(
@@ -32,7 +32,8 @@ def determine_backup_label(
 
     This is the single entry point for all backup label generation. It handles both
     custom names and auto-generated date-based labels, ensuring uniqueness by checking
-    the backup_history table for this cluster.
+    previously-assigned labels on this cluster's `Job` rows (see design.md of
+    add-job-history-log: `Job.label` is the backup catalog `backup_history` used to serve).
 
     Args:
         session: SQLite metastore session
@@ -53,9 +54,9 @@ def determine_backup_label(
 
     try:
         rows = session.scalars(
-            select(BackupHistory.label)
-            .where(BackupHistory.cluster_id == cluster_id, BackupHistory.label.like(f"{base_label}%"))
-            .order_by(BackupHistory.label)
+            select(Job.label)
+            .where(Job.cluster_id == cluster_id, Job.label.like(f"{base_label}%"))
+            .order_by(Job.label)
         )
         existing_labels = list(rows)
     except Exception:

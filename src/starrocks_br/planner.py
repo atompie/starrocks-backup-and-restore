@@ -19,38 +19,42 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from starrocks_br import exceptions, logger, timezone, utils
-from starrocks_br.store.models import BackupHistory, BackupPartition, TableInventory
+from starrocks_br.store.models import BackupPartition, Job, JobStatus, TableInventory
 
 
 def find_latest_full_backup(db, session: Session, cluster_id: int, database: str) -> dict[str, str] | None:
     """Find the latest successful full backup for a database.
 
+    Resolved from `Job` (`label`/`job_type`/`status`/`finished_at`) rather than a separate
+    backup catalog - see add-job-history-log's design.md "The backup catalog moves from
+    `backup_history` to two new columns on `Job`".
+
     Args:
         db: Database connection (only used for its `.timezone`)
         session: SQLite metastore session
-        cluster_id: Cluster this backup history belongs to
+        cluster_id: Cluster this backup belongs to
         database: Database name to search for
 
     Returns:
         Dictionary with keys: label, backup_type, finished_at, or None if no full backup found.
         The finished_at value is returned as a string in the cluster timezone format.
     """
-    row = session.scalars(
-        select(BackupHistory)
+    job = session.scalars(
+        select(Job)
         .where(
-            BackupHistory.cluster_id == cluster_id,
-            BackupHistory.backup_type == "full",
-            BackupHistory.status == "FINISHED",
-            BackupHistory.label.like(f"{database}_%"),
+            Job.cluster_id == cluster_id,
+            Job.job_type == "backup_full",
+            Job.status == JobStatus.SUCCESS.value,
+            Job.label.like(f"{database}_%"),
         )
-        .order_by(BackupHistory.finished_at.desc())
+        .order_by(Job.finished_at.desc())
         .limit(1)
     ).first()
 
-    if row is None:
+    if job is None:
         return None
 
-    finished_at = row.finished_at
+    finished_at = job.finished_at
 
     if isinstance(finished_at, datetime.datetime):
         finished_at_normalized = timezone.normalize_datetime_to_tz(finished_at, db.timezone)
@@ -58,7 +62,7 @@ def find_latest_full_backup(db, session: Session, cluster_id: int, database: str
     elif not isinstance(finished_at, str):
         finished_at = str(finished_at)
 
-    return {"label": row.label, "backup_type": row.backup_type, "finished_at": finished_at}
+    return {"label": job.label, "backup_type": "full", "finished_at": finished_at}
 
 
 def find_tables_by_group(session: Session, cluster_id: int, group_id: int) -> list[dict[str, str]]:
@@ -167,16 +171,16 @@ def find_recent_partitions(
     cluster_tz = db.timezone
 
     if baseline_backup_label:
-        baseline_row = session.scalars(
-            select(BackupHistory).where(
-                BackupHistory.cluster_id == cluster_id,
-                BackupHistory.label == baseline_backup_label,
-                BackupHistory.status == "FINISHED",
+        baseline_job = session.scalars(
+            select(Job).where(
+                Job.cluster_id == cluster_id,
+                Job.label == baseline_backup_label,
+                Job.status == JobStatus.SUCCESS.value,
             )
         ).first()
-        if baseline_row is None:
+        if baseline_job is None:
             raise exceptions.BackupLabelNotFoundError(baseline_backup_label)
-        baseline_time_raw = baseline_row.finished_at
+        baseline_time_raw = baseline_job.finished_at
     else:
         latest_backup = find_latest_full_backup(db, session, cluster_id, database)
         if not latest_backup:
