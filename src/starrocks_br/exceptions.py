@@ -177,3 +177,16 @@ class InvalidCadenceError(StarRocksBRError):
         self.cadence = cadence
         self.reason = reason
         super().__init__(f"Invalid cadence expression '{cadence}': {reason}")
+
+
+class ScheduleImmutableError(StarRocksBRError):
+    def __init__(self, schedule_id: int):
+        self.schedule_id = schedule_id
+        super().__init__(
+            f"Schedule {schedule_id} is a one-shot schedule and cannot be modified after creation"
+        )
+
+
+class InvalidScheduleFieldsError(StarRocksBRError):
+    def __init__(self, message: str):
+        super().__init__(message)

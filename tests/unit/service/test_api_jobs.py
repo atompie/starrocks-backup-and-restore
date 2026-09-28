@@ -92,6 +92,10 @@ def test_submit_then_poll_to_terminal_state_success(api_client, monkeypatch):
     assert final["status"] == "SUCCESS"
     assert final["started_at"] is not None
     assert final["finished_at"] is not None
+    assert final["schedule_id"] is None
+    assert final["group_id"] == 1
+    assert final["baseline_job_id"] is None
+    assert final["result_json"] is not None
 
 
 def test_poll_reports_progress_mid_run_then_terminal(api_client, monkeypatch):
@@ -538,6 +542,75 @@ def test_backup_history_filters_by_group_id_and_job_type_combined(api_client, mo
     assert response.status_code == 200
     body = response.json()
     assert [job["id"] for job in body] == [backup_job["id"]]
+
+
+def _create_group(api_client, cluster_id, name="g1") -> int:
+    response = api_client.post(
+        f"/inventories/cluster/{cluster_id}",
+        json={"name": name, "tables": [{"database": "sales_db", "table": "*"}]},
+    )
+    assert response.status_code == 201
+    return response.json()["id"]
+
+
+def _submit_via_one_shot_schedule(api_client, monkeypatch, cluster_id, group_id) -> dict:
+    from starrocks_br.api.routes import schedules as schedules_module
+    from starrocks_br.jobs import handlers
+
+    monkeypatch.setattr(
+        schedules_module, "ensure_repository_exists", lambda cluster, repository_name: None
+    )
+    monkeypatch.setitem(
+        handlers.JOB_HANDLERS, "backup_full", lambda cluster, params, job_id, on_progress=None: {}
+    )
+    schedule = api_client.post(
+        f"/backup/schedules/cluster/{cluster_id}",
+        json={"job_type": "backup_full", "inventory_group_id": group_id, "repository": "s3_repo"},
+    ).json()
+    job = _wait_for_terminal(api_client, schedule["last_run_job_id"])
+    return job, schedule
+
+
+def test_get_job_reports_schedule_id_for_a_schedule_submitted_job(api_client, monkeypatch):
+    cluster_id = _create_cluster(api_client)
+    group_id = _create_group(api_client, cluster_id)
+    job, schedule = _submit_via_one_shot_schedule(api_client, monkeypatch, cluster_id, group_id)
+
+    assert job["schedule_id"] == schedule["id"]
+
+
+def test_backup_history_filters_by_schedule_id(api_client, monkeypatch):
+    cluster_id = _create_cluster(api_client)
+    group_id = _create_group(api_client, cluster_id)
+    scheduled_job, schedule = _submit_via_one_shot_schedule(api_client, monkeypatch, cluster_id, group_id)
+    _submit_backup_full(api_client, monkeypatch, cluster_id, group_id=1)
+
+    response = api_client.get(
+        f"/backup/history/cluster/{cluster_id}", params={"schedule_id": schedule["id"]}
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert [job["id"] for job in body] == [scheduled_job["id"]]
+
+
+def test_backup_history_filters_by_schedule_id_excludes_directly_submitted_jobs(api_client, monkeypatch):
+    """A job submitted before schedule linkage existed (or submitted directly, never
+    through a schedule) has schedule_id = null and must never match a schedule_id filter,
+    even though it belongs to the same cluster as a schedule-submitted job."""
+    cluster_id = _create_cluster(api_client)
+    group_id = _create_group(api_client, cluster_id)
+    scheduled_job, schedule = _submit_via_one_shot_schedule(api_client, monkeypatch, cluster_id, group_id)
+    direct_job = _submit_backup_full(api_client, monkeypatch, cluster_id, group_id=1)
+
+    response = api_client.get(
+        f"/backup/history/cluster/{cluster_id}", params={"schedule_id": schedule["id"]}
+    )
+
+    assert response.status_code == 200
+    result_ids = [job["id"] for job in response.json()]
+    assert result_ids == [scheduled_job["id"]]
+    assert direct_job["id"] not in result_ids
 
 
 def test_backup_history_filters_by_group_id_paginates(api_client, monkeypatch):

@@ -25,10 +25,12 @@ def create(
     job_type: str,
     inventory_group_id: int,
     repository: str,
-    cadence: str,
+    cadence: str | None,
     backend: str | None,
     enabled: bool,
-    next_run_at: datetime.datetime,
+    next_run_at: datetime.datetime | None,
+    retention: int | None = None,
+    expire_after_days: int | None = None,
 ) -> Schedule:
     schedule = Schedule(
         cluster_id=cluster_id,
@@ -39,6 +41,8 @@ def create(
         backend=backend,
         enabled=enabled,
         next_run_at=next_run_at,
+        retention=retention,
+        expire_after_days=expire_after_days,
     )
     db.add(schedule)
     db.flush()
@@ -74,9 +78,18 @@ def delete(db: Session, schedule: Schedule) -> None:
 
 
 def due_schedules(db: Session, now: datetime.datetime) -> list[Schedule]:
+    """A one-shot schedule (`cadence IS NULL`) is never due - it runs exactly once, at creation.
+
+    Its `next_run_at` is also `NULL`, which `next_run_at <= now` already excludes on any
+    standard-SQL backend, but `cadence IS NOT NULL` is kept explicit rather than relying on that.
+    """
     return list(
         db.scalars(
-            select(Schedule).where(Schedule.enabled.is_(True), Schedule.next_run_at <= now)
+            select(Schedule).where(
+                Schedule.enabled.is_(True),
+                Schedule.cadence.is_not(None),
+                Schedule.next_run_at <= now,
+            )
         ).all()
     )
 

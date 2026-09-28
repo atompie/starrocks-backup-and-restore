@@ -111,7 +111,7 @@ def test_should_find_partitions_with_specific_baseline_backup(
         ],  # SHOW PARTITIONS result
     ]
 
-    partitions = planner.find_recent_partitions(
+    partitions, _ = planner.find_recent_partitions(
         db_with_timezone,
         sqlite_session,
         cluster.id,
@@ -193,10 +193,11 @@ def test_should_find_partitions_updated_since_latest_full_backup(
             "label": "sales_db_20251010_full",
             "backup_type": "full",
             "finished_at": "2025-10-10 10:00:00",
+            "job_id": 1,
         },
     )
 
-    partitions = planner.find_recent_partitions(
+    partitions, _ = planner.find_recent_partitions(
         db_with_timezone, sqlite_session, cluster.id, "sales_db", group_id=group_id
     )
 
@@ -261,6 +262,7 @@ def test_should_format_date_correctly_in_query(mocker, db_with_timezone, sqlite_
             "label": "sales_db_20251010_full",
             "backup_type": "full",
             "finished_at": "2025-10-10 10:00:00",
+            "job_id": 1,
         },
     )
 
@@ -402,10 +404,11 @@ def test_should_find_recent_partitions_with_group_filtering(
             "label": "sales_db_20251010_full",
             "backup_type": "full",
             "finished_at": "2025-10-10 10:00:00",
+            "job_id": 1,
         },
     )
 
-    partitions = planner.find_recent_partitions(
+    partitions, _ = planner.find_recent_partitions(
         db_with_timezone, sqlite_session, cluster.id, "sales_db", group_id=group_id
     )
 
@@ -443,10 +446,11 @@ def test_should_handle_no_recent_partitions_with_group_filtering(
             "label": "sales_db_20251010_full",
             "backup_type": "full",
             "finished_at": "2025-10-10 10:00:00",
+            "job_id": 1,
         },
     )
 
-    partitions = planner.find_recent_partitions(
+    partitions, _ = planner.find_recent_partitions(
         db_with_timezone, sqlite_session, cluster.id, "sales_db", group_id=group_id
     )
 
@@ -464,10 +468,11 @@ def test_should_return_empty_partitions_when_no_group_tables(mocker, db_with_tim
             "label": "test_db_20251010_full",
             "backup_type": "full",
             "finished_at": "2025-10-10 10:00:00",
+            "job_id": 1,
         },
     )
 
-    partitions = planner.find_recent_partitions(
+    partitions, _ = planner.find_recent_partitions(
         db_with_timezone, sqlite_session, cluster.id, "test_db", group_id=999
     )
 
@@ -640,10 +645,11 @@ def test_find_recent_partitions_handles_wildcard_group(
             "label": "sales_db_20251010_full",
             "backup_type": "full",
             "finished_at": "2025-10-10 10:00:00",
+            "job_id": 1,
         },
     )
 
-    partitions = planner.find_recent_partitions(
+    partitions, _ = planner.find_recent_partitions(
         db_with_timezone, sqlite_session, cluster.id, "sales_db", group_id=group_id
     )
 
@@ -748,10 +754,11 @@ def test_find_recent_partitions_with_multiple_tables_mixed_timestamps(
             "label": "sales_db_20251010_full",
             "backup_type": "full",
             "finished_at": "2025-10-10 10:00:00",
+            "job_id": 1,
         },
     )
 
-    partitions = planner.find_recent_partitions(
+    partitions, _ = planner.find_recent_partitions(
         db_with_timezone, sqlite_session, cluster.id, "sales_db", group_id=group_id
     )
 

@@ -34,6 +34,28 @@ builds only on earlier ones.
 - [x] Q7 Cluster delete (no schedules, enabled or disabled) is allowed and, as part of the same async cleanup job (0.8), deletes its restore jobs, both as source and as target. Restore jobs are only a record of occasional restores.
 - [x] Q8 Schedule delete always drops the S3 snapshots; no confirmation flag.
 
+## 0c. Follow-up decisions for section 5 (answered 2026-09-28)
+
+Raised, and settled, while merging former section 8 items 8.1-8.4 into section 5 to make it atomic
+(see that section's intro note).
+
+- [x] Q9 `Schedule.retention` is nullable at the DB level; "required for a recurring full schedule"
+  is enforced in `ScheduleCreate`/`commands.schedules`, not as a `NOT NULL` column. Avoids a backfill
+  migration for a field with no natural default, and matches how other create-time-required fields
+  (e.g. `inventory_group_id`'s live existence check) are already validated in this codebase.
+- [x] Q10 `Job.schedule_id` is nullable for every job type for now: `/backup/manual/full`,
+  `/backup/manual/incremental`, and `/backup/manual/prune` still submit jobs with no schedule until
+  section 8 retires those routes. Tighten (if ever) once that lands.
+- [x] Q11 Making `retention` effectively required on schedule creation is a **BREAKING** change to
+  `ScheduleCreate`, documented as such in `api-scheduling` — existing clients/tests creating a
+  schedule with no `retention` today will need updating, the same class of change as section 8's
+  delete-cascade items and 12.2.
+- [x] Q12 `Job.baseline_job_id` is resolved by changing `planner.find_recent_partitions`'s return
+  shape to also surface the resolved baseline `Job`'s id (touches its signature and its tests),
+  rather than adding a separate lookup after the fact — the caller already has to distinguish the
+  explicit-baseline path from the resolved-latest path, so it already needs to know which job was
+  used.
+
 ## 1. Baseline — already done and verified
 
 - [x] 1.1 Cluster: model, CRUD, verify endpoints, encrypted password, delete guard (`commands/clusters.py`; integration `test_clusters_live.py`)
@@ -97,14 +119,48 @@ logs keyed by `job_id`. No log table for Retention Jobs — `Job.status` alone c
   terminal `SUCCESS`/`FAILED` row is always appended even after several intermediate rows,
   confirm rows are never updated, cluster-scoped history query via join through `Job.cluster_id`
 
-## 5. Link jobs to schedules; retention and expiry fields
+## 5. Link jobs to schedules; retention/expiry fields; one-shot schedule creation
 
-- [ ] 5.1 Add to `Schedule`: `retention` (int ≥ 1; required for recurring full, must be null for incremental), and `expire_after_days` (one-shot only; null = never). Reject a one-shot incremental schedule (Q3). Update model, migration, `ScheduleCreate/Update/Read` and `openspec/specs/api-scheduling`.
-- [ ] 5.2 Add `Job.schedule_id` (FK `ON DELETE CASCADE`, nullable only for restore jobs) and set it in `run_due_schedules`
-- [ ] 5.3 Add `Job.baseline_job_id` for incremental jobs (the full job it depends on), set from the planner's baseline lookup
-- [ ] 5.4 Expose `schedule_id`, `group_id`, `baseline_job_id` and `result_json` in `JobRead`; add a `schedule_id` filter to `list_jobs` and `/backup/history/cluster/{id}`
-- [ ] 5.5 Move schedule create/update/delete logic from `api/routes/schedules.py` into `commands/schedules.py`
-- [ ] 5.6 Tests: a job created by run-due carries `schedule_id`; field validation per job type and cadence
+Merges former section 8 items 8.1-8.4 (and the matching half of 8.9) in here: those items have no
+dependency beyond this section's own schema changes, so splitting them out would have left
+`expire_after_days` and the Q3 rejection unenforceable dead schema until section 8 landed three
+sections later. What stays behind in section 8 (renumbered, see that section's intro) needs Backup
+References (section 6) or the scheduler loop (section 9), neither of which exists yet, or is a
+separable API-surface removal. See §0c for the decisions (Q9-Q12) this merge required.
+
+- [x] 5.1 ~~Move schedule create/update/delete logic from `api/routes/schedules.py` into
+  `commands/schedules.py`~~ — **already done** 2026-09-28: fell out of the
+  `move-metadata-sql-into-dal` DAL migration; routes now delegate to `commands/schedules.py`, which
+  calls `dal/metadata/schedules.py`.
+- [ ] 5.2 Make `Schedule.cadence` and `next_run_at` nullable (was 8.1). `cadence = null` marks a
+  one-shot schedule (SPEC.md §7-8).
+- [ ] 5.3 Add to `Schedule`: `retention` (int ≥ 1; required for a recurring full schedule, must be
+  null for incremental — SPEC.md §10-11; nullable at the DB level, enforced in
+  `ScheduleCreate`/`commands.schedules` per Q9 — **BREAKING**, per Q11), and `expire_after_days`
+  (one-shot only; null = never — SPEC.md §8). Reject a one-shot incremental schedule with 422 (Q3) —
+  now enforceable end-to-end since 5.2 makes one-shot creation possible. Update model, migration,
+  `ScheduleCreate/Update/Read` and `openspec/specs/api-scheduling`.
+- [ ] 5.4 Creating a schedule with `cadence = null` persists it and immediately submits exactly one
+  job through `commands.jobs.submit_job` (was 8.2)
+- [ ] 5.5 PATCH on a one-shot schedule → 409; DELETE → allowed, using today's plain (non-cascading)
+  delete — same as a recurring schedule gets today, not a regression, not yet the cascade from
+  section 8 (was 8.3)
+- [ ] 5.6 `run_due_schedules` skips `cadence IS NULL` (was 8.4)
+- [ ] 5.7 Add `Job.schedule_id` (FK `ON DELETE CASCADE`, nullable for every job type for now per
+  Q10) and set it in both `run_due_schedules` and 5.4's immediate one-shot submission
+- [ ] 5.8 Add `Job.baseline_job_id` for incremental jobs (the full job it depends on). Not known at
+  submit time — mirrors how `Job.label` is set post-hoc via `dal.metadata.jobs.set_label` from
+  `commands/backup.py::_set_job_label`: add a `set_baseline_job_id` DAL function and call it from
+  `run_backup_incremental` once the baseline resolves. Per Q12, change
+  `planner.find_recent_partitions`'s return shape to also surface the resolved baseline `Job`'s id
+  (today it returns only `list[dict]` of partitions and discards the baseline `Job` it looked up).
+- [ ] 5.9 Expose `schedule_id`, `group_id`, `baseline_job_id` and `result_json` in `JobRead`
+  (`group_id`/`result_json` are already columns, just not yet exposed); add a `schedule_id` filter
+  to `list_jobs` and `/backup/history/cluster/{id}`
+- [ ] 5.10 Tests: one-shot immutability, single job submitted on create, one-shot incremental
+  rejected, one-shot skipped by run-due (was part of 8.9); a job created by run-due or by one-shot
+  creation carries `schedule_id`; `retention`/`expire_after_days` field validation per job type and
+  cadence
 
 ## 6. Backup References
 
@@ -122,17 +178,29 @@ logs keyed by `job_id`. No log table for Retention Jobs — `Job.status` alone c
 - [ ] 7.3 Replace `except Exception: pass` in the executor with logged errors
 - [ ] 7.4 Tests: slot is released on failure; failure produces `ERROR` then `FAILED`
 
-## 8. One-shot schedules, expiry and schedule delete cascade
+## 8. Retire manual backup routes; schedule delete/expiry cascade
 
-- [ ] 8.1 Make `Schedule.cadence` and `next_run_at` nullable (migration + schemas)
-- [ ] 8.2 Creating a schedule with `cadence = null` persists it and immediately submits exactly one job through `commands.jobs.submit_job`
-- [ ] 8.3 PATCH on a one-shot schedule → 409; DELETE → allowed
-- [ ] 8.4 `run_due_schedules` skips `cadence IS NULL`
-- [ ] 8.5 Replace `/backup/manual/full` with one-shot schedule creation (thin wrapper, or removal); remove `/backup/manual/incremental` (Q3); update the `api-job-execution` spec
-- [ ] 8.6 Add job type `schedule_cleanup`: given a schedule id, `DROP SNAPSHOT` for every reference (Q8), then delete the schedule's jobs; events, references and dependent restore jobs cascade (Q6); finally delete the schedule row
-- [ ] 8.7 Schedule delete (`commands/schedules.delete_schedule` / `DELETE /backup/schedules/.../{id}`): validate synchronously — 409 if any job is `PENDING`/`RUNNING` (Q5); 409 if any of its full jobs is the `baseline_job_id` of an existing incremental in another schedule (Q2) — then submit a `schedule_cleanup` job and respond `202` with the job id (a **BREAKING** change to today's `204` contract; update `api-scheduling`)
-- [ ] 8.8 Expiry: one-shot schedules past `created_at + expire_after_days` go through the same synchronous checks and `schedule_cleanup` job as 8.7, run from the scheduler tick in section 9. If blocked (Q2/Q5), skip, log a warning and retry on the next tick.
-- [ ] 8.9 Tests: immutability, single job submitted, one-shot incremental rejected, skipped by run-due, delete returns 202 and the cleanup job drops snapshots and rows, delete blocked by active job or dependent incremental, expiry triggers cleanup, blocked expiry retried, never-expiring schedules kept
+Former 8.1-8.4 (cadence/next_run_at nullable, one-shot creation, PATCH/DELETE, run-due skip) moved
+into section 5 — see that section's intro. What's left here needs Backup References (section 6) for
+the snapshot-dropping cleanup job, or the scheduler loop (section 9) for automatic expiry — neither
+exists yet — or is a separable API-surface removal (8.1 below).
+
+- [ ] 8.1 Replace `/backup/manual/full` with one-shot schedule creation (thin wrapper, or removal);
+  remove `/backup/manual/incremental` (Q3); update the `api-job-execution` spec (was 8.5)
+- [ ] 8.2 Add job type `schedule_cleanup`: given a schedule id, `DROP SNAPSHOT` for every reference
+  (Q8, needs section 6's Backup References), then delete the schedule's jobs; events, references
+  and dependent restore jobs cascade (Q6); finally delete the schedule row (was 8.6)
+- [ ] 8.3 Schedule delete (`commands/schedules.delete_schedule` / `DELETE /backup/schedules/.../{id}`):
+  validate synchronously — 409 if any job is `PENDING`/`RUNNING` (Q5); 409 if any of its full jobs is
+  the `baseline_job_id` of an existing incremental in another schedule (Q2) — then submit a
+  `schedule_cleanup` job and respond `202` with the job id (a **BREAKING** change to today's `204`
+  contract; update `api-scheduling`) (was 8.7)
+- [ ] 8.4 Expiry: one-shot schedules past `created_at + expire_after_days` go through the same
+  synchronous checks and `schedule_cleanup` job as 8.3, run from the scheduler tick in section 9. If
+  blocked (Q2/Q5), skip, log a warning and retry on the next tick. (was 8.8)
+- [ ] 8.5 Tests: delete returns 202 and the cleanup job drops snapshots and rows, delete blocked by
+  active job or dependent incremental, expiry triggers cleanup, blocked expiry retried, never-expiring
+  schedules kept (was the remainder of 8.9)
 
 ## 9. Internal scheduler process and restart recovery
 

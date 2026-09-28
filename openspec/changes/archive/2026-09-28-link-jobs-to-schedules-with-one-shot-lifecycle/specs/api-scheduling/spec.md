@@ -1,10 +1,6 @@
-# api-scheduling Specification
+# Spec Delta
 
-## Purpose
-
-Lets operators define recurring backup schedules per cluster/group through the API instead of maintaining external cron entries by hand, and lets a lightweight periodic trigger (cron, Kubernetes CronJob) ask the server to run whatever is due.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Define a recurring backup schedule
 The system SHALL allow an authenticated client to create a recurring schedule — one that
@@ -56,49 +52,6 @@ time from the cadence.
 - **WHEN** an authenticated client creates a recurring incremental-backup schedule with a
   `retention` value set
 - **THEN** the system rejects the request with HTTP 422 and does not create a schedule
-
-### Requirement: Create a one-shot schedule
-The system SHALL allow an authenticated client to create a one-shot schedule by omitting
-`cadence` (or supplying it as null) against a registered cluster, specifying job type, inventory
-group id, repository, an optional execution backend override, and an optional `expire_after_days`
-(a positive integer; omitted or null means the schedule never expires). The system SHALL reject
-creation with HTTP 422 if the job type is `backup_incremental` — a one-shot schedule is a full
-backup only; incremental backups come only from recurring schedules. The system SHALL reject
-creation with HTTP 422 if a one-shot schedule specifies `retention` — count-based retention does
-not apply to a schedule that only ever produces one job. On successful creation the system SHALL
-persist the schedule with `cadence` and `next_run_at` both null, and SHALL immediately submit
-exactly one job for it through the same job-submission path used by a direct API job submission,
-recording that job's id against the schedule the same way a recurring schedule's triggered job is
-recorded.
-
-#### Scenario: Successful one-shot schedule creation submits exactly one job
-- **WHEN** an authenticated client creates a one-shot full-backup schedule under a valid cluster
-  id, with a valid inventory group id, a valid repository, and no `cadence`
-- **THEN** the system persists the schedule with `cadence` and `next_run_at` null, immediately
-  submits exactly one job for it, and returns the created schedule with that job recorded as its
-  most recent run
-
-#### Scenario: One-shot incremental schedule is rejected
-- **WHEN** an authenticated client attempts to create a one-shot schedule with `job_type` set to
-  `backup_incremental`
-- **THEN** the system rejects the request with HTTP 422 and does not create a schedule or submit
-  a job
-
-#### Scenario: One-shot schedule specifying retention is rejected
-- **WHEN** an authenticated client attempts to create a one-shot schedule with a `retention` value
-  set
-- **THEN** the system rejects the request with HTTP 422 and does not create a schedule
-
-#### Scenario: One-shot schedule with no expiry never expires
-- **WHEN** an authenticated client creates a one-shot schedule without specifying
-  `expire_after_days`
-- **THEN** the system persists the schedule with `expire_after_days` null, meaning it is never
-  automatically removed by expiry
-
-#### Scenario: One-shot schedule with an expiry is recorded verbatim
-- **WHEN** an authenticated client creates a one-shot schedule with `expire_after_days` set to a
-  positive integer
-- **THEN** the system persists that value on the schedule and returns it in the created schedule
 
 ### Requirement: List, update, and remove schedules
 The system SHALL allow an authenticated client to list the schedules registered against a
@@ -194,3 +147,48 @@ and it has no recurring next-run time to evaluate.
 - **WHEN** the run-due endpoint is called and a one-shot schedule exists (regardless of when it
   was created)
 - **THEN** the system does not submit a job for it and does not modify it
+
+## ADDED Requirements
+
+### Requirement: Create a one-shot schedule
+The system SHALL allow an authenticated client to create a one-shot schedule by omitting
+`cadence` (or supplying it as null) against a registered cluster, specifying job type, inventory
+group id, repository, an optional execution backend override, and an optional `expire_after_days`
+(a positive integer; omitted or null means the schedule never expires). The system SHALL reject
+creation with HTTP 422 if the job type is `backup_incremental` — a one-shot schedule is a full
+backup only; incremental backups come only from recurring schedules. The system SHALL reject
+creation with HTTP 422 if a one-shot schedule specifies `retention` — count-based retention does
+not apply to a schedule that only ever produces one job. On successful creation the system SHALL
+persist the schedule with `cadence` and `next_run_at` both null, and SHALL immediately submit
+exactly one job for it through the same job-submission path used by a direct API job submission,
+recording that job's id against the schedule the same way a recurring schedule's triggered job is
+recorded.
+
+#### Scenario: Successful one-shot schedule creation submits exactly one job
+- **WHEN** an authenticated client creates a one-shot full-backup schedule under a valid cluster
+  id, with a valid inventory group id, a valid repository, and no `cadence`
+- **THEN** the system persists the schedule with `cadence` and `next_run_at` null, immediately
+  submits exactly one job for it, and returns the created schedule with that job recorded as its
+  most recent run
+
+#### Scenario: One-shot incremental schedule is rejected
+- **WHEN** an authenticated client attempts to create a one-shot schedule with `job_type` set to
+  `backup_incremental`
+- **THEN** the system rejects the request with HTTP 422 and does not create a schedule or submit
+  a job
+
+#### Scenario: One-shot schedule specifying retention is rejected
+- **WHEN** an authenticated client attempts to create a one-shot schedule with a `retention` value
+  set
+- **THEN** the system rejects the request with HTTP 422 and does not create a schedule
+
+#### Scenario: One-shot schedule with no expiry never expires
+- **WHEN** an authenticated client creates a one-shot schedule without specifying
+  `expire_after_days`
+- **THEN** the system persists the schedule with `expire_after_days` null, meaning it is never
+  automatically removed by expiry
+
+#### Scenario: One-shot schedule with an expiry is recorded verbatim
+- **WHEN** an authenticated client creates a one-shot schedule with `expire_after_days` set to a
+  positive integer
+- **THEN** the system persists that value on the schedule and returns it in the created schedule

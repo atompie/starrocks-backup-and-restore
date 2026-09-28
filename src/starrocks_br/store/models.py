@@ -76,6 +76,12 @@ class Job(Base):
     result_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     label: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
     repository: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    schedule_id: Mapped[int | None] = mapped_column(
+        ForeignKey("schedules.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    baseline_job_id: Mapped[int | None] = mapped_column(
+        ForeignKey("jobs.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     created_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     started_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     finished_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -93,10 +99,12 @@ class Schedule(Base):
         ForeignKey("inventory_groups.id", ondelete="RESTRICT"), nullable=False, index=True
     )
     repository: Mapped[str] = mapped_column(String(128), nullable=False)
-    cadence: Mapped[str] = mapped_column(String(128), nullable=False)
+    cadence: Mapped[str | None] = mapped_column(String(128), nullable=True)
     backend: Mapped[str | None] = mapped_column(String(64), nullable=True)
     enabled: Mapped[bool] = mapped_column(default=True, nullable=False)
-    next_run_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    next_run_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    retention: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    expire_after_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
     last_run_job_id: Mapped[int | None] = mapped_column(ForeignKey("jobs.id"), nullable=True)
     created_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     updated_at: Mapped[datetime.datetime] = mapped_column(

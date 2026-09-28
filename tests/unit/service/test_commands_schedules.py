@@ -3,7 +3,7 @@ import datetime
 import pytest
 
 from starrocks_br import exceptions
-from starrocks_br.commands.schedules import compute_next_run_at, run_due_schedules
+from starrocks_br.commands.schedules import _validate_schedule_shape, compute_next_run_at, run_due_schedules
 from starrocks_br.store.models import Base, Cluster, InventoryGroup, Job, Schedule
 from starrocks_br.store.session import get_engine, session_scope
 
@@ -51,6 +51,40 @@ def test_compute_next_run_at_raises_invalid_cadence_error():
         compute_next_run_at("not-a-cadence")
 
 
+class TestValidateScheduleShape:
+    def test_recurring_full_requires_retention(self):
+        with pytest.raises(exceptions.InvalidScheduleFieldsError, match="retention"):
+            _validate_schedule_shape("backup_full", "0 0 * * *", None, None)
+
+    def test_recurring_full_with_retention_is_valid(self):
+        _validate_schedule_shape("backup_full", "0 0 * * *", 5, None)
+
+    def test_recurring_full_forbids_expire_after_days(self):
+        with pytest.raises(exceptions.InvalidScheduleFieldsError, match="expire_after_days"):
+            _validate_schedule_shape("backup_full", "0 0 * * *", 5, 3)
+
+    def test_recurring_incremental_forbids_retention(self):
+        with pytest.raises(exceptions.InvalidScheduleFieldsError, match="retention"):
+            _validate_schedule_shape("backup_incremental", "0 0 * * *", 5, None)
+
+    def test_recurring_incremental_with_no_retention_is_valid(self):
+        _validate_schedule_shape("backup_incremental", "0 0 * * *", None, None)
+
+    def test_one_shot_full_forbids_retention(self):
+        with pytest.raises(exceptions.InvalidScheduleFieldsError, match="retention"):
+            _validate_schedule_shape("backup_full", None, 5, None)
+
+    def test_one_shot_full_with_no_expiry_is_valid(self):
+        _validate_schedule_shape("backup_full", None, None, None)
+
+    def test_one_shot_full_with_expiry_is_valid(self):
+        _validate_schedule_shape("backup_full", None, None, 7)
+
+    def test_one_shot_incremental_rejected(self):
+        with pytest.raises(exceptions.InvalidScheduleFieldsError, match="incremental"):
+            _validate_schedule_shape("backup_incremental", None, None, None)
+
+
 def test_run_due_schedules_triggers_due_schedule_and_advances_next_run_at(sqlite_store, mocker):
     with session_scope() as session:
         cluster = _make_cluster(session)
@@ -83,6 +117,7 @@ def test_run_due_schedules_triggers_due_schedule_and_advances_next_run_at(sqlite
         assert args[2] == "backup_full"
         assert args[3] == {"group_id": group.id, "repository": "repo"}
         assert args[4] == "thread"
+        assert submit_job.call_args.kwargs["schedule_id"] == schedule.id
 
 
 def test_run_due_schedules_triggers_due_incremental_schedule_with_equivalent_context(
@@ -122,6 +157,7 @@ def test_run_due_schedules_triggers_due_incremental_schedule_with_equivalent_con
         assert args[2] == "backup_incremental"
         assert args[3] == {"group_id": group.id, "repository": "repo"}
         assert args[4] == "thread"
+        assert submit_job.call_args.kwargs["schedule_id"] == schedule.id
 
 
 def test_run_due_schedules_skips_not_yet_due_schedule(sqlite_store, mocker):

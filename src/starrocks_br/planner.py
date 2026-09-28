@@ -21,8 +21,8 @@ def find_latest_full_backup(db, session: Session, cluster_id: int, database: str
         database: Database name to search for
 
     Returns:
-        Dictionary with keys: label, backup_type, finished_at, or None if no full backup found.
-        The finished_at value is returned as a string in the cluster timezone format.
+        Dictionary with keys: label, backup_type, finished_at, job_id, or None if no full backup
+        found. The finished_at value is returned as a string in the cluster timezone format.
     """
     job = backup_catalog.find_latest_full_backup_job(session, cluster_id, database)
 
@@ -37,7 +37,7 @@ def find_latest_full_backup(db, session: Session, cluster_id: int, database: str
     elif not isinstance(finished_at, str):
         finished_at = str(finished_at)
 
-    return {"label": job.label, "backup_type": "full", "finished_at": finished_at}
+    return {"label": job.label, "backup_type": "full", "finished_at": finished_at, "job_id": job.id}
 
 
 def find_tables_by_group(session: Session, cluster_id: int, group_id: int) -> list[dict[str, str]]:
@@ -124,7 +124,7 @@ def find_recent_partitions(
     baseline_backup_label: str | None = None,
     *,
     group_id: int,
-) -> list[dict[str, str]]:
+) -> tuple[list[dict[str, str]], int | None]:
     """Find partitions updated since baseline for tables in the given inventory group.
 
     Args:
@@ -135,8 +135,10 @@ def find_recent_partitions(
         baseline_backup_label: Optional specific backup label to use as baseline.
         group_id: Id of the inventory group whose tables will be considered
 
-    Returns list of dictionaries with keys: database, table, partition_name.
-    Only partitions of tables within the specified database are returned.
+    Returns a tuple of (partitions, baseline_job_id): `partitions` is a list of dictionaries with
+    keys database/table/partition_name, scoped to the specified database; `baseline_job_id` is the
+    id of the full backup `Job` used as the baseline, for the caller to record as an incremental
+    job's `Job.baseline_job_id`.
     """
     cluster_tz = db.timezone
 
@@ -145,11 +147,13 @@ def find_recent_partitions(
         if baseline_job is None:
             raise exceptions.BackupLabelNotFoundError(baseline_backup_label)
         baseline_time_raw = baseline_job.finished_at
+        baseline_job_id = baseline_job.id
     else:
         latest_backup = find_latest_full_backup(db, session, cluster_id, database)
         if not latest_backup:
             raise exceptions.NoFullBackupFoundError(database)
         baseline_time_raw = latest_backup["finished_at"]
+        baseline_job_id = latest_backup["job_id"]
 
     if isinstance(baseline_time_raw, datetime.datetime):
         baseline_time_str = baseline_time_raw.strftime("%Y-%m-%d %H:%M:%S")
@@ -163,12 +167,12 @@ def find_recent_partitions(
     group_tables = find_tables_by_group(session, cluster_id, group_id)
 
     if not group_tables:
-        return []
+        return [], baseline_job_id
 
     db_group_tables = [t for t in group_tables if t["database"] == database]
 
     if not db_group_tables:
-        return []
+        return [], baseline_job_id
 
     concrete_tables = []
     for table_entry in db_group_tables:
@@ -212,7 +216,7 @@ def find_recent_partitions(
                     {"database": db_name, "table": table_name, "partition_name": partition_name}
                 )
 
-    return recent_partitions
+    return recent_partitions, baseline_job_id
 
 
 def build_incremental_backup_command(

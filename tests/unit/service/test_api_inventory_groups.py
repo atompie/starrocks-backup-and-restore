@@ -191,6 +191,7 @@ def test_delete_inventory_group_referenced_by_schedule_is_409(api_client, monkey
             "inventory_group_id": created["id"],
             "repository": "s3_repo",
             "cadence": "0 1 * * *",
+            "retention": 3,
         },
     )
     assert schedule_response.status_code == 201

@@ -17,6 +17,7 @@ def create_job(
     job_type: str,
     params: dict,
     backend_name: str,
+    schedule_id: int | None = None,
 ) -> Job:
     """Insert and commit a new Job row.
 
@@ -30,6 +31,7 @@ def create_job(
         params_json=json.dumps(params),
         backend=backend_name,
         repository=params.get("repository"),
+        schedule_id=schedule_id,
     )
     db.add(job)
     db.flush()
@@ -45,6 +47,7 @@ def list_jobs(
     status: str | None = None,
     job_id: int | None = None,
     group_id: int | None = None,
+    schedule_id: int | None = None,
     limit: int = 50,
     offset: int = 0,
 ) -> list[Job]:
@@ -54,6 +57,8 @@ def list_jobs(
     backup-history scope of `backup_full`/`backup_incremental`). `group_id`
     only matches jobs whose params carried a group id; jobs with no
     recorded group id (including any submitted before that column existed)
+    never match it. `schedule_id` only matches jobs submitted by that
+    schedule; jobs submitted directly (or before schedule linkage existed)
     never match it.
     """
     query = select(Job).where(Job.cluster_id == cluster_id)
@@ -73,6 +78,9 @@ def list_jobs(
     if group_id is not None:
         query = query.where(Job.group_id == group_id)
 
+    if schedule_id is not None:
+        query = query.where(Job.schedule_id == schedule_id)
+
     query = query.order_by(Job.created_at.desc()).limit(limit).offset(offset)
 
     return list(db.scalars(query).all())
@@ -86,6 +94,12 @@ def set_label(db: Session, job_id: int, label: str) -> None:
     job = db.get(Job, job_id)
     if job is not None:
         job.label = label
+
+
+def set_baseline_job_id(db: Session, job_id: int, baseline_job_id: int | None) -> None:
+    job = db.get(Job, job_id)
+    if job is not None:
+        job.baseline_job_id = baseline_job_id
 
 
 def mark_running(db: Session, job_id: int) -> Job | None:

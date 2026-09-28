@@ -31,6 +31,17 @@ def _set_job_label(job_id: int, label: str) -> None:
         jobs_dal.set_label(session, job_id, label)
 
 
+def _set_job_baseline(job_id: int, baseline_job_id: int | None) -> None:
+    """Persist an incremental job's baseline full-job id once resolved.
+
+    Mirrors `_set_job_label` exactly: `planner.find_recent_partitions` only resolves the
+    baseline (either from an explicit label or the latest full backup) after this job's row
+    already exists, so it's written here rather than at job submission time.
+    """
+    with session_scope() as session:
+        jobs_dal.set_baseline_job_id(session, job_id, baseline_job_id)
+
+
 def _raise_for_backup_failure(result: dict) -> None:
     """Translate `executor.execute_backup`'s failure dict into a domain exception.
 
@@ -137,7 +148,7 @@ def run_backup_incremental(
                 if on_progress:
                     on_progress({"event": "baseline_resolved", "latest_backup": latest_backup})
 
-            partitions = planner.find_recent_partitions(
+            partitions, baseline_job_id = planner.find_recent_partitions(
                 database,
                 session,
                 cluster.id,
@@ -145,6 +156,7 @@ def run_backup_incremental(
                 baseline_backup_label=baseline_backup,
                 group_id=group,
             )
+            _set_job_baseline(job_id, baseline_job_id)
             if not partitions:
                 raise RuntimeError("No partitions found to backup")
 
