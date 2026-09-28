@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from ... import db as db_module
 from ...dal.db import repository as repository_module
+from ...dal.metadata import clusters as clusters_dal
 from ...store.crypto import decrypt_password
 from ...store.models import Cluster
 from ..schemas import ClusterVerifyResponse
@@ -19,7 +20,7 @@ VERIFY_CONNECT_TIMEOUT_SECONDS = 5
 
 
 def get_cluster_or_404(db: Session, cluster_id: int) -> Cluster:
-    cluster = db.get(Cluster, cluster_id)
+    cluster = clusters_dal.get(db, cluster_id)
     if cluster is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Cluster not found")
     return cluster

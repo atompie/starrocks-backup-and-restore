@@ -1,9 +1,14 @@
+import datetime
 import json
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ...store.models import Cluster, Job
+from ...store.models import BackupHistory, Cluster, Job, JobStatus, RestoreHistory
+
+
+def _utcnow() -> datetime.datetime:
+    return datetime.datetime.now(datetime.timezone.utc)
 
 
 def create_job(
@@ -71,3 +76,65 @@ def list_jobs(
     query = query.order_by(Job.created_at.desc()).limit(limit).offset(offset)
 
     return list(db.scalars(query).all())
+
+
+def get(db: Session, job_id: int) -> Job | None:
+    return db.get(Job, job_id)
+
+
+def set_label(db: Session, job_id: int, label: str) -> None:
+    job = db.get(Job, job_id)
+    if job is not None:
+        job.label = label
+
+
+def mark_running(db: Session, job_id: int) -> Job | None:
+    job = db.get(Job, job_id)
+    if job is not None:
+        job.status = JobStatus.RUNNING.value
+        job.started_at = _utcnow()
+        db.flush()
+    return job
+
+
+def mark_progress(db: Session, job_id: int, state_detail: str | None, progress_pct: int | None) -> None:
+    job = db.get(Job, job_id)
+    if job is None:
+        return
+    job.state_detail = state_detail
+    if progress_pct is not None:
+        job.progress_pct = progress_pct
+
+
+def mark_failed(db: Session, job_id: int, error_message: str) -> None:
+    job = db.get(Job, job_id)
+    if job is not None:
+        job.status = JobStatus.FAILED.value
+        job.error_message = error_message
+        job.finished_at = _utcnow()
+
+
+def mark_success(db: Session, job_id: int, result_json: str) -> None:
+    job = db.get(Job, job_id)
+    if job is not None:
+        job.status = JobStatus.SUCCESS.value
+        job.result_json = result_json
+        job.finished_at = _utcnow()
+
+
+_HISTORY_MODEL_BY_JOB_TYPE = {
+    "backup_full": BackupHistory,
+    "backup_incremental": BackupHistory,
+    "restore": RestoreHistory,
+}
+
+
+def list_history_for_job(db: Session, job_type: str, job_id: int) -> list[BackupHistory | RestoreHistory]:
+    """Return a job's append-only execution history, oldest first.
+
+    A job type with no history table (e.g. `prune`) returns an empty list.
+    """
+    model = _HISTORY_MODEL_BY_JOB_TYPE.get(job_type)
+    if model is None:
+        return []
+    return list(db.scalars(select(model).where(model.job_id == job_id).order_by(model.ts.asc())).all())

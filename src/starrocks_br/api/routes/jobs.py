@@ -2,13 +2,14 @@ import json
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ...commands.jobs import get_job as _get_job_command
+from ...commands.jobs import get_job_history as _get_job_history_command
 from ...commands.jobs import list_jobs, submit_job
 from ...dal.metadata import inventory_groups
 from ...jobs.backend import UnknownBackendError
-from ...store.models import BackupHistory, Job, RestoreHistory
+from ...store.models import Job
 from ..auth import require_api_key
 from ..deps import get_db
 from ..schemas import (
@@ -137,7 +138,7 @@ def submit_prune(
 
 @router.get("/job/{job_id}", response_model=JobRead)
 def get_job(job_id: int, db: Session = Depends(get_db)) -> Job:
-    job = db.get(Job, job_id)
+    job = _get_job_command(db, job_id)
     if job is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
     return job
@@ -151,18 +152,11 @@ def get_job_history(job_id: int, db: Session = Depends(get_db)) -> list[HistoryE
     table is chosen by the job's `job_type`; a job type with no log table (e.g. `prune`)
     has an empty history rather than a 404.
     """
-    job = db.get(Job, job_id)
+    job = _get_job_command(db, job_id)
     if job is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
 
-    if job.job_type in _DEFAULT_BACKUP_JOB_TYPES:
-        model = BackupHistory
-    elif job.job_type == "restore":
-        model = RestoreHistory
-    else:
-        return []
-
-    rows = db.scalars(select(model).where(model.job_id == job_id).order_by(model.ts.asc())).all()
+    rows = _get_job_history_command(db, job.job_type, job_id)
     return [
         HistoryEntryRead(
             id=row.id,

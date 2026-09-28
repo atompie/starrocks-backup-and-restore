@@ -1,17 +1,3 @@
-# Copyright 2025 deep-bi
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
 """Schedule CRUD and the run-due trigger.
 
 Per design.md Decision 5: run_due() advances each due schedule's
@@ -28,7 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from ... import exceptions
-from ...commands.schedules import compute_next_run_at, run_due_schedules
+from ...commands import schedules as schedules_commands
 from ...dal.metadata import inventory_groups
 from ...jobs.backend import UnknownBackendError
 from ...store.models import Schedule
@@ -44,16 +30,9 @@ def _utcnow() -> datetime.datetime:
     return datetime.datetime.now(datetime.timezone.utc)
 
 
-def _compute_next_run_at(cadence: str, after: datetime.datetime | None = None) -> datetime.datetime:
-    try:
-        return compute_next_run_at(cadence, after)
-    except exceptions.InvalidCadenceError as e:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(e)) from e
-
-
 def _get_schedule_or_404(db: Session, cluster_id: int, schedule_id: int) -> Schedule:
-    schedule = db.get(Schedule, schedule_id)
-    if schedule is None or schedule.cluster_id != cluster_id:
+    schedule = schedules_commands.get_schedule(db, cluster_id, schedule_id)
+    if schedule is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Schedule not found")
     return schedule
 
@@ -74,30 +53,25 @@ def create_schedule(cluster_id: int, payload: ScheduleCreate, db: Session = Depe
 
     ensure_repository_exists(cluster, payload.repository)
 
-    next_run_at = _compute_next_run_at(payload.cadence)
-
-    schedule = Schedule(
-        cluster_id=cluster_id,
-        job_type=payload.job_type,
-        inventory_group_id=payload.inventory_group_id,
-        repository=payload.repository,
-        cadence=payload.cadence,
-        backend=payload.backend,
-        enabled=payload.enabled,
-        next_run_at=next_run_at,
-    )
-    db.add(schedule)
-    db.flush()
-    db.refresh(schedule)
-    return schedule
+    try:
+        return schedules_commands.create_schedule(
+            db,
+            cluster_id=cluster_id,
+            job_type=payload.job_type,
+            inventory_group_id=payload.inventory_group_id,
+            repository=payload.repository,
+            cadence=payload.cadence,
+            backend=payload.backend,
+            enabled=payload.enabled,
+        )
+    except exceptions.InvalidCadenceError as e:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(e)) from e
 
 
 @router.get("/backup/schedules/cluster/{cluster_id}", response_model=list[ScheduleRead])
 def list_schedules(cluster_id: int, db: Session = Depends(get_db)) -> list[Schedule]:
     get_cluster_or_404(db, cluster_id)
-    return list(
-        db.query(Schedule).filter(Schedule.cluster_id == cluster_id).order_by(Schedule.id).all()
-    )
+    return schedules_commands.list_schedules(db, cluster_id)
 
 
 @router.get(
@@ -127,16 +101,11 @@ def update_schedule(
         )
     if "repository" in updates:
         ensure_repository_exists(cluster, updates["repository"])
-    cadence_changed = "cadence" in updates
-    for field, value in updates.items():
-        setattr(schedule, field, value)
 
-    if cadence_changed:
-        schedule.next_run_at = _compute_next_run_at(schedule.cadence)
-
-    db.flush()
-    db.refresh(schedule)
-    return schedule
+    try:
+        return schedules_commands.update_schedule(db, schedule, updates)
+    except exceptions.InvalidCadenceError as e:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(e)) from e
 
 
 @router.delete(
@@ -146,13 +115,13 @@ def update_schedule(
 def delete_schedule(cluster_id: int, schedule_id: int, db: Session = Depends(get_db)) -> None:
     get_cluster_or_404(db, cluster_id)
     schedule = _get_schedule_or_404(db, cluster_id, schedule_id)
-    db.delete(schedule)
+    schedules_commands.delete_schedule(db, schedule)
 
 
 @router.post("/backup/schedules/run", response_model=RunDueResponse)
 def run_due(db: Session = Depends(get_db)) -> RunDueResponse:
     try:
-        triggered_job_ids, triggered_count = run_due_schedules(db, _utcnow())
+        triggered_job_ids, triggered_count = schedules_commands.run_due_schedules(db, _utcnow())
     except exceptions.InvalidCadenceError as e:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(e)) from e
     except UnknownBackendError as e:

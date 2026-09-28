@@ -11,7 +11,6 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from ...dal.metadata import inventory_groups
-from ...store.models import InventoryGroup
 from ..auth import require_api_key
 from ..deps import get_db
 from ..schemas import (
@@ -76,7 +75,7 @@ def get_inventory_group(cluster_id: int, group_id: int, db: Session = Depends(ge
             detail=f"Inventory group id {group_id} not found on cluster '{cluster.name}'",
         ) from e
 
-    group = db.get(InventoryGroup, group_id)
+    group = inventory_groups.get_group_row(db, group_id)
     return {"id": group_id, "name": group.name, "tables": tables}
 
 
