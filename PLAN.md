@@ -202,13 +202,57 @@ exists yet — or is a separable API-surface removal (8.1 below).
   active job or dependent incremental, expiry triggers cleanup, blocked expiry retried, never-expiring
   schedules kept (was the remainder of 8.9)
 
-## 9. Internal scheduler process and restart recovery
+## 9. Scheduler CLI command, concurrency, and restart recovery
 
-- [ ] 9.1 Start a scheduler loop from the FastAPI lifespan that, on each tick every `STARROCKS_BR_SCHEDULER_INTERVAL_SECONDS`, runs `run_due_schedules` and one-shot expiry; add a switch to disable it; stop it cleanly together with `ThreadBackend.shutdown`
-- [ ] 9.2 Document the catch-up policy: after downtime, run once, then jump to the next future occurrence
-- [ ] 9.3 On startup, reconcile orphaned jobs: re-enqueue `PENDING`; for `RUNNING`, check `SHOW BACKUP/RESTORE` by label → `SUCCESS`/`FAILED`, and append a reconciliation event
-- [ ] 9.4 Report scheduler liveness in `/health`
-- [ ] 9.5 Tests: a scheduler tick triggers due schedules and expiry; reconciliation outcomes
+Scheduler execution is an externally-invoked CLI command, not an in-process FastAPI loop: the
+process only runs one tick per invocation and exits, and cron (or systemd timer / Kubernetes
+CronJob) supplies the cadence instead of `STARROCKS_BR_SCHEDULER_INTERVAL_SECONDS`. This keeps the
+API process free of a background thread and its lifespan/`ThreadBackend.shutdown` coordination.
+Because cron-style scheduling can overlap a slow-running tick with the next one, and because
+nothing stops an operator from also running the command by hand, the tick itself must guard
+against two invocations running at once.
+
+- [ ] 9.1 Add a CLI command under `src/starrocks_br/cli/` (e.g. `python -m starrocks_br.cli.scheduler tick`,
+  wired as a console-script entry point) that, per invocation, calls `commands.schedules.run_due_schedules`
+  and one-shot expiry once and exits with a non-zero status on failure. Per AGENTS.md's architectural
+  boundary, the CLI calls only into the commands layer (same rule the HTTP API follows) — it must not
+  call core operation modules (planner, executor, etc.) directly. No loop, no sleep, no disable switch:
+  cadence and enable/disable are operational concerns of the external scheduler (cron entry
+  present/absent, timer enabled/disabled), not of this process.
+- [ ] 9.2 Concurrency: only one scheduler tick may run at a time cluster-wide. This is a separate
+  mechanism from `concurrency.reserve_job_slot`'s per-cluster `backup` scope — that serializes
+  StarRocks backup/retention work, not tick invocations, and stays as-is. Add a singleton
+  `scheduler_lock` row in the metadata store (`store`/`dal/metadata/`) acquired with one atomic
+  conditional `UPDATE ... WHERE expires_at IS NULL OR expires_at < now()` (portable across
+  SQLite/Postgres/MySQL, no DB-specific advisory-lock API), storing `holder` (hostname:pid),
+  `acquired_at`, and `expires_at = acquired_at + STARROCKS_BR_SCHEDULER_LOCK_TIMEOUT_SECONDS`.
+  Expose this as `commands.schedules.try_acquire_scheduler_lock()` /
+  `release_scheduler_lock()` so the CLI stays a thin caller into the commands layer, consistent
+  with 9.1.
+- [ ] 9.3 If the lock cannot be acquired (already held and not expired), the CLI logs a clear
+  "scheduler already running" message to stderr, exits immediately with a distinct non-zero exit
+  code, and does not touch due schedules, expiry, or reconciliation. If a previous holder crashed
+  mid-tick, its lock is past `expires_at` and is reclaimed by the next invocation, which logs a
+  warning that it recovered a stale lock. The lock is released in a `finally` at the end of a
+  successful acquisition (success or failure of the tick's own work) so the next cron invocation
+  can proceed.
+- [ ] 9.4 Document the catch-up policy: if a tick is missed (cron/timer downtime), the next invocation
+  runs due schedules once and jumps to the next future occurrence — unchanged from the loop-based
+  design, since due-ness is already decided by comparing `next_run_at` to now, not by wall-clock
+  ticking.
+- [ ] 9.5 Each CLI invocation that acquires the lock reconciles orphaned jobs before running due
+  schedules/expiry: re-enqueue `PENDING`; for `RUNNING`, check `SHOW BACKUP/RESTORE` by label →
+  `SUCCESS`/`FAILED`, and append a reconciliation event. This runs on every invocation (not once at
+  process startup), since the process no longer stays resident between ticks.
+- [ ] 9.6 Record the timestamp of the last successful CLI tick in the metadata store, and report it via
+  `/health` (e.g. `scheduler.last_tick_at`) so a stalled cron/timer is observable from the API even
+  though the API process itself no longer runs the loop. A tick that exits early because the lock was
+  held does not update `last_tick_at`.
+- [ ] 9.7 Tests: a CLI tick invocation triggers due schedules and expiry; reconciliation outcomes; the
+  CLI calls only `commands/`, never a core operation module directly; last-tick timestamp is recorded
+  and surfaced via `/health`; a second concurrent invocation fails to acquire the lock, logs the alert,
+  and exits non-zero without running due schedules/expiry/reconciliation; a stale (expired) lock is
+  reclaimed and logged as such.
 
 ## 10. Schedule-scoped retention (own job)
 
