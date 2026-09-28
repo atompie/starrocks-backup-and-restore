@@ -15,7 +15,7 @@
 import pytest
 
 from starrocks_br.exceptions import RepositoryUnreachableError
-from starrocks_br.repository import (
+from starrocks_br.dal.db.repository import (
     RepositoryNotFoundError,
     build_create_s3_repository_command,
     drop_repository,

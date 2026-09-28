@@ -38,7 +38,7 @@ def _create_group(api_client, cluster_id: int, name: str = "g1") -> int:
 
 
 def _mock_group_check(monkeypatch):
-    from starrocks_br import inventory_groups
+    from starrocks_br.dal.metadata import inventory_groups
 
     monkeypatch.setattr(inventory_groups, "group_exists", lambda db, cluster_id, group_id: True)
 

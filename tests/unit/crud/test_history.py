@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from starrocks_br import history
+from starrocks_br.dal.metadata import history
 from starrocks_br.store.models import BackupHistory, Job, RestoreHistory
 
 

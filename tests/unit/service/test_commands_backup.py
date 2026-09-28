@@ -49,7 +49,7 @@ def test_run_backup_full_builds_same_command_as_cli(
 ):
     """The command must produce the identical backup command/label the CLI adapter invokes."""
     mocker.patch(
-        "starrocks_br.labels.determine_backup_label", return_value="test_db_20251016_full"
+        "starrocks_br.dal.metadata.labels.determine_backup_label", return_value="test_db_20251016_full"
     )
     mocker.patch(
         "starrocks_br.planner.find_tables_by_group",
@@ -92,7 +92,7 @@ def test_run_backup_full_raises_on_unhealthy_cluster(
 def test_run_backup_full_propagates_snapshot_exists_as_domain_exception(
     cluster, mock_decrypt, mock_db, fake_session, mock_healthy_cluster, mock_repo_exists, mocker
 ):
-    mocker.patch("starrocks_br.labels.determine_backup_label", return_value="lbl")
+    mocker.patch("starrocks_br.dal.metadata.labels.determine_backup_label", return_value="lbl")
     mocker.patch("starrocks_br.planner.find_tables_by_group", return_value=[{"database": "d", "table": "t"}])
     mocker.patch("starrocks_br.planner.validate_tables_exist")
     mocker.patch("starrocks_br.planner.build_full_backup_command", return_value="BACKUP ...")
@@ -116,7 +116,7 @@ def test_run_backup_full_propagates_snapshot_exists_as_domain_exception(
 def test_run_backup_full_propagates_other_execute_backup_failure_as_domain_exception(
     cluster, mock_decrypt, mock_db, fake_session, mock_healthy_cluster, mock_repo_exists, mocker
 ):
-    mocker.patch("starrocks_br.labels.determine_backup_label", return_value="lbl")
+    mocker.patch("starrocks_br.dal.metadata.labels.determine_backup_label", return_value="lbl")
     mocker.patch("starrocks_br.planner.find_tables_by_group", return_value=[{"database": "d", "table": "t"}])
     mocker.patch("starrocks_br.planner.validate_tables_exist")
     mocker.patch("starrocks_br.planner.build_full_backup_command", return_value="BACKUP ...")
@@ -135,7 +135,7 @@ def test_run_backup_full_propagates_other_execute_backup_failure_as_domain_excep
 def test_run_backup_incremental_passes_baseline_and_progress_callback(
     cluster, mock_decrypt, mock_db, fake_session, mock_healthy_cluster, mock_repo_exists, mocker
 ):
-    mocker.patch("starrocks_br.labels.determine_backup_label", return_value="lbl_inc")
+    mocker.patch("starrocks_br.dal.metadata.labels.determine_backup_label", return_value="lbl_inc")
     mocker.patch(
         "starrocks_br.planner.find_tables_by_group",
         return_value=[{"database": "d", "table": "t"}],

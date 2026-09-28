@@ -16,7 +16,7 @@ def _create_cluster(api_client) -> int:
 
 def _mock_group_check(monkeypatch, exists=True):
     """Bypass the synchronous group-existence check for backup_full/incremental submission."""
-    from starrocks_br import inventory_groups
+    from starrocks_br.dal.metadata import inventory_groups
 
     monkeypatch.setattr(
         inventory_groups, "group_exists", lambda db, cluster_id, group_id: exists
@@ -589,7 +589,7 @@ def test_get_job_history_empty_for_pending_job(api_client, monkeypatch):
 
 
 def test_get_backup_job_history_returns_time_ordered_entries(api_client, monkeypatch):
-    from starrocks_br import history
+    from starrocks_br.dal.metadata import history
     from starrocks_br.jobs import handlers
     from starrocks_br.store.session import get_session_factory
 
@@ -618,7 +618,7 @@ def test_get_backup_job_history_returns_time_ordered_entries(api_client, monkeyp
 
 
 def test_get_restore_job_history_uses_restore_history_table(api_client, monkeypatch):
-    from starrocks_br import history
+    from starrocks_br.dal.metadata import history
     from starrocks_br.jobs import handlers
     from starrocks_br.store.session import get_session_factory
 

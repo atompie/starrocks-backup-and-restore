@@ -7,7 +7,7 @@ module only holds the decision logic (conflict/retention checks) shared by
 however many adapters call it.
 """
 
-from .. import repository
+from ..dal.db import repository
 from ..exceptions import RepositoryAlreadyExistsError, RepositoryStillHasSnapshotsError
 
 

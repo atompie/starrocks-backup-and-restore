@@ -212,7 +212,7 @@ def test_should_query_correct_show_backup_syntax(mocker):
     executor.poll_backup_status(db, "test_backup", "test_db", max_polls=1, poll_interval=0.001)
 
     query = db.query.call_args[0][0]
-    assert "SHOW BACKUP FROM test_db" in query
+    assert "SHOW BACKUP FROM `test_db`" in query
 
 
 def test_should_handle_empty_backup_status_result(mocker):

@@ -6,8 +6,8 @@ command layer's public surface, just factored out to avoid re-implementing
 """
 
 from .. import db as db_module
-from .. import health
-from .. import repository as repository_module
+from ..dal.db import health
+from ..dal.db import repository as repository_module
 from ..store.crypto import decrypt_password
 from ..store.models import Cluster
 

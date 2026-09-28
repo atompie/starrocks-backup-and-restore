@@ -15,7 +15,7 @@
 import datetime as dt
 from datetime import datetime
 
-from starrocks_br import labels
+from starrocks_br.dal.metadata import labels
 from starrocks_br.store.models import Job, JobStatus
 
 

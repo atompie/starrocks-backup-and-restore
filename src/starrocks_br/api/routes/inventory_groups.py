@@ -10,7 +10,7 @@ Groups are created with a name but identified everywhere else by id.
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
-from ... import inventory_groups
+from ...dal.metadata import inventory_groups
 from ...store.models import InventoryGroup
 from ..auth import require_api_key
 from ..deps import get_db
