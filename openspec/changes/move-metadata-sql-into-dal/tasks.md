@@ -99,19 +99,25 @@
 
 ## 5. Restore catalog
 
-- [ ] 5.1 Create `src/starrocks_br/dal/metadata/restore_catalog.py` with
-      `find_restore_pair`, `find_backup_repository`,
-      `list_backup_partitions_for_group` (the `BackupPartition` select
-      half of `get_tables_from_backup`), and `get_partitions_from_backup`,
-      lifted from `restore.py`.
-- [ ] 5.2 Add `tests/unit/crud/test_dal_restore_catalog.py` covering all
-      four functions; verify with
+- [x] 5.1 Create `src/starrocks_br/dal/metadata/restore_catalog.py` with
+      `find_successful_job` (shared by `find_restore_pair` and
+      `find_backup_repository`), `find_latest_full_backup_before`,
+      `list_partitions_for_label` and `list_group_table_memberships`
+      (the two ORM halves of `get_tables_from_backup`), and
+      `list_partition_names` (for `get_partitions_from_backup`), lifted
+      from `restore.py`. Function names differ slightly from the
+      original plan (split into two more targeted queries instead of one
+      `list_backup_partitions_for_group`) but cover the same call sites.
+- [x] 5.2 Add `tests/unit/crud/test_dal_restore_catalog.py` covering all
+      five functions; verify with
       `pytest tests/unit/crud/test_dal_restore_catalog.py -q`.
-- [ ] 5.3 Update `restore.py` to call through the new DAL module,
+- [x] 5.3 Update `restore.py`'s `find_restore_pair`,
+      `find_backup_repository`, `get_tables_from_backup`, and
+      `get_partitions_from_backup` to call through the new DAL module,
       keeping `get_tables_from_backup`'s composition of its StarRocks
-      call (`dal/db/restore.py`) and its ORM call (this module's
-      `list_backup_partitions_for_group`) in place; verify with
-      `pytest tests/unit/service/test_restore.py -q`.
+      call (`dal/db/restore.py::show_tables`) and its ORM calls in place,
+      and keeping the exception-mapping/filtering business logic in
+      `restore.py`; verify with `pytest tests/unit/service/test_restore.py -q`.
 
 ## 6. Backup catalog (planner)
 

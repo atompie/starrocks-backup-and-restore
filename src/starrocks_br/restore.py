@@ -15,13 +15,11 @@
 import time
 from collections.abc import Callable
 
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from . import concurrency, exceptions, logger
 from .dal.db import restore as restore_dal
-from .dal.metadata import history
-from .store.models import BackupPartition, Job, JobStatus, TableInventory
+from .dal.metadata import history, restore_catalog
 from .store.session import get_session_factory
 
 MAX_POLLS = 86400  # 1 day
@@ -337,13 +335,7 @@ def find_restore_pair(session: Session, cluster_id: int, target_label: str) -> l
     Raises:
         ValueError: If target label not found or incremental has no preceding full backup
     """
-    target_job = session.scalars(
-        select(Job).where(
-            Job.cluster_id == cluster_id,
-            Job.label == target_label,
-            Job.status == JobStatus.SUCCESS.value,
-        )
-    ).first()
+    target_job = restore_catalog.find_successful_job(session, cluster_id, target_label)
     if target_job is None:
         raise exceptions.BackupLabelNotFoundError(target_label)
 
@@ -355,18 +347,9 @@ def find_restore_pair(session: Session, cluster_id: int, target_label: str) -> l
     if backup_type == "incremental":
         database_name = target_label.split("_")[0]
 
-        base_job = session.scalars(
-            select(Job)
-            .where(
-                Job.cluster_id == cluster_id,
-                Job.job_type == "backup_full",
-                Job.status == JobStatus.SUCCESS.value,
-                Job.label.like(f"{database_name}_%"),
-                Job.finished_at < target_job.finished_at,
-            )
-            .order_by(Job.finished_at.desc())
-            .limit(1)
-        ).first()
+        base_job = restore_catalog.find_latest_full_backup_before(
+            session, cluster_id, database_name, target_job.finished_at
+        )
         if base_job is None:
             raise exceptions.NoSuccessfulFullBackupFoundError(target_label)
 
@@ -386,13 +369,7 @@ def find_backup_repository(session: Session, cluster_id: int, target_label: str)
     Raises:
         BackupLabelNotFoundError: If target_label has no successful backup job on record.
     """
-    job = session.scalars(
-        select(Job).where(
-            Job.cluster_id == cluster_id,
-            Job.label == target_label,
-            Job.status == JobStatus.SUCCESS.value,
-        )
-    ).first()
+    job = restore_catalog.find_successful_job(session, cluster_id, target_label)
     if job is None:
         raise exceptions.BackupLabelNotFoundError(target_label)
     return job.repository
@@ -434,12 +411,7 @@ def get_tables_from_backup(
             table, "database parameter is required when table is specified"
         )
 
-    rows = session.execute(
-        select(BackupPartition.database_name, BackupPartition.table_name)
-        .distinct()
-        .where(BackupPartition.cluster_id == cluster_id, BackupPartition.label == label)
-        .order_by(BackupPartition.database_name, BackupPartition.table_name)
-    ).all()
+    rows = restore_catalog.list_partitions_for_label(session, cluster_id, label)
     if not rows:
         return []
 
@@ -455,11 +427,7 @@ def get_tables_from_backup(
         return filtered_tables
 
     if group:
-        group_rows = session.execute(
-            select(TableInventory.database_name, TableInventory.table_name).where(
-                TableInventory.cluster_id == cluster_id, TableInventory.inventory_group_id == group
-            )
-        ).all()
+        group_rows = restore_catalog.list_group_table_memberships(session, cluster_id, group)
         if not group_rows:
             return []
 
@@ -494,18 +462,7 @@ def get_partitions_from_backup(session: Session, cluster_id: int, label: str, ta
     """
     database_name, table_name = table.split(".", 1)
 
-    return list(
-        session.scalars(
-            select(BackupPartition.partition_name)
-            .where(
-                BackupPartition.cluster_id == cluster_id,
-                BackupPartition.label == label,
-                BackupPartition.database_name == database_name,
-                BackupPartition.table_name == table_name,
-            )
-            .order_by(BackupPartition.partition_name)
-        )
-    )
+    return restore_catalog.list_partition_names(session, cluster_id, label, database_name, table_name)
 
 
 def execute_restore_flow(
