@@ -177,6 +177,7 @@ def list_backup_history(
     status_filter: str | None = Query(default=None, alias="status"),
     job_id: int | None = Query(default=None),
     group_id: int | None = Query(default=None),
+    schedule_id: int | None = Query(default=None),
     limit: int = Query(default=50),
     offset: int = Query(default=0),
     db: Session = Depends(get_db),
@@ -189,6 +190,7 @@ def list_backup_history(
         status=status_filter,
         job_id=job_id,
         group_id=group_id,
+        schedule_id=schedule_id,
         limit=limit,
         offset=offset,
     )

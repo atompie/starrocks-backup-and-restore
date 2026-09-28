@@ -98,6 +98,16 @@ def test_due_schedules_only_returns_enabled_and_due(sqlite_session, make_cluster
     assert [s.id for s in result] == [due.id]
 
 
+def test_due_schedules_excludes_one_shot(sqlite_session, make_cluster, make_group):
+    cluster = make_cluster()
+    group_id = make_group(cluster.id)
+    _make_schedule(sqlite_session, cluster.id, group_id, cadence=None, next_run_at=None)
+
+    result = schedules.due_schedules(sqlite_session, _utcnow())
+
+    assert result == []
+
+
 def test_advance_next_run_at_succeeds_on_matching_value(sqlite_session, make_cluster, make_group):
     cluster = make_cluster()
     group_id = make_group(cluster.id)

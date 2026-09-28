@@ -106,6 +106,7 @@ def test_manual_and_scheduled_backup_full_invoke_same_command_with_equivalent_co
             "inventory_group_id": group_id,
             "repository": "s3_repo",
             "cadence": "0 1 * * *",
+            "retention": 3,
         },
     ).json()
     forced_past = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(minutes=1)

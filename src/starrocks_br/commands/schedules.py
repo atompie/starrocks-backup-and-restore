@@ -17,8 +17,8 @@ from sqlalchemy.orm import Session
 
 from ..dal.metadata import clusters as clusters_dal
 from ..dal.metadata import schedules as schedules_dal
-from ..exceptions import InvalidCadenceError
-from ..store.models import Schedule
+from ..exceptions import InvalidCadenceError, InvalidScheduleFieldsError, ScheduleImmutableError
+from ..store.models import Cluster, Schedule
 from .jobs import submit_job
 
 
@@ -31,21 +31,70 @@ def compute_next_run_at(cadence: str, after: datetime.datetime | None = None) ->
         raise InvalidCadenceError(cadence, str(e)) from e
 
 
+def _validate_schedule_shape(
+    job_type: str,
+    cadence: str | None,
+    retention: int | None,
+    expire_after_days: int | None,
+) -> None:
+    """Enforce the retention/expiry rules from `SPEC.md` §8-11 and decision Q3.
+
+    - a one-shot schedule (`cadence is None`) is rejected if `job_type` is `backup_incremental`
+      (Q3: incrementals only come from recurring schedules);
+    - `retention` is required for a recurring `backup_full` schedule, forbidden otherwise
+      (recurring incremental, and both one-shot cases - it never applies to a schedule that
+      isn't a recurring full backup);
+    - `expire_after_days` is only accepted for a one-shot schedule.
+    """
+    is_one_shot = cadence is None
+
+    if is_one_shot and job_type == "backup_incremental":
+        raise InvalidScheduleFieldsError(
+            "A one-shot schedule must be a full backup; incremental backups only come from "
+            "recurring schedules"
+        )
+
+    retention_required = not is_one_shot and job_type == "backup_full"
+    if retention_required and retention is None:
+        raise InvalidScheduleFieldsError(
+            "'retention' is required for a recurring full-backup schedule"
+        )
+    if not retention_required and retention is not None:
+        raise InvalidScheduleFieldsError(
+            "'retention' only applies to a recurring full-backup schedule"
+        )
+
+    if not is_one_shot and expire_after_days is not None:
+        raise InvalidScheduleFieldsError("'expire_after_days' only applies to a one-shot schedule")
+
+
 def create_schedule(
     db: Session,
+    cluster: Cluster,
     *,
-    cluster_id: int,
     job_type: str,
     inventory_group_id: int,
     repository: str,
-    cadence: str,
+    cadence: str | None,
     backend: str | None,
     enabled: bool,
+    retention: int | None = None,
+    expire_after_days: int | None = None,
 ) -> Schedule:
-    next_run_at = compute_next_run_at(cadence)
-    return schedules_dal.create(
+    """Create a recurring or one-shot (`cadence is None`) schedule.
+
+    A one-shot schedule immediately submits exactly one job through the same
+    `submit_job` path `run_due_schedules` uses, recording it as the schedule's
+    most recent run the same way - see design.md's "Job.schedule_id and
+    Job.baseline_job_id are threaded very differently" for why this mirrors
+    `run_due_schedules` rather than inventing a second submission shape.
+    """
+    _validate_schedule_shape(job_type, cadence, retention, expire_after_days)
+
+    next_run_at = compute_next_run_at(cadence) if cadence is not None else None
+    schedule = schedules_dal.create(
         db,
-        cluster_id=cluster_id,
+        cluster_id=cluster.id,
         job_type=job_type,
         inventory_group_id=inventory_group_id,
         repository=repository,
@@ -53,7 +102,23 @@ def create_schedule(
         backend=backend,
         enabled=enabled,
         next_run_at=next_run_at,
+        retention=retention,
+        expire_after_days=expire_after_days,
     )
+
+    if cadence is None:
+        job = submit_job(
+            db,
+            cluster,
+            job_type,
+            {"group_id": inventory_group_id, "repository": repository},
+            backend,
+            schedule_id=schedule.id,
+        )
+        schedule.last_run_job_id = job.id
+        db.flush()
+
+    return schedule
 
 
 def list_schedules(db: Session, cluster_id: int) -> list[Schedule]:
@@ -65,8 +130,29 @@ def get_schedule(db: Session, cluster_id: int, schedule_id: int) -> Schedule | N
 
 
 def update_schedule(db: Session, schedule: Schedule, updates: dict) -> Schedule:
-    """Apply `updates` to `schedule`, recomputing `next_run_at` when `cadence` changes."""
+    """Apply `updates` to `schedule`, recomputing `next_run_at` when `cadence` changes.
+
+    A one-shot schedule (`schedule.cadence is None`) is immutable - any update to it is
+    rejected regardless of which field it targets (SPEC.md §8). Converting a recurring
+    schedule's `cadence` to null (turning it into a one-shot after the fact) is rejected too;
+    shot-type is fixed at creation. The merged result must still satisfy the same
+    retention/expire_after_days rules creation does.
+    """
+    if schedule.cadence is None:
+        raise ScheduleImmutableError(schedule.id)
+
     updates = dict(updates)
+    if "cadence" in updates and updates["cadence"] is None:
+        raise InvalidScheduleFieldsError(
+            "Cannot convert a recurring schedule to one-shot by setting 'cadence' to null"
+        )
+
+    merged_job_type = updates.get("job_type", schedule.job_type)
+    merged_cadence = updates.get("cadence", schedule.cadence)
+    merged_retention = updates.get("retention", schedule.retention)
+    merged_expire_after_days = updates.get("expire_after_days", schedule.expire_after_days)
+    _validate_schedule_shape(merged_job_type, merged_cadence, merged_retention, merged_expire_after_days)
+
     cadence_changed = "cadence" in updates
     updated = schedules_dal.update_fields(db, schedule, updates)
     if cadence_changed:
@@ -104,6 +190,7 @@ def run_due_schedules(session: Session, now: datetime.datetime) -> tuple[list[in
             schedule.job_type,
             {"group_id": schedule.inventory_group_id, "repository": schedule.repository},
             schedule.backend,
+            schedule_id=schedule.id,
         )
         schedule.last_run_job_id = job.id
         triggered_job_ids.append(job.id)

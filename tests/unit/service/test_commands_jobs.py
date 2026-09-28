@@ -1,10 +1,17 @@
+import datetime
+
 from starrocks_br.commands.jobs import list_jobs, submit_job
-from starrocks_br.store.models import Job
+from starrocks_br.store.models import Job, Schedule
 
 
-def _add_job(session, cluster_id, job_type="backup_full", status="SUCCESS", group_id=None):
+def _add_job(session, cluster_id, job_type="backup_full", status="SUCCESS", group_id=None, schedule_id=None):
     job = Job(
-        cluster_id=cluster_id, job_type=job_type, backend="thread", status=status, group_id=group_id
+        cluster_id=cluster_id,
+        job_type=job_type,
+        backend="thread",
+        status=status,
+        group_id=group_id,
+        schedule_id=schedule_id,
     )
     session.add(job)
     session.commit()
@@ -127,6 +134,49 @@ def test_list_jobs_filters_by_group_id_excludes_jobs_with_no_recorded_group(
     _add_job(sqlite_session, cluster.id, group_id=None)
 
     result = list_jobs(sqlite_session, cluster.id, group_id=1)
+
+    assert result == []
+
+
+def _add_schedule(session, cluster_id, group_id) -> Schedule:
+    schedule = Schedule(
+        cluster_id=cluster_id,
+        job_type="backup_full",
+        inventory_group_id=group_id,
+        repository="repo",
+        cadence="0 0 * * *",
+        backend="thread",
+        enabled=True,
+        retention=1,
+        next_run_at=datetime.datetime.now(datetime.timezone.utc),
+    )
+    session.add(schedule)
+    session.commit()
+    return schedule
+
+
+def test_list_jobs_filters_by_schedule_id(sqlite_session, make_cluster, make_group):
+    cluster = make_cluster()
+    group_id = make_group(cluster.id)
+    schedule_a = _add_schedule(sqlite_session, cluster.id, group_id)
+    schedule_b = _add_schedule(sqlite_session, cluster.id, group_id)
+    scheduled_job = _add_job(sqlite_session, cluster.id, schedule_id=schedule_a.id)
+    _add_job(sqlite_session, cluster.id, schedule_id=schedule_b.id)
+
+    result = list_jobs(sqlite_session, cluster.id, schedule_id=schedule_a.id)
+
+    assert [job.id for job in result] == [scheduled_job.id]
+
+
+def test_list_jobs_filters_by_schedule_id_excludes_jobs_with_no_recorded_schedule(
+    sqlite_session, make_cluster
+):
+    """A job submitted directly (or before schedule linkage existed) has schedule_id = NULL
+    and must never match a schedule_id filter."""
+    cluster = make_cluster()
+    _add_job(sqlite_session, cluster.id, schedule_id=None)
+
+    result = list_jobs(sqlite_session, cluster.id, schedule_id=1)
 
     assert result == []
 

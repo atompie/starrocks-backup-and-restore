@@ -56,6 +56,7 @@ def test_create_schedule_computes_next_run_at(api_client, monkeypatch):
         f"/backup/schedules/cluster/{cluster_id}",
         json={
             "job_type": "backup_full",
+            "retention": 3,
             "inventory_group_id": group_id,
             "repository": "s3_repo",
             "cadence": "0 1 * * *",
@@ -76,6 +77,7 @@ def test_create_schedule_unknown_cluster_404(api_client):
         "/cluster/999/schedules",
         json={
             "job_type": "backup_full",
+            "retention": 3,
             "inventory_group_id": 1,
             "repository": "s3_repo",
             "cadence": "0 1 * * *",
@@ -91,6 +93,7 @@ def test_create_schedule_unknown_group_404(api_client):
         f"/backup/schedules/cluster/{cluster_id}",
         json={
             "job_type": "backup_full",
+            "retention": 3,
             "inventory_group_id": 999,
             "repository": "s3_repo",
             "cadence": "0 1 * * *",
@@ -115,6 +118,7 @@ def test_create_schedule_unknown_repository_404(api_client, monkeypatch):
         f"/backup/schedules/cluster/{cluster_id}",
         json={
             "job_type": "backup_full",
+            "retention": 3,
             "inventory_group_id": group_id,
             "repository": "missing_repo",
             "cadence": "0 1 * * *",
@@ -151,6 +155,7 @@ def test_create_schedule_cross_cluster_repository_404(api_client, monkeypatch):
         f"/backup/schedules/cluster/{cluster_a}",
         json={
             "job_type": "backup_full",
+            "retention": 3,
             "inventory_group_id": group_a,
             "repository": "b_only_repo",
             "cadence": "0 1 * * *",
@@ -165,7 +170,7 @@ def test_create_schedule_missing_repository_422(api_client):
 
     response = api_client.post(
         f"/backup/schedules/cluster/{cluster_id}",
-        json={"job_type": "backup_full", "inventory_group_id": group_id, "cadence": "0 1 * * *"},
+        json={"job_type": "backup_full", "inventory_group_id": group_id, "cadence": "0 1 * * *", "retention": 3},
     )
     assert response.status_code == 422
 
@@ -179,6 +184,7 @@ def test_create_schedule_invalid_cadence_422(api_client, monkeypatch):
         f"/backup/schedules/cluster/{cluster_id}",
         json={
             "job_type": "backup_full",
+            "retention": 3,
             "inventory_group_id": group_id,
             "repository": "s3_repo",
             "cadence": "not a cron expression",
@@ -198,6 +204,7 @@ def test_list_schedules_scoped_to_cluster(api_client, monkeypatch):
         f"/backup/schedules/cluster/{cluster_a}",
         json={
             "job_type": "backup_full",
+            "retention": 3,
             "inventory_group_id": group_a,
             "repository": "s3_repo",
             "cadence": "0 1 * * *",
@@ -207,6 +214,7 @@ def test_list_schedules_scoped_to_cluster(api_client, monkeypatch):
         f"/backup/schedules/cluster/{cluster_b}",
         json={
             "job_type": "backup_full",
+            "retention": 3,
             "inventory_group_id": group_b,
             "repository": "s3_repo",
             "cadence": "0 1 * * *",
@@ -237,6 +245,7 @@ def test_get_update_delete_schedule_via_wrong_cluster_404(api_client, monkeypatc
         f"/backup/schedules/cluster/{cluster_a}",
         json={
             "job_type": "backup_full",
+            "retention": 3,
             "inventory_group_id": group_a,
             "repository": "s3_repo",
             "cadence": "0 1 * * *",
@@ -264,6 +273,7 @@ def test_update_schedule_unknown_group_404(api_client, monkeypatch):
         f"/backup/schedules/cluster/{cluster_id}",
         json={
             "job_type": "backup_full",
+            "retention": 3,
             "inventory_group_id": group_id,
             "repository": "s3_repo",
             "cadence": "0 1 * * *",
@@ -287,6 +297,7 @@ def test_update_schedule_unknown_repository_404(api_client, monkeypatch):
         f"/backup/schedules/cluster/{cluster_id}",
         json={
             "job_type": "backup_full",
+            "retention": 3,
             "inventory_group_id": group_id,
             "repository": "s3_repo",
             "cadence": "0 1 * * *",
@@ -323,6 +334,7 @@ def test_update_schedule_cross_cluster_repository_404(api_client, monkeypatch):
         f"/backup/schedules/cluster/{cluster_a}",
         json={
             "job_type": "backup_full",
+            "retention": 3,
             "inventory_group_id": group_a,
             "repository": "s3_repo",
             "cadence": "0 1 * * *",
@@ -372,6 +384,7 @@ def test_disable_schedule_excludes_it_from_run_due(api_client, monkeypatch):
         f"/backup/schedules/cluster/{cluster_id}",
         json={
             "job_type": "backup_full",
+            "retention": 3,
             "inventory_group_id": group_id,
             "repository": "s3_repo",
             "cadence": "* * * * *",
@@ -393,6 +406,7 @@ def test_delete_schedule_removes_it(api_client, monkeypatch):
         f"/backup/schedules/cluster/{cluster_id}",
         json={
             "job_type": "backup_full",
+            "retention": 3,
             "inventory_group_id": group_id,
             "repository": "s3_repo",
             "cadence": "0 1 * * *",
@@ -421,6 +435,7 @@ def test_run_due_triggers_a_due_schedule(api_client, monkeypatch):
         f"/backup/schedules/cluster/{cluster_id}",
         json={
             "job_type": "backup_full",
+            "retention": 3,
             "inventory_group_id": group_id,
             "repository": "s3_repo",
             "cadence": "0 1 * * *",
@@ -453,6 +468,7 @@ def test_run_due_skips_not_yet_due_schedule(api_client, monkeypatch):
         f"/backup/schedules/cluster/{cluster_id}",
         json={
             "job_type": "backup_full",
+            "retention": 3,
             "inventory_group_id": group_id,
             "repository": "s3_repo",
             "cadence": "0 1 1 1 *",  # once a year - far in the future
@@ -487,6 +503,7 @@ def test_run_due_is_idempotent_under_concurrent_calls(api_client, monkeypatch):
         f"/backup/schedules/cluster/{cluster_id}",
         json={
             "job_type": "backup_full",
+            "retention": 3,
             "inventory_group_id": group_id,
             "repository": "s3_repo",
             "cadence": "0 1 * * *",
@@ -512,3 +529,207 @@ def test_run_due_is_idempotent_under_concurrent_calls(api_client, monkeypatch):
 
     total_triggered = sum(r["triggered_count"] for r in results)
     assert total_triggered == 1
+
+
+def _mock_backup_full_handler(monkeypatch, result=None):
+    from starrocks_br.jobs import handlers
+
+    monkeypatch.setitem(
+        handlers.JOB_HANDLERS, "backup_full", lambda cluster, params, job_id, on_progress=None: result or {}
+    )
+
+
+def test_one_shot_creation_submits_exactly_one_job(api_client, monkeypatch):
+    _mock_repository_check(monkeypatch)
+    _mock_backup_full_handler(monkeypatch)
+    cluster_id = _create_cluster(api_client)
+    group_id = _create_group(api_client, cluster_id)
+
+    response = api_client.post(
+        f"/backup/schedules/cluster/{cluster_id}",
+        json={
+            "job_type": "backup_full",
+            "inventory_group_id": group_id,
+            "repository": "s3_repo",
+        },
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["cadence"] is None
+    assert body["next_run_at"] is None
+    assert body["last_run_job_id"] is not None
+
+    history = api_client.get(f"/backup/history/cluster/{cluster_id}").json()
+    assert len(history) == 1
+    assert history[0]["id"] == body["last_run_job_id"]
+    assert history[0]["schedule_id"] == body["id"]
+
+
+def test_one_shot_incremental_schedule_rejected(api_client, monkeypatch):
+    _mock_repository_check(monkeypatch)
+    cluster_id = _create_cluster(api_client)
+    group_id = _create_group(api_client, cluster_id)
+
+    response = api_client.post(
+        f"/backup/schedules/cluster/{cluster_id}",
+        json={
+            "job_type": "backup_incremental",
+            "inventory_group_id": group_id,
+            "repository": "s3_repo",
+        },
+    )
+
+    assert response.status_code == 422
+
+
+def test_one_shot_schedule_with_retention_rejected(api_client, monkeypatch):
+    _mock_repository_check(monkeypatch)
+    cluster_id = _create_cluster(api_client)
+    group_id = _create_group(api_client, cluster_id)
+
+    response = api_client.post(
+        f"/backup/schedules/cluster/{cluster_id}",
+        json={
+            "job_type": "backup_full",
+            "inventory_group_id": group_id,
+            "repository": "s3_repo",
+            "retention": 3,
+        },
+    )
+
+    assert response.status_code == 422
+
+
+def test_recurring_full_schedule_without_retention_rejected(api_client, monkeypatch):
+    _mock_repository_check(monkeypatch)
+    cluster_id = _create_cluster(api_client)
+    group_id = _create_group(api_client, cluster_id)
+
+    response = api_client.post(
+        f"/backup/schedules/cluster/{cluster_id}",
+        json={
+            "job_type": "backup_full",
+            "inventory_group_id": group_id,
+            "repository": "s3_repo",
+            "cadence": "0 1 * * *",
+        },
+    )
+
+    assert response.status_code == 422
+
+
+def test_one_shot_schedule_with_expiry_is_recorded(api_client, monkeypatch):
+    _mock_repository_check(monkeypatch)
+    _mock_backup_full_handler(monkeypatch)
+    cluster_id = _create_cluster(api_client)
+    group_id = _create_group(api_client, cluster_id)
+
+    response = api_client.post(
+        f"/backup/schedules/cluster/{cluster_id}",
+        json={
+            "job_type": "backup_full",
+            "inventory_group_id": group_id,
+            "repository": "s3_repo",
+            "expire_after_days": 7,
+        },
+    )
+
+    assert response.status_code == 201
+    assert response.json()["expire_after_days"] == 7
+
+
+def _create_one_shot_schedule(api_client, monkeypatch, cluster_id, group_id) -> dict:
+    _mock_repository_check(monkeypatch)
+    _mock_backup_full_handler(monkeypatch)
+    return api_client.post(
+        f"/backup/schedules/cluster/{cluster_id}",
+        json={
+            "job_type": "backup_full",
+            "inventory_group_id": group_id,
+            "repository": "s3_repo",
+        },
+    ).json()
+
+
+def test_updating_a_one_shot_schedule_is_rejected(api_client, monkeypatch):
+    cluster_id = _create_cluster(api_client)
+    group_id = _create_group(api_client, cluster_id)
+    created = _create_one_shot_schedule(api_client, monkeypatch, cluster_id, group_id)
+
+    response = api_client.patch(
+        f"/backup/schedules/cluster/{cluster_id}/schedule_id/{created['id']}", json={"enabled": False}
+    )
+
+    assert response.status_code == 409
+
+
+def test_deleting_a_one_shot_schedule_succeeds(api_client, monkeypatch):
+    cluster_id = _create_cluster(api_client)
+    group_id = _create_group(api_client, cluster_id)
+    created = _create_one_shot_schedule(api_client, monkeypatch, cluster_id, group_id)
+
+    response = api_client.delete(f"/backup/schedules/cluster/{cluster_id}/schedule_id/{created['id']}")
+
+    assert response.status_code == 204
+    assert api_client.get(f"/backup/schedules/cluster/{cluster_id}/schedule_id/{created['id']}").status_code == 404
+
+
+def test_one_shot_schedule_never_triggered_by_run_due(api_client, monkeypatch):
+    cluster_id = _create_cluster(api_client)
+    group_id = _create_group(api_client, cluster_id)
+    _create_one_shot_schedule(api_client, monkeypatch, cluster_id, group_id)
+
+    response = api_client.post("/backup/schedules/run")
+
+    assert response.status_code == 200
+    assert response.json()["triggered_count"] == 0
+
+
+def test_updating_recurring_cadence_to_null_is_rejected(api_client, monkeypatch):
+    _mock_repository_check(monkeypatch)
+    cluster_id = _create_cluster(api_client)
+    group_id = _create_group(api_client, cluster_id)
+    created = api_client.post(
+        f"/backup/schedules/cluster/{cluster_id}",
+        json={
+            "job_type": "backup_full",
+            "retention": 3,
+            "inventory_group_id": group_id,
+            "repository": "s3_repo",
+            "cadence": "0 1 * * *",
+        },
+    ).json()
+
+    response = api_client.patch(
+        f"/backup/schedules/cluster/{cluster_id}/schedule_id/{created['id']}", json={"cadence": None}
+    )
+
+    assert response.status_code == 422
+    unchanged = api_client.get(f"/backup/schedules/cluster/{cluster_id}/schedule_id/{created['id']}").json()
+    assert unchanged["cadence"] == "0 1 * * *"
+
+
+def test_updating_job_type_to_incremental_while_retention_set_is_rejected(api_client, monkeypatch):
+    _mock_repository_check(monkeypatch)
+    cluster_id = _create_cluster(api_client)
+    group_id = _create_group(api_client, cluster_id)
+    created = api_client.post(
+        f"/backup/schedules/cluster/{cluster_id}",
+        json={
+            "job_type": "backup_full",
+            "retention": 3,
+            "inventory_group_id": group_id,
+            "repository": "s3_repo",
+            "cadence": "0 1 * * *",
+        },
+    ).json()
+
+    response = api_client.patch(
+        f"/backup/schedules/cluster/{cluster_id}/schedule_id/{created['id']}",
+        json={"job_type": "backup_incremental"},
+    )
+
+    assert response.status_code == 422
+    unchanged = api_client.get(f"/backup/schedules/cluster/{cluster_id}/schedule_id/{created['id']}").json()
+    assert unchanged["job_type"] == "backup_full"

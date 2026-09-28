@@ -127,6 +127,10 @@ class JobRead(BaseModel):
     progress_pct: int | None
     state_detail: str | None
     error_message: str | None
+    schedule_id: int | None
+    group_id: int | None
+    baseline_job_id: int | None
+    result_json: str | None
     created_at: datetime.datetime
     started_at: datetime.datetime | None
     finished_at: datetime.datetime | None
@@ -147,9 +151,11 @@ class ScheduleCreate(BaseModel):
     job_type: str = Field(pattern="^(backup_full|backup_incremental)$")
     inventory_group_id: int
     repository: str = Field(min_length=1, max_length=128)
-    cadence: str = Field(min_length=1, max_length=128)
+    cadence: str | None = Field(default=None, min_length=1, max_length=128)
     backend: Backend | None = None
     enabled: bool = True
+    retention: int | None = Field(default=None, ge=1)
+    expire_after_days: int | None = Field(default=None, ge=1)
 
 
 class ScheduleUpdate(BaseModel):
@@ -159,6 +165,8 @@ class ScheduleUpdate(BaseModel):
     cadence: str | None = Field(default=None, min_length=1, max_length=128)
     backend: Backend | None = None
     enabled: bool | None = None
+    retention: int | None = Field(default=None, ge=1)
+    expire_after_days: int | None = Field(default=None, ge=1)
 
 
 class ScheduleRead(BaseModel):
@@ -169,10 +177,12 @@ class ScheduleRead(BaseModel):
     job_type: str
     inventory_group_id: int
     repository: str
-    cadence: str
+    cadence: str | None
     backend: str | None
     enabled: bool
-    next_run_at: datetime.datetime
+    next_run_at: datetime.datetime | None
+    retention: int | None
+    expire_after_days: int | None
     last_run_job_id: int | None
     created_at: datetime.datetime
     updated_at: datetime.datetime

@@ -56,15 +56,19 @@ def create_schedule(cluster_id: int, payload: ScheduleCreate, db: Session = Depe
     try:
         return schedules_commands.create_schedule(
             db,
-            cluster_id=cluster_id,
+            cluster,
             job_type=payload.job_type,
             inventory_group_id=payload.inventory_group_id,
             repository=payload.repository,
             cadence=payload.cadence,
             backend=payload.backend,
             enabled=payload.enabled,
+            retention=payload.retention,
+            expire_after_days=payload.expire_after_days,
         )
-    except exceptions.InvalidCadenceError as e:
+    except (exceptions.InvalidCadenceError, exceptions.InvalidScheduleFieldsError) as e:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(e)) from e
+    except UnknownBackendError as e:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(e)) from e
 
 
@@ -91,6 +95,15 @@ def update_schedule(
     cluster = get_cluster_or_404(db, cluster_id)
     schedule = _get_schedule_or_404(db, cluster_id, schedule_id)
 
+    if schedule.cadence is None:
+        # A one-shot schedule is immutable - reject before running any other
+        # validation (an unknown group/repository in the same request should
+        # not produce a 404/503 instead of this 409).
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exceptions.ScheduleImmutableError(schedule.id)),
+        )
+
     updates = payload.model_dump(exclude_unset=True)
     if "inventory_group_id" in updates and not inventory_groups.group_exists(
         db, cluster_id, updates["inventory_group_id"]
@@ -104,7 +117,9 @@ def update_schedule(
 
     try:
         return schedules_commands.update_schedule(db, schedule, updates)
-    except exceptions.InvalidCadenceError as e:
+    except exceptions.ScheduleImmutableError as e:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e)) from e
+    except (exceptions.InvalidCadenceError, exceptions.InvalidScheduleFieldsError) as e:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(e)) from e
 
 
