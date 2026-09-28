@@ -56,6 +56,28 @@ Raised, and settled, while merging former section 8 items 8.1-8.4 into section 5
   explicit-baseline path from the resolved-latest path, so it already needs to know which job was
   used.
 
+## 0d. Follow-up decision for section 9 (answered 2026-09-28)
+
+- [x] Q13 Section 9 adds a CLI-based scheduler tick as a new, additional way to trigger due-schedule
+  execution. This is not a reversal of `openspec/changes/archive/2026-09-27-remove-cli-layer`: that
+  change removed one specific surface (the YAML-config-driven `cli.py`/`cli_api/` HTTP-client
+  subcommands, for reasons unrelated to scheduling — redundant with the API, unmaintained,
+  PyInstaller/PyPI packaging overhead) and never claimed the project would have no CLI ever again.
+  Likewise `api-scheduling`'s Purpose line describing cron/a Kubernetes CronJob calling
+  `POST /backup/schedules/run` documents one supported trigger path, not an exclusivity constraint —
+  nothing in the spec says that endpoint is the only way to trigger a run. Confirmed intentional
+  (2026-09-28): both mechanisms are kept and documented as valid ways to trigger due-schedule
+  execution — `POST /backup/schedules/run` (HTTP, unchanged) and the new CLI tick (process-local,
+  scoped narrowly to the scheduler command and whatever it needs, e.g. lock status — not a revival
+  of the removed YAML-config CLI surface). An operator picks whichever fits their environment
+  (call the API from cron, or run the CLI from cron/a timer/CronJob directly); see 9.1.
+  Implementation-wise this must be built as new code, not restored from the deleted `cli.py`/
+  `cli_api/`/`config.py`/`error_handler.py`/`entry_point.py` (no `git revert`, no resurrecting the
+  `click` dependency or the old YAML-config format): those files predate `introduce-data-access-layer`,
+  `move-metadata-sql-into-dal`, and every schema/commands-layer change since 2026-09-27, so they no
+  longer match `commands/schedules.py`'s current signatures or the DAL boundary and would not run,
+  let alone belong architecturally, even if restored verbatim.
+
 ## 1. Baseline — already done and verified
 
 - [x] 1.1 Cluster: model, CRUD, verify endpoints, encrypted password, delete guard (`commands/clusters.py`; integration `test_clusters_live.py`)
@@ -212,14 +234,25 @@ Because cron-style scheduling can overlap a slow-running tick with the next one,
 nothing stops an operator from also running the command by hand, the tick itself must guard
 against two invocations running at once.
 
-- [ ] 9.1 Add a CLI command under `src/starrocks_br/cli/` (e.g. `python -m starrocks_br.cli.scheduler tick`,
+- [ ] 9.1 OpenSpec change (e.g. `add-cli-scheduler-command`) that adds a new `cli` capability scoped
+  strictly to the scheduler tick command — distinct from, and not a revival of, the removed
+  YAML-config `cli.py`/`cli_api/` surface (`2026-09-27-remove-cli-layer` stands unchanged for that
+  surface). Update `openspec/specs/api-scheduling/spec.md`'s Purpose and its "Running due
+  schedules" requirement to document both supported ways to trigger due-schedule execution:
+  `POST /backup/schedules/run` (HTTP, existing, unchanged) and the new CLI tick (see Q13) — the CLI
+  is additive, not a replacement for the endpoint. Archive this change before starting 9.2.
+- [ ] 9.2 Add a **new** CLI command under `src/starrocks_br/cli/` (e.g. `python -m starrocks_br.cli.scheduler tick`,
   wired as a console-script entry point) that, per invocation, calls `commands.schedules.run_due_schedules`
-  and one-shot expiry once and exits with a non-zero status on failure. Per AGENTS.md's architectural
-  boundary, the CLI calls only into the commands layer (same rule the HTTP API follows) — it must not
-  call core operation modules (planner, executor, etc.) directly. No loop, no sleep, no disable switch:
-  cadence and enable/disable are operational concerns of the external scheduler (cron entry
-  present/absent, timer enabled/disabled), not of this process.
-- [ ] 9.2 Concurrency: only one scheduler tick may run at a time cluster-wide. This is a separate
+  and one-shot expiry once and exits with a non-zero status on failure. Written from scratch against
+  the current codebase — do not restore, `git revert`, or cherry-pick any of the deleted `cli.py`,
+  `cli_api/`, `config.py`, `error_handler.py`, or `entry_point.py`, and do not reintroduce the `click`
+  dependency or the old YAML-config format; that old code predates the DAL layer and every
+  commands/schema change since and is incompatible with them regardless. Per AGENTS.md's
+  architectural boundary, the CLI calls only into the commands layer (same rule the HTTP API
+  follows) — it must not call core operation modules (planner, executor, etc.) directly. No loop, no
+  sleep, no disable switch: cadence and enable/disable are operational concerns of the external
+  scheduler (cron entry present/absent, timer enabled/disabled), not of this process.
+- [ ] 9.3 Concurrency: only one scheduler tick may run at a time cluster-wide. This is a separate
   mechanism from `concurrency.reserve_job_slot`'s per-cluster `backup` scope — that serializes
   StarRocks backup/retention work, not tick invocations, and stays as-is. Add a singleton
   `scheduler_lock` row in the metadata store (`store`/`dal/metadata/`) acquired with one atomic
@@ -228,27 +261,27 @@ against two invocations running at once.
   `acquired_at`, and `expires_at = acquired_at + STARROCKS_BR_SCHEDULER_LOCK_TIMEOUT_SECONDS`.
   Expose this as `commands.schedules.try_acquire_scheduler_lock()` /
   `release_scheduler_lock()` so the CLI stays a thin caller into the commands layer, consistent
-  with 9.1.
-- [ ] 9.3 If the lock cannot be acquired (already held and not expired), the CLI logs a clear
+  with 9.2.
+- [ ] 9.4 If the lock cannot be acquired (already held and not expired), the CLI logs a clear
   "scheduler already running" message to stderr, exits immediately with a distinct non-zero exit
   code, and does not touch due schedules, expiry, or reconciliation. If a previous holder crashed
   mid-tick, its lock is past `expires_at` and is reclaimed by the next invocation, which logs a
   warning that it recovered a stale lock. The lock is released in a `finally` at the end of a
   successful acquisition (success or failure of the tick's own work) so the next cron invocation
   can proceed.
-- [ ] 9.4 Document the catch-up policy: if a tick is missed (cron/timer downtime), the next invocation
+- [ ] 9.5 Document the catch-up policy: if a tick is missed (cron/timer downtime), the next invocation
   runs due schedules once and jumps to the next future occurrence — unchanged from the loop-based
   design, since due-ness is already decided by comparing `next_run_at` to now, not by wall-clock
   ticking.
-- [ ] 9.5 Each CLI invocation that acquires the lock reconciles orphaned jobs before running due
+- [ ] 9.6 Each CLI invocation that acquires the lock reconciles orphaned jobs before running due
   schedules/expiry: re-enqueue `PENDING`; for `RUNNING`, check `SHOW BACKUP/RESTORE` by label →
   `SUCCESS`/`FAILED`, and append a reconciliation event. This runs on every invocation (not once at
   process startup), since the process no longer stays resident between ticks.
-- [ ] 9.6 Record the timestamp of the last successful CLI tick in the metadata store, and report it via
+- [ ] 9.7 Record the timestamp of the last successful CLI tick in the metadata store, and report it via
   `/health` (e.g. `scheduler.last_tick_at`) so a stalled cron/timer is observable from the API even
   though the API process itself no longer runs the loop. A tick that exits early because the lock was
   held does not update `last_tick_at`.
-- [ ] 9.7 Tests: a CLI tick invocation triggers due schedules and expiry; reconciliation outcomes; the
+- [ ] 9.8 Tests: a CLI tick invocation triggers due schedules and expiry; reconciliation outcomes; the
   CLI calls only `commands/`, never a core operation module directly; last-tick timestamp is recorded
   and surfaced via `/health`; a second concurrent invocation fails to acquire the lock, logs the alert,
   and exits non-zero without running due schedules/expiry/reconciliation; a stale (expired) lock is
