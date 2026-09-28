@@ -18,13 +18,13 @@
 
 ## 4. prune.py extraction (includes bug fix)
 
-- [ ] 4.1 Create `dal/db/prune.py` with `verify_snapshot_exists` and `execute_drop_snapshot`, rewriting the `SHOW SNAPSHOT`/`DROP SNAPSHOT` statements to use `utils.quote_identifier`/`quote_value` for `repository` and `snapshot_name` (fixing the unescaped interpolation currently at `prune.py:168` and `prune.py:191`); update `prune.py` to call through `dal/db/prune.py`, keeping `get_successful_backups`/`cleanup_backup_history` (ORM) in place.
-- [ ] 4.2 Update `tests/unit` prune tests to assert the now-quoted `SHOW SNAPSHOT`/`DROP SNAPSHOT` statements (matching the pattern used for `test_executor.py`'s `SHOW BACKUP FROM` assertion) and verify they pass.
+- [x] 4.1 Create `dal/db/prune.py` with `verify_snapshot_exists` and `execute_drop_snapshot`, rewriting the `SHOW SNAPSHOT`/`DROP SNAPSHOT` statements to use `utils.quote_identifier`/`quote_value` for `repository` and `snapshot_name` (fixing the unescaped interpolation currently at `prune.py:168` and `prune.py:191`); update `prune.py` to call through `dal/db/prune.py`, keeping `get_successful_backups`/`cleanup_backup_history` (ORM) in place.
+- [x] 4.2 Update `tests/unit` prune tests to assert the now-quoted `SHOW SNAPSHOT`/`DROP SNAPSHOT` statements (matching the pattern used for `test_executor.py`'s `SHOW BACKUP FROM` assertion) and verify they pass.
 
 ## 5. executor.py extraction (includes bug fix)
 
-- [ ] 5.1 Create `dal/db/backup.py` with `submit_backup_command` and `poll_backup_status`'s StarRocks call, adding `utils.quote_identifier` around `database` in the `SHOW BACKUP FROM` statement (fixing the missing quoting currently at `executor.py:169`); update `executor.py` to call through `dal/db/backup.py`, keeping `execute_backup`'s orchestration (history/concurrency calls) in place.
-- [ ] 5.2 Update `tests/unit/service/test_executor.py`'s `SHOW BACKUP FROM` assertion to expect the quoted identifier and verify the full test file passes.
+- [x] 5.1 Create `dal/db/backup.py` with `submit_backup_command` and `poll_backup_status`'s StarRocks call, adding `utils.quote_identifier` around `database` in the `SHOW BACKUP FROM` statement (fixing the missing quoting currently at `executor.py:169`); update `executor.py` to call through `dal/db/backup.py`, keeping `execute_backup`'s orchestration (history/concurrency calls) in place.
+- [x] 5.2 Update `tests/unit/service/test_executor.py`'s `SHOW BACKUP FROM` assertion to expect the quoted identifier and verify the full test file passes.
 
 ## 6. planner.py extraction
 

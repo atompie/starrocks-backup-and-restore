@@ -326,9 +326,18 @@ class TestVerifySnapshotExists:
 
         assert result is True
         query_sql = mock_db.query.call_args[0][0]
-        assert "SHOW SNAPSHOT" in query_sql
-        assert "test_repo" in query_sql
-        assert "backup1" in query_sql
+        assert "SHOW SNAPSHOT ON `test_repo`" in query_sql
+        assert "SNAPSHOT = 'backup1'" in query_sql
+
+    def test_snapshot_name_with_quote_is_escaped(self, mocker):
+        """A snapshot name containing a single quote must not break out of the SQL string literal."""
+        mock_db = mocker.Mock()
+        mock_db.query.return_value = [["snapshot_data"]]
+
+        prune.verify_snapshot_exists(mock_db, "test_repo", "o'brien_backup")
+
+        query_sql = mock_db.query.call_args[0][0]
+        assert "SNAPSHOT = 'o''brien_backup'" in query_sql
 
     def test_snapshot_not_found(self, mocker):
         """Test when snapshot doesn't exist in repository."""
@@ -358,9 +367,8 @@ class TestExecuteDropSnapshot:
 
         mock_db.execute.assert_called_once()
         sql = mock_db.execute.call_args[0][0]
-        assert "DROP SNAPSHOT" in sql
-        assert "test_repo" in sql
-        assert "backup1" in sql
+        assert "DROP SNAPSHOT ON `test_repo`" in sql
+        assert "SNAPSHOT = 'backup1'" in sql
 
     def test_drop_snapshot_failure(self, mocker):
         """Test snapshot deletion failure."""
