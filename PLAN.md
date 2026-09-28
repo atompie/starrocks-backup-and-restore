@@ -71,6 +71,12 @@ Raised, and settled, while merging former section 8 items 8.1-8.4 into section 5
   scoped narrowly to the scheduler command and whatever it needs, e.g. lock status — not a revival
   of the removed YAML-config CLI surface). An operator picks whichever fits their environment
   (call the API from cron, or run the CLI from cron/a timer/CronJob directly); see 9.1.
+  Implementation-wise this must be built as new code, not restored from the deleted `cli.py`/
+  `cli_api/`/`config.py`/`error_handler.py`/`entry_point.py` (no `git revert`, no resurrecting the
+  `click` dependency or the old YAML-config format): those files predate `introduce-data-access-layer`,
+  `move-metadata-sql-into-dal`, and every schema/commands-layer change since 2026-09-27, so they no
+  longer match `commands/schedules.py`'s current signatures or the DAL boundary and would not run,
+  let alone belong architecturally, even if restored verbatim.
 
 ## 1. Baseline — already done and verified
 
@@ -235,13 +241,17 @@ against two invocations running at once.
   schedules" requirement to document both supported ways to trigger due-schedule execution:
   `POST /backup/schedules/run` (HTTP, existing, unchanged) and the new CLI tick (see Q13) — the CLI
   is additive, not a replacement for the endpoint. Archive this change before starting 9.2.
-- [ ] 9.2 Add a CLI command under `src/starrocks_br/cli/` (e.g. `python -m starrocks_br.cli.scheduler tick`,
+- [ ] 9.2 Add a **new** CLI command under `src/starrocks_br/cli/` (e.g. `python -m starrocks_br.cli.scheduler tick`,
   wired as a console-script entry point) that, per invocation, calls `commands.schedules.run_due_schedules`
-  and one-shot expiry once and exits with a non-zero status on failure. Per AGENTS.md's architectural
-  boundary, the CLI calls only into the commands layer (same rule the HTTP API follows) — it must not
-  call core operation modules (planner, executor, etc.) directly. No loop, no sleep, no disable switch:
-  cadence and enable/disable are operational concerns of the external scheduler (cron entry
-  present/absent, timer enabled/disabled), not of this process.
+  and one-shot expiry once and exits with a non-zero status on failure. Written from scratch against
+  the current codebase — do not restore, `git revert`, or cherry-pick any of the deleted `cli.py`,
+  `cli_api/`, `config.py`, `error_handler.py`, or `entry_point.py`, and do not reintroduce the `click`
+  dependency or the old YAML-config format; that old code predates the DAL layer and every
+  commands/schema change since and is incompatible with them regardless. Per AGENTS.md's
+  architectural boundary, the CLI calls only into the commands layer (same rule the HTTP API
+  follows) — it must not call core operation modules (planner, executor, etc.) directly. No loop, no
+  sleep, no disable switch: cadence and enable/disable are operational concerns of the external
+  scheduler (cron entry present/absent, timer enabled/disabled), not of this process.
 - [ ] 9.3 Concurrency: only one scheduler tick may run at a time cluster-wide. This is a separate
   mechanism from `concurrency.reserve_job_slot`'s per-cluster `backup` scope — that serializes
   StarRocks backup/retention work, not tick invocations, and stays as-is. Add a singleton
