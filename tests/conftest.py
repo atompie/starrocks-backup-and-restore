@@ -188,21 +188,21 @@ def mock_db(mocker):
 @pytest.fixture
 def mock_healthy_cluster(mocker):
     """Mock a healthy cluster."""
-    return mocker.patch("starrocks_br.health.check_cluster_health", return_value=(True, "Healthy"))
+    return mocker.patch("starrocks_br.dal.db.health.check_cluster_health", return_value=(True, "Healthy"))
 
 
 @pytest.fixture
 def mock_unhealthy_cluster(mocker):
     """Mock an unhealthy cluster."""
     return mocker.patch(
-        "starrocks_br.health.check_cluster_health", return_value=(False, "Cluster is unhealthy")
+        "starrocks_br.dal.db.health.check_cluster_health", return_value=(False, "Cluster is unhealthy")
     )
 
 
 @pytest.fixture
 def mock_repo_exists(mocker):
     """Mock repository verification success."""
-    return mocker.patch("starrocks_br.repository.ensure_repository")
+    return mocker.patch("starrocks_br.dal.db.repository.ensure_repository")
 
 
 @pytest.fixture

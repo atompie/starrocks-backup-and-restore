@@ -2,12 +2,12 @@
 
 ## 1. Package scaffolding
 
-- [ ] 1.1 Create `src/starrocks_br/dal/__init__.py`, `src/starrocks_br/dal/db/__init__.py`, `src/starrocks_br/dal/metadata/__init__.py` and verify `python -c "import starrocks_br.dal.db, starrocks_br.dal.metadata"` succeeds.
+- [x] 1.1 Create `src/starrocks_br/dal/__init__.py`, `src/starrocks_br/dal/db/__init__.py`, `src/starrocks_br/dal/metadata/__init__.py` and verify `python -c "import starrocks_br.dal.db, starrocks_br.dal.metadata"` succeeds.
 
 ## 2. Pure StarRocks-SQL modules (clean lift-and-shift, no logic change)
 
-- [ ] 2.1 Move `health.py`'s `check_cluster_health` (`SHOW FRONTENDS`/`SHOW BACKENDS`) into `dal/db/health.py`; update its caller(s) to import from the new location; verify `tests/unit` for health-related tests pass unchanged.
-- [ ] 2.2 Move `repository.py`'s StarRocks calls (`_find_repository`, `list_repositories`, `build_create_s3_repository_command`, `has_snapshots`, `drop_repository`) into `dal/db/repository.py`; update callers' imports; verify `tests/unit` tests covering repository creation/listing/deletion pass unchanged.
+- [x] 2.1 Move `health.py`'s `check_cluster_health` (`SHOW FRONTENDS`/`SHOW BACKENDS`) into `dal/db/health.py`; update its caller(s) to import from the new location; verify `tests/unit` for health-related tests pass unchanged.
+- [x] 2.2 Move `repository.py`'s StarRocks calls (`_find_repository`, `list_repositories`, `build_create_s3_repository_command`, `has_snapshots`, `drop_repository`) into `dal/db/repository.py`; update callers' imports; verify `tests/unit` tests covering repository creation/listing/deletion pass unchanged.
 
 ## 3. Pure metadata modules (already-clean ORM, relocation only)
 
