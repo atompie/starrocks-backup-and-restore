@@ -28,8 +28,8 @@
 
 ## 6. planner.py extraction
 
-- [ ] 6.1 Extend `dal/db/backup.py` with `validate_tables_exist`'s `SHOW TABLES FROM` call, `find_recent_partitions`'s `SHOW TABLES FROM`/`SHOW PARTITIONS FROM` calls, and `get_all_partitions_for_tables`'s `information_schema.partitions_meta` query, moved from `planner.py` verbatim (already correctly quoted); verify `tests/unit` planner tests covering these functions pass unchanged.
-- [ ] 6.2 Move `build_incremental_backup_command` and `build_full_backup_command`'s StarRocks DDL-string construction into `dal/db/backup.py`; update `planner.py` to call through it, keeping `find_latest_full_backup`, `find_tables_by_group`, `record_backup_partitions` (ORM) in place; verify `tests/unit` tests for backup command construction pass unchanged.
+- [x] 6.1 Extend `dal/db/backup.py` with `validate_tables_exist`'s `SHOW TABLES FROM` call, `find_recent_partitions`'s `SHOW TABLES FROM`/`SHOW PARTITIONS FROM` calls, and `get_all_partitions_for_tables`'s `information_schema.partitions_meta` query, moved from `planner.py` verbatim (already correctly quoted); verify `tests/unit` planner tests covering these functions pass unchanged.
+- [x] 6.2 Move `build_incremental_backup_command` and `build_full_backup_command`'s StarRocks DDL-string construction into `dal/db/backup.py`; update `planner.py` to call through it, keeping `find_latest_full_backup`, `find_tables_by_group`, `record_backup_partitions` (ORM) in place; verify `tests/unit` tests for backup command construction pass unchanged.
 
 ## 7. restore.py extraction
 

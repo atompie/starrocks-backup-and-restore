@@ -18,7 +18,8 @@ import hashlib
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from starrocks_br import exceptions, logger, timezone, utils
+from starrocks_br import exceptions, logger, timezone
+from starrocks_br.dal.db import backup as backup_dal
 from starrocks_br.store.models import BackupPartition, Job, JobStatus, TableInventory
 
 
@@ -132,8 +133,7 @@ def validate_tables_exist(
     if not db_tables:
         return
 
-    show_tables_query = f"SHOW TABLES FROM {utils.quote_identifier(database)}"
-    existing_tables_rows = db.query(show_tables_query)
+    existing_tables_rows = backup_dal.show_tables(db, database)
     existing_tables = {row[0] for row in existing_tables_rows}
 
     invalid_tables = []
@@ -209,10 +209,7 @@ def find_recent_partitions(
     concrete_tables = []
     for table_entry in db_group_tables:
         if table_entry["table"] == "*":
-            show_tables_query = (
-                f"SHOW TABLES FROM {utils.quote_identifier(table_entry['database'])}"
-            )
-            tables_rows = db.query(show_tables_query)
+            tables_rows = backup_dal.show_tables(db, table_entry["database"])
             for row in tables_rows:
                 concrete_tables.append({"database": table_entry["database"], "table": row[0]})
         else:
@@ -223,11 +220,8 @@ def find_recent_partitions(
         db_name = table_entry["database"]
         table_name = table_entry["table"]
 
-        show_partitions_query = (
-            f"SHOW PARTITIONS FROM {utils.build_qualified_table_name(db_name, table_name)}"
-        )
         try:
-            partition_rows = db.query(show_partitions_query)
+            partition_rows = backup_dal.show_partitions(db, db_name, table_name)
         except Exception as e:
             logger.error(f"Error showing partitions for table {db_name}.{table_name}: {e}")
             continue
@@ -278,25 +272,7 @@ def build_incremental_backup_command(
     if not db_partitions:
         return ""
 
-    table_partitions = {}
-    for partition in db_partitions:
-        table_name = partition["table"]
-        if table_name not in table_partitions:
-            table_partitions[table_name] = []
-        table_partitions[table_name].append(partition["partition_name"])
-
-    on_clauses = []
-    for table, parts in table_partitions.items():
-        partitions_str = ", ".join(utils.quote_identifier(p) for p in parts)
-        on_clauses.append(f"TABLE {utils.quote_identifier(table)} PARTITION ({partitions_str})")
-
-    on_clause = ",\n    ".join(on_clauses)
-
-    command = f"""BACKUP DATABASE {utils.quote_identifier(database)} SNAPSHOT {utils.quote_identifier(label)}
-    TO {utils.quote_identifier(repository)}
-    ON ({on_clause})"""
-
-    return command
+    return backup_dal.build_incremental_backup_command(db_partitions, repository, label, database)
 
 
 def build_full_backup_command(
@@ -314,17 +290,7 @@ def build_full_backup_command(
     if not db_entries:
         return ""
 
-    if any(t["table"] == "*" for t in db_entries):
-        return f"""BACKUP DATABASE {utils.quote_identifier(database)} SNAPSHOT {utils.quote_identifier(label)}
-    TO {utils.quote_identifier(repository)}"""
-
-    on_clauses = []
-    for t in db_entries:
-        on_clauses.append(f"TABLE {utils.quote_identifier(t['table'])}")
-    on_clause = ",\n        ".join(on_clauses)
-    return f"""BACKUP DATABASE {utils.quote_identifier(database)} SNAPSHOT {utils.quote_identifier(label)}
-    TO {utils.quote_identifier(repository)}
-    ON ({on_clause})"""
+    return backup_dal.build_full_backup_command(db_entries, repository, label, database)
 
 
 def record_backup_partitions(
@@ -380,27 +346,8 @@ def get_all_partitions_for_tables(
     if not db_tables:
         return []
 
-    where_conditions = [f"DB_NAME = {utils.quote_value(database)}", "PARTITION_NAME IS NOT NULL"]
+    table_names = [table["table"] for table in db_tables if table["table"] != "*"]
 
-    table_conditions = []
-    for table in db_tables:
-        if table["table"] == "*":
-            pass
-        else:
-            table_conditions.append(f"TABLE_NAME = {utils.quote_value(table['table'])}")
-
-    if table_conditions:
-        where_conditions.append("(" + " OR ".join(table_conditions) + ")")
-
-    where_clause = " AND ".join(where_conditions)
-
-    query = f"""
-    SELECT DB_NAME, TABLE_NAME, PARTITION_NAME
-    FROM information_schema.partitions_meta 
-    WHERE {where_clause}
-    ORDER BY TABLE_NAME, PARTITION_NAME
-    """
-
-    rows = db.query(query)
+    rows = backup_dal.get_partitions_meta(db, database, table_names if table_names else None)
 
     return [{"database": row[0], "table": row[1], "partition_name": row[2]} for row in rows]
