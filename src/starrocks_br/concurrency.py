@@ -12,15 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import datetime
 from typing import Literal
 
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from . import exceptions, logger
 from .dal.db import concurrency as concurrency_dal
-from .store.models import RunStatus
+from .dal.metadata import concurrency as concurrency_metadata_dal
 
 
 def reserve_job_slot(db, session: Session, cluster_id: int, scope: str, label: str) -> None:
@@ -42,12 +40,7 @@ def reserve_job_slot(db, session: Session, cluster_id: int, scope: str, label: s
 
 def _get_active_jobs_for_scope(session: Session, cluster_id: int, scope: str) -> list[tuple[str, str, str]]:
     """Get all active jobs for the given scope."""
-    rows = session.execute(
-        select(RunStatus.scope, RunStatus.label, RunStatus.state).where(
-            RunStatus.cluster_id == cluster_id, RunStatus.state == "ACTIVE"
-        )
-    ).all()
-    return [tuple(row) for row in rows if row[0] == scope]
+    return concurrency_metadata_dal.active_jobs_for_scope(session, cluster_id, scope)
 
 
 def _handle_active_job_conflicts(
@@ -77,25 +70,12 @@ def _raise_concurrency_conflict(scope: str, active_jobs: list[tuple[str, str, st
 
 def _insert_new_job(session: Session, cluster_id: int, scope: str, label: str) -> None:
     """Insert a new active job record."""
-    session.add(RunStatus(cluster_id=cluster_id, scope=scope, label=label, state="ACTIVE"))
-    session.flush()
+    concurrency_metadata_dal.insert_active_job(session, cluster_id, scope, label)
 
 
 def _cleanup_stale_job(session: Session, cluster_id: int, scope: str, label: str) -> None:
     """Clean up a stale job by updating its state to CANCELLED."""
-    row = session.scalars(
-        select(RunStatus).where(
-            RunStatus.cluster_id == cluster_id,
-            RunStatus.scope == scope,
-            RunStatus.label == label,
-            RunStatus.state == "ACTIVE",
-        )
-    ).one_or_none()
-    if row is None:
-        return
-    row.state = "CANCELLED"
-    row.finished_at = datetime.datetime.now(datetime.timezone.utc)
-    session.flush()
+    concurrency_metadata_dal.cancel_stale_job(session, cluster_id, scope, label)
 
 
 def complete_job_slot(
@@ -109,13 +89,4 @@ def complete_job_slot(
 
     Simple approach: update the same row by scope/label.
     """
-    row = session.scalars(
-        select(RunStatus).where(
-            RunStatus.cluster_id == cluster_id, RunStatus.scope == scope, RunStatus.label == label
-        )
-    ).one_or_none()
-    if row is None:
-        return
-    row.state = final_state
-    row.finished_at = datetime.datetime.now(datetime.timezone.utc)
-    session.flush()
+    concurrency_metadata_dal.complete_job(session, cluster_id, scope, label, final_state)

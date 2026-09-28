@@ -139,22 +139,21 @@
 
 ## 7. Concurrency
 
-- [ ] 7.1 Create `src/starrocks_br/dal/metadata/concurrency.py` with
+- [x] 7.1 Create `src/starrocks_br/dal/metadata/concurrency.py` with
       `active_jobs_for_scope`, `insert_active_job`, `cancel_stale_job`,
       and `complete_job` (the `RunStatus` queries/writes from
       `_get_active_jobs_for_scope`, `_insert_new_job`,
       `_cleanup_stale_job`, `complete_job_slot`), lifted from
       `concurrency.py`.
-- [ ] 7.2 Add `tests/unit/crud/test_dal_concurrency.py` covering all four
+- [x] 7.2 Add `tests/unit/crud/test_dal_concurrency.py` covering all four
       functions; verify with
       `pytest tests/unit/crud/test_dal_concurrency.py -q`.
-- [ ] 7.3 Update `concurrency.py` to call through the new DAL module for
+- [x] 7.3 Update `concurrency.py` to call through the new DAL module for
       the four functions above, keeping `reserve_job_slot`,
       `_handle_active_job_conflicts`, `_can_heal_stale_job`, and
       `_raise_concurrency_conflict` (decision logic, calls into both this
       new module and the existing `dal/db/concurrency.py`) unchanged;
-      verify with `pytest tests/unit -k concurrency -q` (confirm the
-      actual concurrency test module name first).
+      verify with `pytest tests/unit/service/test_concurrency.py -q`.
 
 ## 8. Remaining single-call-site fixes
 
