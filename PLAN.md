@@ -56,6 +56,20 @@ Raised, and settled, while merging former section 8 items 8.1-8.4 into section 5
   explicit-baseline path from the resolved-latest path, so it already needs to know which job was
   used.
 
+## 0d. Follow-up decision for section 9 (answered 2026-09-28)
+
+- [x] Q13 Section 9's CLI-based scheduler tick reverses `openspec/changes/archive/2026-09-27-remove-cli-layer`,
+  which deleted the CLI surface entirely — including, by name, "the cron-friendly schedule-runner
+  CLI command" under its removed `cli-api-client` capability — in favor of the HTTP API's
+  `POST /backup/schedules/run` as the sole periodic-trigger surface. That reversal is confirmed
+  intentional (2026-09-28): the scheduler tick is driven by an externally-invoked CLI command, not
+  by cron/a timer calling the HTTP endpoint. The reinstated CLI is scoped narrowly to the scheduler
+  tick command (and whatever it needs, e.g. lock status) — it is **not** a revival of the old
+  YAML-config-driven `cli.py`/`cli_api/` surface that change removed for unrelated reasons
+  (redundant HTTP-client subcommands, PyInstaller packaging); those stay removed. `POST
+  /backup/schedules/run` is kept, unchanged, as a manual/on-demand trigger (e.g. for an operator or
+  a test), but is no longer the documented periodic-trigger mechanism — see 9.1.
+
 ## 1. Baseline — already done and verified
 
 - [x] 1.1 Cluster: model, CRUD, verify endpoints, encrypted password, delete guard (`commands/clusters.py`; integration `test_clusters_live.py`)
@@ -212,14 +226,22 @@ Because cron-style scheduling can overlap a slow-running tick with the next one,
 nothing stops an operator from also running the command by hand, the tick itself must guard
 against two invocations running at once.
 
-- [ ] 9.1 Add a CLI command under `src/starrocks_br/cli/` (e.g. `python -m starrocks_br.cli.scheduler tick`,
+- [ ] 9.1 OpenSpec change (e.g. `reinstate-cli-scheduler-command`) that formally reverses
+  `openspec/changes/archive/2026-09-27-remove-cli-layer` for this one capability: reinstate a `cli`
+  capability scoped strictly to the scheduler tick command (not the removed YAML-config `cli.py`/
+  `cli_api/` surface — that removal stands). Update `openspec/specs/api-scheduling/spec.md`'s
+  Purpose (currently: "lets a lightweight periodic trigger... ask the server to run whatever is
+  due" via the HTTP endpoint) and its "Running due schedules" requirement to describe the CLI tick
+  as the periodic-trigger surface, with `POST /backup/schedules/run` kept as a secondary,
+  manual/on-demand trigger (see Q13). Archive this change before starting 9.2.
+- [ ] 9.2 Add a CLI command under `src/starrocks_br/cli/` (e.g. `python -m starrocks_br.cli.scheduler tick`,
   wired as a console-script entry point) that, per invocation, calls `commands.schedules.run_due_schedules`
   and one-shot expiry once and exits with a non-zero status on failure. Per AGENTS.md's architectural
   boundary, the CLI calls only into the commands layer (same rule the HTTP API follows) — it must not
   call core operation modules (planner, executor, etc.) directly. No loop, no sleep, no disable switch:
   cadence and enable/disable are operational concerns of the external scheduler (cron entry
   present/absent, timer enabled/disabled), not of this process.
-- [ ] 9.2 Concurrency: only one scheduler tick may run at a time cluster-wide. This is a separate
+- [ ] 9.3 Concurrency: only one scheduler tick may run at a time cluster-wide. This is a separate
   mechanism from `concurrency.reserve_job_slot`'s per-cluster `backup` scope — that serializes
   StarRocks backup/retention work, not tick invocations, and stays as-is. Add a singleton
   `scheduler_lock` row in the metadata store (`store`/`dal/metadata/`) acquired with one atomic
@@ -228,27 +250,27 @@ against two invocations running at once.
   `acquired_at`, and `expires_at = acquired_at + STARROCKS_BR_SCHEDULER_LOCK_TIMEOUT_SECONDS`.
   Expose this as `commands.schedules.try_acquire_scheduler_lock()` /
   `release_scheduler_lock()` so the CLI stays a thin caller into the commands layer, consistent
-  with 9.1.
-- [ ] 9.3 If the lock cannot be acquired (already held and not expired), the CLI logs a clear
+  with 9.2.
+- [ ] 9.4 If the lock cannot be acquired (already held and not expired), the CLI logs a clear
   "scheduler already running" message to stderr, exits immediately with a distinct non-zero exit
   code, and does not touch due schedules, expiry, or reconciliation. If a previous holder crashed
   mid-tick, its lock is past `expires_at` and is reclaimed by the next invocation, which logs a
   warning that it recovered a stale lock. The lock is released in a `finally` at the end of a
   successful acquisition (success or failure of the tick's own work) so the next cron invocation
   can proceed.
-- [ ] 9.4 Document the catch-up policy: if a tick is missed (cron/timer downtime), the next invocation
+- [ ] 9.5 Document the catch-up policy: if a tick is missed (cron/timer downtime), the next invocation
   runs due schedules once and jumps to the next future occurrence — unchanged from the loop-based
   design, since due-ness is already decided by comparing `next_run_at` to now, not by wall-clock
   ticking.
-- [ ] 9.5 Each CLI invocation that acquires the lock reconciles orphaned jobs before running due
+- [ ] 9.6 Each CLI invocation that acquires the lock reconciles orphaned jobs before running due
   schedules/expiry: re-enqueue `PENDING`; for `RUNNING`, check `SHOW BACKUP/RESTORE` by label →
   `SUCCESS`/`FAILED`, and append a reconciliation event. This runs on every invocation (not once at
   process startup), since the process no longer stays resident between ticks.
-- [ ] 9.6 Record the timestamp of the last successful CLI tick in the metadata store, and report it via
+- [ ] 9.7 Record the timestamp of the last successful CLI tick in the metadata store, and report it via
   `/health` (e.g. `scheduler.last_tick_at`) so a stalled cron/timer is observable from the API even
   though the API process itself no longer runs the loop. A tick that exits early because the lock was
   held does not update `last_tick_at`.
-- [ ] 9.7 Tests: a CLI tick invocation triggers due schedules and expiry; reconciliation outcomes; the
+- [ ] 9.8 Tests: a CLI tick invocation triggers due schedules and expiry; reconciliation outcomes; the
   CLI calls only `commands/`, never a core operation module directly; last-tick timestamp is recorded
   and surfaced via `/health`; a second concurrent invocation fails to acquire the lock, logs the alert,
   and exits non-zero without running due schedules/expiry/reconciliation; a stale (expired) lock is
