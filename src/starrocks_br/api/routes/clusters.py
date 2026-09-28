@@ -3,8 +3,9 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ... import exceptions
+from ...commands import clusters as clusters_commands
 from ...commands.clusters import delete_cluster as _delete_cluster_command
-from ...store.crypto import EncryptionKeyMissingError, decrypt_password, encrypt_password
+from ...store.crypto import EncryptionKeyMissingError, decrypt_password
 from ...store.models import Cluster
 from ..auth import require_api_key
 from ..deps import get_db
@@ -28,25 +29,22 @@ clusters_router = APIRouter(
 
 @cluster_router.post("", response_model=ClusterRead, status_code=status.HTTP_201_CREATED)
 def create_cluster(payload: ClusterCreate, db: Session = Depends(get_db)) -> Cluster:
-    cluster = Cluster(
-        name=payload.name,
-        host=payload.host,
-        port=payload.port,
-        user=payload.user,
-        password_encrypted=encrypt_password(payload.password),
-        default_backend=payload.default_backend,
-    )
-    db.add(cluster)
     try:
-        db.flush()
+        return clusters_commands.create_cluster(
+            db,
+            name=payload.name,
+            host=payload.host,
+            port=payload.port,
+            user=payload.user,
+            password=payload.password,
+            default_backend=payload.default_backend,
+        )
     except IntegrityError as e:
         db.rollback()
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"Cluster name '{payload.name}' already exists",
         ) from e
-    db.refresh(cluster)
-    return cluster
 
 
 @clusters_router.post("/verify", response_model=ClusterVerifyResponse)
@@ -62,7 +60,7 @@ def verify_connection_params(payload: ClusterVerifyRequest) -> ClusterVerifyResp
 
 @clusters_router.get("", response_model=list[ClusterRead])
 def list_clusters(db: Session = Depends(get_db)) -> list[Cluster]:
-    return list(db.query(Cluster).order_by(Cluster.id).all())
+    return clusters_commands.list_clusters(db)
 
 
 @cluster_router.get("/{cluster_id}", response_model=ClusterRead)
@@ -91,18 +89,8 @@ def update_cluster(
     cluster_id: int, payload: ClusterUpdate, db: Session = Depends(get_db)
 ) -> Cluster:
     cluster = _get_cluster_or_404(db, cluster_id)
-
     updates = payload.model_dump(exclude_unset=True)
-    password_provided = "password" in updates
-    password = updates.pop("password", None)
-    for field, value in updates.items():
-        setattr(cluster, field, value)
-    if password_provided:
-        cluster.password_encrypted = encrypt_password(password)
-
-    db.flush()
-    db.refresh(cluster)
-    return cluster
+    return clusters_commands.update_cluster(db, cluster, updates)
 
 
 @cluster_router.delete("/{cluster_id}", status_code=status.HTTP_204_NO_CONTENT)
