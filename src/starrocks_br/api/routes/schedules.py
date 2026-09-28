@@ -28,8 +28,8 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from ... import exceptions
-from ...dal.metadata import inventory_groups
 from ...commands.schedules import compute_next_run_at, run_due_schedules
+from ...dal.metadata import inventory_groups
 from ...jobs.backend import UnknownBackendError
 from ...store.models import Schedule
 from ..auth import require_api_key

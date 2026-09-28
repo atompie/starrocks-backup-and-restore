@@ -44,5 +44,5 @@
 
 ## 9. Full-suite verification
 
-- [ ] 9.1 Run the full `tests/unit` suite (crud + service) and confirm all tests pass, with no remaining references to the old module paths for anything moved into `dal/db`/`dal/metadata`; verify via `grep -rn` that `planner.py`, `restore.py`, `executor.py`, `concurrency.py`, `prune.py` no longer contain raw `db.execute`/`db.query`/f-string SQL outside of calls into `dal/db`.
-- [ ] 9.2 Manually confirm (by reading the diff) that `prune.py`'s snapshot repository/name and `executor.py`'s backup-status database are now passed through `dal/db` functions that apply `quote_identifier`/`quote_value`, closing the three bugs identified in the proposal.
+- [x] 9.1 Run the full `tests/unit` suite (crud + service) and confirm all tests pass, with no remaining references to the old module paths for anything moved into `dal/db`/`dal/metadata`; verify via `grep -rn` that `planner.py`, `restore.py`, `executor.py`, `concurrency.py`, `prune.py` no longer contain raw `db.execute`/`db.query`/f-string SQL outside of calls into `dal/db`.
+- [x] 9.2 Manually confirm (by reading the diff) that `prune.py`'s snapshot repository/name and `executor.py`'s backup-status database are now passed through `dal/db` functions that apply `quote_identifier`/`quote_value`, closing the three bugs identified in the proposal.
