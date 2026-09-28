@@ -331,7 +331,10 @@ def find_restore_pair(session: Session, cluster_id: int, target_label: str) -> l
         return [target_label]
 
     if backup_type == "incremental":
-        database_name = target_label.split("_")[0]
+        target_partitions = restore_catalog.list_partitions_for_label(session, cluster_id, target_label)
+        if not target_partitions:
+            raise exceptions.NoSuccessfulFullBackupFoundError(target_label)
+        database_name = target_partitions[0][0]
 
         base_job = restore_catalog.find_latest_full_backup_before(
             session, cluster_id, database_name, target_job.finished_at

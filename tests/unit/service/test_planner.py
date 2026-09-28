@@ -13,13 +13,12 @@
 # limitations under the License.
 
 import datetime as dt
-import hashlib
 from unittest.mock import Mock
 
 import pytest
 
 from starrocks_br import exceptions, planner
-from starrocks_br.store.models import BackupPartition, Job, JobStatus, TableInventory
+from starrocks_br.store.models import BackupReference, Job, JobStatus, TableInventory
 
 
 @pytest.fixture
@@ -32,19 +31,33 @@ def db_with_timezone():
 _BACKUP_TYPE_TO_JOB_TYPE = {"full": "backup_full", "incremental": "backup_incremental"}
 
 
-def _add_backup_history(session, cluster_id, label, backup_type, finished_at, status="FINISHED"):
-    session.add(
-        Job(
-            cluster_id=cluster_id,
-            job_type=_BACKUP_TYPE_TO_JOB_TYPE[backup_type],
-            backend="thread",
-            status=JobStatus.SUCCESS.value if status == "FINISHED" else JobStatus.FAILED.value,
-            label=label,
-            repository="repo",
-            finished_at=finished_at,
-        )
+def _add_backup_history(session, cluster_id, label, backup_type, finished_at, status="FINISHED", database=None):
+    job = Job(
+        cluster_id=cluster_id,
+        job_type=_BACKUP_TYPE_TO_JOB_TYPE[backup_type],
+        backend="thread",
+        status=JobStatus.SUCCESS.value if status == "FINISHED" else JobStatus.FAILED.value,
+        label=label,
+        repository="repo",
+        finished_at=finished_at,
     )
+    session.add(job)
     session.commit()
+
+    if database and job.status == JobStatus.SUCCESS.value:
+        session.add(
+            BackupReference(
+                job_id=job.id,
+                repository="repo",
+                snapshot_label=label,
+                snapshot_timestamp=finished_at,
+                database_name=database,
+                table_name="placeholder",
+                partition_name="p1",
+            )
+        )
+        session.commit()
+    return job
 
 
 def _add_inventory(session, cluster_id, group_id, database, table):
@@ -58,7 +71,12 @@ def test_should_find_latest_full_backup(db_with_timezone, sqlite_session, make_c
     """Test finding the latest successful full backup."""
     cluster = make_cluster()
     _add_backup_history(
-        sqlite_session, cluster.id, "test_db_20251015_full", "full", dt.datetime(2025, 10, 15, 10, 0, 0)
+        sqlite_session,
+        cluster.id,
+        "test_db_20251015_full",
+        "full",
+        dt.datetime(2025, 10, 15, 10, 0, 0),
+        database="test_db",
     )
 
     result = planner.find_latest_full_backup(db_with_timezone, sqlite_session, cluster.id, "test_db")
@@ -82,7 +100,9 @@ def test_find_latest_full_backup_scoped_by_cluster(db_with_timezone, sqlite_sess
     """A full backup on another cluster must not leak into this cluster's lookup."""
     cluster_a = make_cluster("cluster-a")
     cluster_b = make_cluster("cluster-b")
-    _add_backup_history(sqlite_session, cluster_a.id, "test_db_20251015_full", "full", dt.datetime(2025, 10, 15))
+    _add_backup_history(
+        sqlite_session, cluster_a.id, "test_db_20251015_full", "full", dt.datetime(2025, 10, 15), database="test_db"
+    )
 
     result = planner.find_latest_full_backup(db_with_timezone, sqlite_session, cluster_b.id, "test_db")
 
@@ -379,6 +399,37 @@ def test_find_tables_by_group_scoped_by_cluster(sqlite_session, make_cluster, ma
     assert tables == []
 
 
+def test_resolve_group_databases_single_database(sqlite_session, make_cluster, make_group):
+    """A group scoped to one database resolves to a single-element list."""
+    cluster = make_cluster()
+    group_id = make_group(cluster.id, "daily_incremental")
+    _add_inventory(sqlite_session, cluster.id, group_id, "sales_db", "fact_sales")
+    _add_inventory(sqlite_session, cluster.id, group_id, "sales_db", "dim_customers")
+
+    databases = planner.resolve_group_databases(sqlite_session, cluster.id, group_id)
+
+    assert databases == ["sales_db"]
+
+
+def test_resolve_group_databases_multiple_databases(sqlite_session, make_cluster, make_group):
+    """A group spanning multiple databases resolves to every distinct database, sorted."""
+    cluster = make_cluster()
+    group_id = make_group(cluster.id, "multi_db_group")
+    _add_inventory(sqlite_session, cluster.id, group_id, "sales_db", "fact_sales")
+    _add_inventory(sqlite_session, cluster.id, group_id, "orders_db", "fact_orders")
+
+    databases = planner.resolve_group_databases(sqlite_session, cluster.id, group_id)
+
+    assert databases == ["orders_db", "sales_db"]
+
+
+def test_resolve_group_databases_raises_when_group_has_no_tables(sqlite_session, make_cluster):
+    cluster = make_cluster()
+
+    with pytest.raises(exceptions.NoTablesFoundError):
+        planner.resolve_group_databases(sqlite_session, cluster.id, 999)
+
+
 def test_should_find_recent_partitions_with_group_filtering(
     mocker, db_with_timezone, sqlite_session, make_cluster, make_group
 ):
@@ -480,9 +531,10 @@ def test_should_return_empty_partitions_when_no_group_tables(mocker, db_with_tim
     assert db_with_timezone.query.call_count == 0
 
 
-def test_should_record_backup_partitions(sqlite_session, make_cluster):
-    """Test recording partition metadata for a backup."""
+def test_should_record_backup_references(sqlite_session, make_cluster, make_job):
+    """Test recording reference metadata for a finished backup."""
     cluster = make_cluster()
+    job = make_job(cluster.id, label="sales_db_20251015_incremental", status=JobStatus.SUCCESS.value)
     partitions = [
         {"database": "sales_db", "table": "fact_sales", "partition_name": "p20251015"},
         {"database": "sales_db", "table": "fact_sales", "partition_name": "p20251014"},
@@ -490,27 +542,28 @@ def test_should_record_backup_partitions(sqlite_session, make_cluster):
     ]
     label = "sales_db_20251015_incremental"
 
-    planner.record_backup_partitions(sqlite_session, cluster.id, label, partitions)
+    planner.record_backup_references(
+        sqlite_session, job.id, "test_repo", label, dt.datetime(2025, 10, 15), partitions
+    )
     sqlite_session.commit()
 
-    rows = sqlite_session.query(BackupPartition).filter_by(cluster_id=cluster.id).all()
+    rows = sqlite_session.query(BackupReference).filter_by(job_id=job.id).all()
     assert len(rows) == 3
 
-    expected_composite_key = f"{label}|sales_db|fact_sales|p20251015"
-    expected_hash = hashlib.md5(expected_composite_key.encode("utf-8")).hexdigest()
     first_row = next(r for r in rows if r.partition_name == "p20251015" and r.table_name == "fact_sales")
-    assert first_row.key_hash == expected_hash
-    assert first_row.label == label
+    assert first_row.snapshot_label == label
+    assert first_row.repository == "test_repo"
     assert first_row.database_name == "sales_db"
 
 
-def test_should_handle_empty_partitions_list_in_record_backup_partitions(sqlite_session, make_cluster):
-    """Test that record_backup_partitions handles empty partitions list gracefully."""
+def test_should_handle_empty_partitions_list_in_record_backup_references(sqlite_session, make_cluster, make_job):
+    """Test that record_backup_references handles empty partitions list gracefully."""
     cluster = make_cluster()
+    job = make_job(cluster.id, label="test_label", status=JobStatus.SUCCESS.value)
 
-    planner.record_backup_partitions(sqlite_session, cluster.id, "test_label", [])
+    planner.record_backup_references(sqlite_session, job.id, "test_repo", "test_label", dt.datetime(2025, 10, 15), [])
 
-    assert sqlite_session.query(BackupPartition).filter_by(cluster_id=cluster.id).count() == 0
+    assert sqlite_session.query(BackupReference).filter_by(job_id=job.id).count() == 0
 
 
 def test_should_get_all_partitions_for_tables(db_with_timezone):

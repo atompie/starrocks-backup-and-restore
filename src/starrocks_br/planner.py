@@ -50,34 +50,34 @@ def find_tables_by_group(session: Session, cluster_id: int, group_id: int) -> li
     return [{"database": row.database_name, "table": row.table_name} for row in rows]
 
 
-def resolve_group_database(session: Session, cluster_id: int, group_id: int) -> str:
-    """Resolve the single database a group's table memberships belong to.
+def resolve_group_databases(session: Session, cluster_id: int, group_id: int) -> list[str]:
+    """Resolve the distinct databases a group's table memberships belong to.
 
     Backup command-building (`build_full_backup_command`, `build_incremental_backup_command`,
     etc.) is written around one database per operation - there is no cluster-level default
     database to fall back to any more (see openspec/changes/decouple-database-and-repository-
-    from-cluster/design.md "Group database derivation"). A group with no memberships, or with
-    memberships in more than one database, cannot be resolved to a single database.
+    from-cluster/design.md "Group database derivation"). An inventory group may span more than
+    one database (SPEC.md §5, PLAN.md §0.2); the caller runs one backup operation per database
+    returned here, all under the same Backup Job (see backup-references/design.md Decision 4).
 
     Raises:
         NoTablesFoundError: If the group has no table memberships.
-        MultipleDatabasesInGroupError: If the group's memberships span more than one database.
     """
     tables = find_tables_by_group(session, cluster_id, group_id)
     if not tables:
         raise exceptions.NoTablesFoundError(group=group_id)
 
-    databases = {t["database"] for t in tables}
-    if len(databases) > 1:
-        raise exceptions.MultipleDatabasesInGroupError(group_id, sorted(databases))
-
-    return next(iter(databases))
+    return sorted({t["database"] for t in tables})
 
 
 def validate_tables_exist(
     db, database: str, tables: list[dict[str, str]], group: int | None = None
 ) -> None:
     """Validate that tables in the inventory actually exist in the database.
+
+    `tables` may span more than one database when the group is multi-database (SPEC.md §5); this
+    only validates the subset belonging to `database`, since the caller runs one such check per
+    database in the group (see `resolve_group_databases`).
 
     Args:
         db: Database connection
@@ -86,17 +86,10 @@ def validate_tables_exist(
         group: Optional inventory group id for better error messages
 
     Raises:
-        MultipleDatabasesInGroupError: If any table's database differs from `database`
-            (a group must already have been resolved to a single database - see
-            `resolve_group_database` - so this indicates an inconsistent caller).
         InvalidTablesInInventoryError: If any tables don't exist in the database
     """
     if not tables:
         return
-
-    other_databases = {t["database"] for t in tables if t["database"] != database}
-    if other_databases and group is not None:
-        raise exceptions.MultipleDatabasesInGroupError(group, sorted(other_databases | {database}))
 
     db_tables = [t for t in tables if t["database"] == database and t["table"] != "*"]
 
@@ -261,18 +254,28 @@ def build_full_backup_command(
     return backup_dal.build_full_backup_command(db_entries, repository, label, database)
 
 
-def record_backup_partitions(
-    session: Session, cluster_id: int, label: str, partitions: list[dict[str, str]]
+def record_backup_references(
+    session: Session,
+    job_id: int,
+    repository: str,
+    snapshot_label: str,
+    snapshot_timestamp: datetime.datetime,
+    partitions: list[dict[str, str]],
 ) -> None:
-    """Record partition metadata for a backup in the backup_partitions table.
+    """Record reference metadata for a finished backup in the backup_references table.
+
+    Called only once the job's StarRocks operation has reached `FINISHED` - a failed job records
+    no references (SPEC.md §16).
 
     Args:
         session: SQLite metastore session
-        cluster_id: Cluster this backup belongs to
-        label: Backup label
+        job_id: The backup Job these references belong to
+        repository: Repository name the snapshot was written to
+        snapshot_label: StarRocks snapshot/backup label
+        snapshot_timestamp: When the backup finished
         partitions: List of partitions with keys: database, table, partition_name
     """
-    backup_catalog.record_partitions(session, cluster_id, label, partitions)
+    backup_catalog.record_references(session, job_id, repository, snapshot_label, snapshot_timestamp, partitions)
 
 
 def get_all_partitions_for_tables(

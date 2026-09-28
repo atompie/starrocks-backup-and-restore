@@ -735,3 +735,107 @@ def test_get_prune_job_history_is_empty_no_log_table(api_client, monkeypatch):
 
     assert response.status_code == 200
     assert response.json() == []
+
+
+def test_get_job_references_for_unknown_job_is_404(api_client):
+    assert api_client.get("/job/999/references").status_code == 404
+
+
+def test_get_job_references_empty_for_pending_job(api_client, monkeypatch):
+    """A job that hasn't finished yet (still PENDING) has an empty reference list with 200."""
+    release = threading.Event()
+
+    def handler(cluster, params, job_id, on_progress=None):
+        release.wait(timeout=2)
+        return {}
+
+    from starrocks_br.jobs import handlers
+
+    _mock_group_check(monkeypatch)
+    _mock_repository_check(monkeypatch)
+    monkeypatch.setitem(handlers.JOB_HANDLERS, "backup_full", handler)
+
+    cluster_id = _create_cluster(api_client)
+    submitted = api_client.post(
+        f"/backup/manual/full/cluster/{cluster_id}", json={"group_id": 1, "repository": "s3_repo"}
+    ).json()
+
+    try:
+        response = api_client.get(f"/job/{submitted['id']}/references")
+        assert response.status_code == 200
+        assert response.json() == []
+    finally:
+        release.set()
+        _wait_for_terminal(api_client, submitted["id"])
+
+
+def test_get_job_references_returns_recorded_rows_for_successful_job(api_client, monkeypatch):
+    """A job that recorded references (post-`FINISHED`, per SPEC.md §16) exposes them via the API."""
+    import datetime
+
+    from starrocks_br.dal.metadata import backup_catalog
+    from starrocks_br.store.session import get_session_factory
+
+    def handler(cluster, params, job_id, on_progress=None):
+        with get_session_factory()() as session:
+            backup_catalog.record_references(
+                session,
+                job_id,
+                "s3_repo",
+                "label1",
+                datetime.datetime(2024, 1, 1, tzinfo=datetime.timezone.utc),
+                [{"database": "sales_db", "table": "orders", "partition_name": "p1"}],
+            )
+            session.commit()
+        return {}
+
+    from starrocks_br.jobs import handlers
+
+    _mock_group_check(monkeypatch)
+    _mock_repository_check(monkeypatch)
+    monkeypatch.setitem(handlers.JOB_HANDLERS, "backup_full", handler)
+
+    cluster_id = _create_cluster(api_client)
+    submitted = api_client.post(
+        f"/backup/manual/full/cluster/{cluster_id}", json={"group_id": 1, "repository": "s3_repo"}
+    ).json()
+
+    _wait_for_terminal(api_client, submitted["id"])
+
+    response = api_client.get(f"/job/{submitted['id']}/references")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body) == 1
+    assert body[0]["job_id"] == submitted["id"]
+    assert body[0]["repository"] == "s3_repo"
+    assert body[0]["snapshot_label"] == "label1"
+    assert body[0]["database"] == "sales_db"
+    assert body[0]["table"] == "orders"
+    assert body[0]["partition"] == "p1"
+
+
+def test_get_job_references_empty_for_failed_job(api_client, monkeypatch):
+    """A job that finished as FAILED has no references (SPEC.md §16)."""
+
+    def handler(cluster, params, job_id, on_progress=None):
+        raise RuntimeError("boom")
+
+    from starrocks_br.jobs import handlers
+
+    _mock_group_check(monkeypatch)
+    _mock_repository_check(monkeypatch)
+    monkeypatch.setitem(handlers.JOB_HANDLERS, "backup_full", handler)
+
+    cluster_id = _create_cluster(api_client)
+    submitted = api_client.post(
+        f"/backup/manual/full/cluster/{cluster_id}", json={"group_id": 1, "repository": "s3_repo"}
+    ).json()
+
+    finished = _wait_for_terminal(api_client, submitted["id"])
+    assert finished["status"] == "FAILED"
+
+    response = api_client.get(f"/job/{submitted['id']}/references")
+
+    assert response.status_code == 200
+    assert response.json() == []

@@ -4,7 +4,7 @@ import json
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ...store.models import BackupHistory, Cluster, Job, JobStatus, RestoreHistory
+from ...store.models import BackupHistory, BackupReference, Cluster, Job, JobStatus, RestoreHistory
 
 
 def _utcnow() -> datetime.datetime:
@@ -152,3 +152,17 @@ def list_history_for_job(db: Session, job_type: str, job_id: int) -> list[Backup
     if model is None:
         return []
     return list(db.scalars(select(model).where(model.job_id == job_id).order_by(model.ts.asc())).all())
+
+
+def list_references_for_job(db: Session, job_id: int) -> list[BackupReference]:
+    """Return a backup job's recorded references.
+
+    Only a job whose StarRocks operation reached `FINISHED` has any rows (SPEC.md §16) - a
+    `RUNNING` or `FAILED` job simply returns an empty list, same as `list_history_for_job` does
+    for a job type with no log table.
+    """
+    return list(
+        db.scalars(
+            select(BackupReference).where(BackupReference.job_id == job_id).order_by(BackupReference.id.asc())
+        ).all()
+    )

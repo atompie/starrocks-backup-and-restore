@@ -20,7 +20,11 @@ request SHALL also include a `repository` naming the destination backup reposito
 SHALL reject a request missing `repository` with HTTP 422 before any job is created, and SHALL
 synchronously verify that a repository with that name currently exists on the target cluster
 (via the same live StarRocks-side catalog lookup used to list repositories) before creating the
-job, responding with HTTP 404 without creating a job if it does not.
+job, responding with HTTP 404 without creating a job if it does not. An inventory group targeted by
+a full or incremental backup request MAY span more than one database; the system SHALL execute one
+StarRocks backup operation per database in the group under the single created Backup Job, and SHALL
+record backup references for every database/table the job covers once each database's operation
+reaches `FINISHED`.
 
 #### Scenario: Full backup submission
 - **WHEN** an authenticated client submits a full backup request for a registered cluster, an
@@ -55,6 +59,12 @@ job, responding with HTTP 404 without creating a job if it does not.
   `repository` that does not exist on the target cluster
 - **THEN** the system responds with HTTP 404, does not create a job, and no asynchronous failure
   is produced
+
+#### Scenario: Full backup submitted for a group spanning multiple databases
+- **WHEN** an authenticated client submits a full backup request naming an inventory group whose
+  table memberships span two databases
+- **THEN** the system responds with HTTP 202 and a single job id, and the job's execution backs up
+  both databases, recording backup references for each once its StarRocks operation finishes
 
 ### Requirement: Each job-submission endpoint validates a request schema scoped to its own fields
 The system SHALL reject a job-submission request that includes a field not used by that specific
@@ -274,6 +284,33 @@ recorded so far for that job.
 #### Scenario: Repeated identical status is not duplicated
 - **WHEN** the underlying StarRocks operation reports the same status on consecutive polls
 - **THEN** the job's history contains only one entry for that status, not one entry per poll
+
+### Requirement: A job's backup references can be retrieved
+The system SHALL expose an endpoint to retrieve the backup references recorded for a job, returned
+as a list, each entry carrying the repository, snapshot label, snapshot timestamp, database,
+table, and (when applicable) partition it covers. References are recorded only once the job's
+underlying StarRocks backup operation reaches `FINISHED`; a job that has not yet finished, or that
+finished as `FAILED`, SHALL have no references. The endpoint SHALL respond with HTTP 404 if the job
+id does not exist.
+
+#### Scenario: Retrieving references for a successful backup job
+- **WHEN** an authenticated client requests the references of a backup job that finished with
+  status `SUCCESS`
+- **THEN** the system responds with HTTP 200 and a list of the references recorded for that job
+
+#### Scenario: Retrieving references for a failed backup job
+- **WHEN** an authenticated client requests the references of a backup job that finished with
+  status `FAILED`
+- **THEN** the system responds with HTTP 200 and an empty list
+
+#### Scenario: Retrieving references for a job still running
+- **WHEN** an authenticated client requests the references of a backup job that is still `RUNNING`
+- **THEN** the system responds with HTTP 200 and an empty list, since references are only recorded
+  once the job's StarRocks operation reaches `FINISHED`
+
+#### Scenario: Retrieving references for an unknown job
+- **WHEN** an authenticated client requests the references of a job id that does not exist
+- **THEN** the system responds with HTTP 404
 
 ### Requirement: Job execution backend is selectable with a configured default
 The system SHALL execute each submitted job using one of a set of registered execution backends, SHALL use a configured default backend when a request does not specify one, and SHALL allow a request to override the backend for that job as long as the requested backend is enabled on the server. A submitted backend value, whether the cluster's `default_backend` or a per-job override, MUST be one of the recognized backend identifiers `"thread"` or `"job"`; the system SHALL reject any other value with HTTP 422 before any job is created, independent of whether that backend is currently enabled on the server.

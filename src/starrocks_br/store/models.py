@@ -203,18 +203,16 @@ class RunStatus(Base):
     finished_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
-class BackupPartition(Base):
-    __tablename__ = "backup_partitions"
-    __table_args__ = (
-        UniqueConstraint("cluster_id", "key_hash", name="uq_backup_partitions_cluster_key_hash"),
-        Index("ix_backup_partitions_cluster_label", "cluster_id", "label"),
-    )
+class BackupReference(Base):
+    __tablename__ = "backup_references"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    cluster_id: Mapped[int] = mapped_column(ForeignKey("clusters.id", ondelete="CASCADE"), nullable=False, index=True)
-    key_hash: Mapped[str] = mapped_column(String(32), nullable=False)
-    label: Mapped[str] = mapped_column(String(255), nullable=False)
+    job_id: Mapped[int] = mapped_column(ForeignKey("jobs.id", ondelete="CASCADE"), nullable=False, index=True)
+    repository: Mapped[str] = mapped_column(String(255), nullable=False)
+    snapshot_label: Mapped[str] = mapped_column(String(255), nullable=False)
+    snapshot_timestamp: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     database_name: Mapped[str] = mapped_column(String(128), nullable=False)
     table_name: Mapped[str] = mapped_column(String(128), nullable=False)
-    partition_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    partition_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    deleted_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)

@@ -1,7 +1,7 @@
 import datetime as dt
 
 from starrocks_br.dal.metadata import prune
-from starrocks_br.store.models import BackupPartition, InventoryGroup, Job, JobStatus, TableInventory
+from starrocks_br.store.models import BackupReference, InventoryGroup, Job, JobStatus, TableInventory
 
 
 def _add_backup_history(session, cluster_id, label, finished_at, repository="test_repo"):
@@ -21,14 +21,15 @@ def _add_backup_history(session, cluster_id, label, finished_at, repository="tes
 
 def test_get_successful_backups_with_group(sqlite_session, make_cluster):
     cluster = make_cluster()
-    _add_backup_history(sqlite_session, cluster.id, "backup1", dt.datetime(2024, 1, 1))
-    _add_backup_history(sqlite_session, cluster.id, "backup2", dt.datetime(2024, 1, 2))
-    for label in ("backup1", "backup2"):
+    job1 = _add_backup_history(sqlite_session, cluster.id, "backup1", dt.datetime(2024, 1, 1))
+    job2 = _add_backup_history(sqlite_session, cluster.id, "backup2", dt.datetime(2024, 1, 2))
+    for job, label in ((job1, "backup1"), (job2, "backup2")):
         sqlite_session.add(
-            BackupPartition(
-                cluster_id=cluster.id,
-                key_hash=f"hash-{label}",
-                label=label,
+            BackupReference(
+                job_id=job.id,
+                repository="test_repo",
+                snapshot_label=label,
+                snapshot_timestamp=dt.datetime(2024, 1, 1),
                 database_name="sales_db",
                 table_name="orders",
                 partition_name="p1",
@@ -64,12 +65,13 @@ def test_get_successful_backups_empty_result(sqlite_session, make_cluster):
 def test_get_successful_backups_scoped_by_cluster(sqlite_session, make_cluster):
     cluster_a = make_cluster("cluster-a")
     cluster_b = make_cluster("cluster-b")
-    _add_backup_history(sqlite_session, cluster_a.id, "backup1", dt.datetime(2024, 1, 1))
+    job_a = _add_backup_history(sqlite_session, cluster_a.id, "backup1", dt.datetime(2024, 1, 1))
     sqlite_session.add(
-        BackupPartition(
-            cluster_id=cluster_a.id,
-            key_hash="hash-backup1",
-            label="backup1",
+        BackupReference(
+            job_id=job_a.id,
+            repository="test_repo",
+            snapshot_label="backup1",
+            snapshot_timestamp=dt.datetime(2024, 1, 1),
             database_name="sales_db",
             table_name="orders",
             partition_name="p1",
@@ -88,14 +90,15 @@ def test_get_successful_backups_scoped_by_cluster(sqlite_session, make_cluster):
     assert prune.get_successful_backups(sqlite_session, cluster_b.id, group_a.id) == []
 
 
-def test_cleanup_backup_history_removes_job_and_partitions(sqlite_session, make_cluster):
+def test_cleanup_backup_history_removes_job_and_references(sqlite_session, make_cluster):
     cluster = make_cluster()
-    _add_backup_history(sqlite_session, cluster.id, "backup1", dt.datetime(2024, 1, 1))
+    job = _add_backup_history(sqlite_session, cluster.id, "backup1", dt.datetime(2024, 1, 1))
     sqlite_session.add(
-        BackupPartition(
-            cluster_id=cluster.id,
-            key_hash="hash1",
-            label="backup1",
+        BackupReference(
+            job_id=job.id,
+            repository="test_repo",
+            snapshot_label="backup1",
+            snapshot_timestamp=dt.datetime(2024, 1, 1),
             database_name="sales_db",
             table_name="orders",
             partition_name="p1",
@@ -106,7 +109,7 @@ def test_cleanup_backup_history_removes_job_and_partitions(sqlite_session, make_
     prune.cleanup_backup_history(sqlite_session, cluster.id, "backup1")
 
     assert sqlite_session.query(Job).filter_by(cluster_id=cluster.id, label="backup1").count() == 0
-    assert sqlite_session.query(BackupPartition).filter_by(cluster_id=cluster.id, label="backup1").count() == 0
+    assert sqlite_session.query(BackupReference).filter_by(job_id=job.id).count() == 0
 
 
 def test_cleanup_backup_history_scoped_by_cluster(sqlite_session, make_cluster):

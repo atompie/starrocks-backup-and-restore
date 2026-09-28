@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from ...commands.jobs import get_job as _get_job_command
 from ...commands.jobs import get_job_history as _get_job_history_command
+from ...commands.jobs import get_job_references as _get_job_references_command
 from ...commands.jobs import list_jobs, submit_job
 from ...dal.metadata import inventory_groups
 from ...jobs.backend import UnknownBackendError
@@ -15,6 +16,7 @@ from ..deps import get_db
 from ..schemas import (
     BackupFullRequest,
     BackupIncrementalRequest,
+    BackupReferenceRead,
     HistoryEntryRead,
     JobRead,
     PruneRequest,
@@ -165,6 +167,34 @@ def get_job_history(job_id: int, db: Session = Depends(get_db)) -> list[HistoryE
             status=row.status,
             message=row.message,
             details=json.loads(row.details_json) if row.details_json is not None else None,
+        )
+        for row in rows
+    ]
+
+
+@router.get("/job/{job_id}/references", response_model=list[BackupReferenceRead])
+def get_job_references(job_id: int, db: Session = Depends(get_db)) -> list[BackupReferenceRead]:
+    """Return a backup job's recorded references.
+
+    Per specs/api-job-execution "A job's backup references can be retrieved": references are
+    only recorded once the job's StarRocks operation reaches `FINISHED`, so a still-`RUNNING` or
+    `FAILED` job has an empty list rather than a 404.
+    """
+    job = _get_job_command(db, job_id)
+    if job is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
+
+    rows = _get_job_references_command(db, job_id)
+    return [
+        BackupReferenceRead(
+            id=row.id,
+            job_id=row.job_id,
+            repository=row.repository,
+            snapshot_label=row.snapshot_label,
+            snapshot_timestamp=row.snapshot_timestamp,
+            database=row.database_name,
+            table=row.table_name,
+            partition=row.partition_name,
         )
         for row in rows
     ]

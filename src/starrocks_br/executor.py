@@ -230,6 +230,7 @@ def execute_backup(
     database: str | None = None,
     job_id: int,
     on_progress: Callable[[dict], None] | None = None,
+    release_slot: bool = True,
 ) -> dict:
     """Execute a complete backup workflow: submit command and monitor progress.
 
@@ -249,6 +250,13 @@ def execute_backup(
             appended to that job's `backup_history` log.
         on_progress: Optional callback forwarded to poll_backup_status; see
             its docstring. Defaults to None (no behavior change).
+        release_slot: Whether to release the concurrency slot reserved for this job once this
+            call's StarRocks operation finishes. A multi-database job (backup-references/
+            design.md Decision 4) runs one `execute_backup` call per database under a single
+            concurrency reservation; the caller passes `False` here and releases the slot itself
+            exactly once, after every database has run, since each call's own extracted `label`
+            differs per database and would not match the single label the slot was reserved
+            under.
 
     Returns dictionary with keys: success, final_status, error_message
     """
@@ -295,16 +303,17 @@ def execute_backup(
         except Exception:
             pass
 
-        try:
-            concurrency.complete_job_slot(
-                session,
-                cluster_id,
-                scope=scope,
-                label=label,
-                final_state=final_status["state"],
-            )
-        except Exception:
-            pass
+        if release_slot:
+            try:
+                concurrency.complete_job_slot(
+                    session,
+                    cluster_id,
+                    scope=scope,
+                    label=label,
+                    final_state=final_status["state"],
+                )
+            except Exception:
+                pass
 
         return {
             "success": success,

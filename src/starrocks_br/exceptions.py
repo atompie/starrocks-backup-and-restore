@@ -92,15 +92,6 @@ class NoFullBackupFoundError(StarRocksBRError):
         super().__init__(f"No successful full backup found for database '{database}'")
 
 
-class MultipleDatabasesInGroupError(StarRocksBRError):
-    def __init__(self, group: int, databases: list[str]):
-        self.group = group
-        self.databases = databases
-        databases_str = ", ".join(f"'{d}'" for d in sorted(databases))
-        super().__init__(
-            f"Inventory group '{group}' spans more than one database ({databases_str}); "
-            "backup requires a group scoped to a single database"
-        )
 
 
 class InvalidTablesInInventoryError(StarRocksBRError):

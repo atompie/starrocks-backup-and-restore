@@ -19,7 +19,7 @@ import datetime as dt
 import pytest
 
 from starrocks_br import prune
-from starrocks_br.store.models import BackupPartition, InventoryGroup, Job, JobStatus, TableInventory
+from starrocks_br.store.models import BackupReference, InventoryGroup, Job, JobStatus, TableInventory
 
 
 def _add_backup_history(session, cluster_id, label, finished_at, repository="test_repo", status="FINISHED"):
@@ -43,14 +43,15 @@ class TestGetSuccessfulBackups:
     def test_get_backups_with_group(self, sqlite_session, make_cluster):
         """Test getting backups with group filter."""
         cluster = make_cluster()
-        _add_backup_history(sqlite_session, cluster.id, "backup1", dt.datetime(2024, 1, 1))
-        _add_backup_history(sqlite_session, cluster.id, "backup2", dt.datetime(2024, 1, 2))
-        for label in ("backup1", "backup2"):
+        job1 = _add_backup_history(sqlite_session, cluster.id, "backup1", dt.datetime(2024, 1, 1))
+        job2 = _add_backup_history(sqlite_session, cluster.id, "backup2", dt.datetime(2024, 1, 2))
+        for job, label in ((job1, "backup1"), (job2, "backup2")):
             sqlite_session.add(
-                BackupPartition(
-                    cluster_id=cluster.id,
-                    key_hash=f"hash-{label}",
-                    label=label,
+                BackupReference(
+                    job_id=job.id,
+                    repository="test_repo",
+                    snapshot_label=label,
+                    snapshot_timestamp=dt.datetime(2024, 1, 1),
                     database_name="sales_db",
                     table_name="orders",
                     partition_name="p1",
@@ -89,12 +90,13 @@ class TestGetSuccessfulBackups:
         """A backup on another cluster must not leak into this cluster's results."""
         cluster_a = make_cluster("cluster-a")
         cluster_b = make_cluster("cluster-b")
-        _add_backup_history(sqlite_session, cluster_a.id, "backup1", dt.datetime(2024, 1, 1))
+        job_a = _add_backup_history(sqlite_session, cluster_a.id, "backup1", dt.datetime(2024, 1, 1))
         sqlite_session.add(
-            BackupPartition(
-                cluster_id=cluster_a.id,
-                key_hash="hash-backup1",
-                label="backup1",
+            BackupReference(
+                job_id=job_a.id,
+                repository="test_repo",
+                snapshot_label="backup1",
+                snapshot_timestamp=dt.datetime(2024, 1, 1),
                 database_name="sales_db",
                 table_name="orders",
                 partition_name="p1",
@@ -385,12 +387,13 @@ class TestCleanupBackupHistory:
     def test_cleanup_success(self, sqlite_session, make_cluster):
         """Test successful backup history cleanup."""
         cluster = make_cluster()
-        _add_backup_history(sqlite_session, cluster.id, "backup1", dt.datetime(2024, 1, 1))
+        job = _add_backup_history(sqlite_session, cluster.id, "backup1", dt.datetime(2024, 1, 1))
         sqlite_session.add(
-            BackupPartition(
-                cluster_id=cluster.id,
-                key_hash="hash1",
-                label="backup1",
+            BackupReference(
+                job_id=job.id,
+                repository="test_repo",
+                snapshot_label="backup1",
+                snapshot_timestamp=dt.datetime(2024, 1, 1),
                 database_name="sales_db",
                 table_name="orders",
                 partition_name="p1",
@@ -401,7 +404,7 @@ class TestCleanupBackupHistory:
         prune.cleanup_backup_history(sqlite_session, cluster.id, "backup1")
 
         assert sqlite_session.query(Job).filter_by(cluster_id=cluster.id, label="backup1").count() == 0
-        assert sqlite_session.query(BackupPartition).filter_by(cluster_id=cluster.id, label="backup1").count() == 0
+        assert sqlite_session.query(BackupReference).filter_by(job_id=job.id).count() == 0
 
     def test_cleanup_scoped_by_cluster(self, sqlite_session, make_cluster):
         """Cleanup on one cluster must not remove another cluster's history for the same label."""

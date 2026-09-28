@@ -154,44 +154,44 @@ separable API-surface removal. See §0c for the decisions (Q9-Q12) this merge re
   `commands/schedules.py`~~ — **already done** 2026-09-28: fell out of the
   `move-metadata-sql-into-dal` DAL migration; routes now delegate to `commands/schedules.py`, which
   calls `dal/metadata/schedules.py`.
-- [ ] 5.2 Make `Schedule.cadence` and `next_run_at` nullable (was 8.1). `cadence = null` marks a
+- [x] 5.2 Make `Schedule.cadence` and `next_run_at` nullable (was 8.1). `cadence = null` marks a
   one-shot schedule (SPEC.md §7-8).
-- [ ] 5.3 Add to `Schedule`: `retention` (int ≥ 1; required for a recurring full schedule, must be
+- [x] 5.3 Add to `Schedule`: `retention` (int ≥ 1; required for a recurring full schedule, must be
   null for incremental — SPEC.md §10-11; nullable at the DB level, enforced in
   `ScheduleCreate`/`commands.schedules` per Q9 — **BREAKING**, per Q11), and `expire_after_days`
   (one-shot only; null = never — SPEC.md §8). Reject a one-shot incremental schedule with 422 (Q3) —
   now enforceable end-to-end since 5.2 makes one-shot creation possible. Update model, migration,
   `ScheduleCreate/Update/Read` and `openspec/specs/api-scheduling`.
-- [ ] 5.4 Creating a schedule with `cadence = null` persists it and immediately submits exactly one
+- [x] 5.4 Creating a schedule with `cadence = null` persists it and immediately submits exactly one
   job through `commands.jobs.submit_job` (was 8.2)
-- [ ] 5.5 PATCH on a one-shot schedule → 409; DELETE → allowed, using today's plain (non-cascading)
+- [x] 5.5 PATCH on a one-shot schedule → 409; DELETE → allowed, using today's plain (non-cascading)
   delete — same as a recurring schedule gets today, not a regression, not yet the cascade from
   section 8 (was 8.3)
-- [ ] 5.6 `run_due_schedules` skips `cadence IS NULL` (was 8.4)
-- [ ] 5.7 Add `Job.schedule_id` (FK `ON DELETE CASCADE`, nullable for every job type for now per
+- [x] 5.6 `run_due_schedules` skips `cadence IS NULL` (was 8.4)
+- [x] 5.7 Add `Job.schedule_id` (FK `ON DELETE CASCADE`, nullable for every job type for now per
   Q10) and set it in both `run_due_schedules` and 5.4's immediate one-shot submission
-- [ ] 5.8 Add `Job.baseline_job_id` for incremental jobs (the full job it depends on). Not known at
+- [x] 5.8 Add `Job.baseline_job_id` for incremental jobs (the full job it depends on). Not known at
   submit time — mirrors how `Job.label` is set post-hoc via `dal.metadata.jobs.set_label` from
   `commands/backup.py::_set_job_label`: add a `set_baseline_job_id` DAL function and call it from
   `run_backup_incremental` once the baseline resolves. Per Q12, change
   `planner.find_recent_partitions`'s return shape to also surface the resolved baseline `Job`'s id
   (today it returns only `list[dict]` of partitions and discards the baseline `Job` it looked up).
-- [ ] 5.9 Expose `schedule_id`, `group_id`, `baseline_job_id` and `result_json` in `JobRead`
+- [x] 5.9 Expose `schedule_id`, `group_id`, `baseline_job_id` and `result_json` in `JobRead`
   (`group_id`/`result_json` are already columns, just not yet exposed); add a `schedule_id` filter
   to `list_jobs` and `/backup/history/cluster/{id}`
-- [ ] 5.10 Tests: one-shot immutability, single job submitted on create, one-shot incremental
+- [x] 5.10 Tests: one-shot immutability, single job submitted on create, one-shot incremental
   rejected, one-shot skipped by run-due (was part of 8.9); a job created by run-due or by one-shot
   creation carries `schedule_id`; `retention`/`expire_after_days` field validation per job type and
   cadence
 
 ## 6. Backup References
 
-- [ ] 6.1 Add a `backup_references` table (`job_id` FK `ON DELETE CASCADE`, `repository` (string name; cluster resolved via `job.cluster_id` — 0.1), `snapshot_label`, `database`, `table`, `partition` nullable, `snapshot_timestamp`, `deleted_at` nullable). Migrate `backup_partitions` into it or add `job_id` to it.
-- [ ] 6.2 Write references when the StarRocks backup reaches `FINISHED`; a failed job's references are never restorable (§16)
-- [ ] 6.3 Add `GET /job/{job_id}/references`
-- [ ] 6.4 Tests: a successful job has references; a failed job has none that are restorable
-- [ ] 6.5 Multi-database inventory backups (0.2 reversed): replace `planner.resolve_group_database`'s `MultipleDatabasesInGroupError` rejection with support for one `BACKUP DATABASE` per database in the group, all recorded under one Backup Job with references per database/table
-- [ ] 6.6 Tests: a backup job spanning two databases produces references for both and restores correctly
+- [x] 6.1 Add a `backup_references` table (`job_id` FK `ON DELETE CASCADE`, `repository` (string name; cluster resolved via `job.cluster_id` — 0.1), `snapshot_label`, `database`, `table`, `partition` nullable, `snapshot_timestamp`, `deleted_at` nullable). Migrate `backup_partitions` into it or add `job_id` to it.
+- [x] 6.2 Write references when the StarRocks backup reaches `FINISHED`; a failed job's references are never restorable (§16)
+- [x] 6.3 Add `GET /job/{job_id}/references`
+- [x] 6.4 Tests: a successful job has references; a failed job has none that are restorable
+- [x] 6.5 Multi-database inventory backups (0.2 reversed): replace `planner.resolve_group_database`'s `MultipleDatabasesInGroupError` rejection with support for one `BACKUP DATABASE` per database in the group, all recorded under one Backup Job with references per database/table
+- [x] 6.6 Tests: a backup job spanning two databases produces references for both and restores correctly
 
 ## 7. Backup job lifecycle hardening
 

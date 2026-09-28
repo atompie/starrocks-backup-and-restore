@@ -62,3 +62,7 @@ def get_job(db: Session, job_id: int) -> Job | None:
 
 def get_job_history(db: Session, job_type: str, job_id: int) -> list:
     return jobs_dal.list_history_for_job(db, job_type, job_id)
+
+
+def get_job_references(db: Session, job_id: int) -> list:
+    return jobs_dal.list_references_for_job(db, job_id)

@@ -1,7 +1,7 @@
 import datetime as dt
 
 from starrocks_br.dal.metadata import restore_catalog
-from starrocks_br.store.models import BackupPartition, JobStatus, TableInventory
+from starrocks_br.store.models import BackupReference, JobStatus, TableInventory
 
 
 def test_find_successful_job_returns_matching_job(sqlite_session, make_cluster, make_job):
@@ -20,15 +20,31 @@ def test_find_successful_job_excludes_failed(sqlite_session, make_cluster, make_
     assert restore_catalog.find_successful_job(sqlite_session, cluster.id, "full-1") is None
 
 
+def _add_reference(session, job, database_name, table_name="orders", partition_name="p1", repository="repo1"):
+    session.add(
+        BackupReference(
+            job_id=job.id,
+            repository=repository,
+            snapshot_label=job.label,
+            snapshot_timestamp=job.finished_at,
+            database_name=database_name,
+            table_name=table_name,
+            partition_name=partition_name,
+        )
+    )
+    session.commit()
+
+
 def test_find_latest_full_backup_before_picks_most_recent(sqlite_session, make_cluster, make_job):
     cluster = make_cluster()
-    make_job(
+    older = make_job(
         cluster.id,
         job_type="backup_full",
         label="sales_db_2024-01-01",
         status=JobStatus.SUCCESS.value,
         finished_at=dt.datetime(2024, 1, 1),
     )
+    _add_reference(sqlite_session, older, "sales_db")
     later = make_job(
         cluster.id,
         job_type="backup_full",
@@ -36,6 +52,7 @@ def test_find_latest_full_backup_before_picks_most_recent(sqlite_session, make_c
         status=JobStatus.SUCCESS.value,
         finished_at=dt.datetime(2024, 1, 5),
     )
+    _add_reference(sqlite_session, later, "sales_db")
 
     found = restore_catalog.find_latest_full_backup_before(
         sqlite_session, cluster.id, "sales_db", dt.datetime(2024, 1, 10)
@@ -44,13 +61,37 @@ def test_find_latest_full_backup_before_picks_most_recent(sqlite_session, make_c
     assert found.id == later.id
 
 
-def test_list_partitions_for_label(sqlite_session, make_cluster):
+def test_find_latest_full_backup_before_resolved_by_reference_not_label(sqlite_session, make_cluster, make_job):
+    """A multi-database Job's `Job.label` only reflects one database - the lookup for a
+    *different* database it also covers must still find it via its `BackupReference` rows.
+    """
     cluster = make_cluster()
+    multi_db_job = make_job(
+        cluster.id,
+        job_type="backup_full",
+        label="orders_db_2024-01-01",
+        status=JobStatus.SUCCESS.value,
+        finished_at=dt.datetime(2024, 1, 1),
+    )
+    _add_reference(sqlite_session, multi_db_job, "orders_db")
+    _add_reference(sqlite_session, multi_db_job, "sales_db")
+
+    found = restore_catalog.find_latest_full_backup_before(
+        sqlite_session, cluster.id, "sales_db", dt.datetime(2024, 1, 10)
+    )
+
+    assert found.id == multi_db_job.id
+
+
+def test_list_partitions_for_label(sqlite_session, make_cluster, make_job):
+    cluster = make_cluster()
+    job = make_job(cluster.id, label="backup1", status=JobStatus.SUCCESS.value)
     sqlite_session.add(
-        BackupPartition(
-            cluster_id=cluster.id,
-            key_hash="h1",
-            label="backup1",
+        BackupReference(
+            job_id=job.id,
+            repository="repo1",
+            snapshot_label="backup1",
+            snapshot_timestamp=dt.datetime(2024, 1, 1),
             database_name="sales_db",
             table_name="orders",
             partition_name="p1",
@@ -61,6 +102,14 @@ def test_list_partitions_for_label(sqlite_session, make_cluster):
     result = restore_catalog.list_partitions_for_label(sqlite_session, cluster.id, "backup1")
 
     assert result == [("sales_db", "orders")]
+
+
+def test_list_partitions_for_label_returns_empty_for_unknown_label(sqlite_session, make_cluster):
+    cluster = make_cluster()
+
+    result = restore_catalog.list_partitions_for_label(sqlite_session, cluster.id, "missing")
+
+    assert result == []
 
 
 def test_list_group_table_memberships(sqlite_session, make_cluster, make_group):
@@ -78,23 +127,26 @@ def test_list_group_table_memberships(sqlite_session, make_cluster, make_group):
     assert result == [("sales_db", "*")]
 
 
-def test_list_partition_names(sqlite_session, make_cluster):
+def test_list_partition_names(sqlite_session, make_cluster, make_job):
     cluster = make_cluster()
+    job = make_job(cluster.id, label="backup1", status=JobStatus.SUCCESS.value)
     sqlite_session.add(
-        BackupPartition(
-            cluster_id=cluster.id,
-            key_hash="h1",
-            label="backup1",
+        BackupReference(
+            job_id=job.id,
+            repository="repo1",
+            snapshot_label="backup1",
+            snapshot_timestamp=dt.datetime(2024, 1, 1),
             database_name="sales_db",
             table_name="orders",
             partition_name="p2",
         )
     )
     sqlite_session.add(
-        BackupPartition(
-            cluster_id=cluster.id,
-            key_hash="h2",
-            label="backup1",
+        BackupReference(
+            job_id=job.id,
+            repository="repo1",
+            snapshot_label="backup1",
+            snapshot_timestamp=dt.datetime(2024, 1, 1),
             database_name="sales_db",
             table_name="orders",
             partition_name="p1",

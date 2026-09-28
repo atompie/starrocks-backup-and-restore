@@ -20,7 +20,7 @@ import pytest
 
 from starrocks_br import restore
 from starrocks_br.dal.metadata import history
-from starrocks_br.store.models import BackupPartition, Job, JobStatus, TableInventory
+from starrocks_br.store.models import BackupReference, Job, JobStatus, TableInventory
 
 _BACKUP_TYPE_TO_JOB_TYPE = {"full": "backup_full", "incremental": "backup_incremental"}
 
@@ -45,11 +45,22 @@ def _add_backup_history(session, cluster_id, label, backup_type, finished_at, st
 
 
 def _add_backup_partition(session, cluster_id, label, database_name, table_name, partition_name="p1"):
+    """Add a `BackupReference` row for the `Job` matching `(cluster_id, label)`.
+
+    Kept under its old name to minimize churn across this file's many call sites; resolves the
+    owning job since `BackupReference` is keyed by `job_id`, not `(cluster_id, label)`, creating a
+    minimal successful `Job` row on first use of a given `(cluster_id, label)` pair if one wasn't
+    already added via `_add_backup_history`.
+    """
+    job = session.query(Job).filter_by(cluster_id=cluster_id, label=label).one_or_none()
+    if job is None:
+        job = _add_backup_history(session, cluster_id, label, "full", datetime(2025, 10, 15, 0, 0, 0))
     session.add(
-        BackupPartition(
-            cluster_id=cluster_id,
-            key_hash=f"{label}|{database_name}|{table_name}|{partition_name}",
-            label=label,
+        BackupReference(
+            job_id=job.id,
+            repository=job.repository or "repo",
+            snapshot_label=label,
+            snapshot_timestamp=job.finished_at,
             database_name=database_name,
             table_name=table_name,
             partition_name=partition_name,
@@ -888,7 +899,9 @@ def test_should_find_restore_pair_for_incremental_backup(sqlite_session, make_cl
     """Test finding restore pair for an incremental backup (returns full + incremental)."""
     cluster = make_cluster()
     _add_backup_history(sqlite_session, cluster.id, "sales_db_20251015_full", "full", "2025-10-15 10:00:00")
+    _add_backup_partition(sqlite_session, cluster.id, "sales_db_20251015_full", "sales_db", "fact_sales")
     _add_backup_history(sqlite_session, cluster.id, "sales_db_20251016_inc", "incremental", "2025-10-16 10:00:00")
+    _add_backup_partition(sqlite_session, cluster.id, "sales_db_20251016_inc", "sales_db", "fact_sales")
 
     result = restore.find_restore_pair(sqlite_session, cluster.id, "sales_db_20251016_inc")
 

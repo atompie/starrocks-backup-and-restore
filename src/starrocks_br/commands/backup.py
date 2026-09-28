@@ -5,6 +5,7 @@ openspec/changes/establish-command-layer). Takes no dependency on HTTP
 frameworks; the API's job backend calls these functions directly.
 """
 
+import datetime
 from collections.abc import Callable
 from typing import Any
 
@@ -26,6 +27,10 @@ def _set_job_label(job_id: int, label: str) -> None:
     `Job.label` (see design.md) rather than a separate backup catalog; the label isn't
     known until `labels.determine_backup_label` computes it, so it's written here rather
     than at job submission time.
+
+    For a job spanning more than one database (backup-references/design.md Decision 4), this
+    holds only the first database processed - `Job.label` is a single column and can't carry a
+    label per database; the full set of a job's labels lives in its `backup_references` rows.
     """
     with session_scope() as session:
         jobs_dal.set_label(session, job_id, label)
@@ -36,7 +41,9 @@ def _set_job_baseline(job_id: int, baseline_job_id: int | None) -> None:
 
     Mirrors `_set_job_label` exactly: `planner.find_recent_partitions` only resolves the
     baseline (either from an explicit label or the latest full backup) after this job's row
-    already exists, so it's written here rather than at job submission time.
+    already exists, so it's written here rather than at job submission time. For a multi-database
+    incremental job, this holds the first database's resolved baseline, for the same reason
+    `_set_job_label` only holds the first database's label.
     """
     with session_scope() as session:
         jobs_dal.set_baseline_job_id(session, job_id, baseline_job_id)
@@ -71,47 +78,83 @@ def run_backup_full(
         ensure_ready(database, cluster, repository=repository)
 
         with session_scope() as session:
-            group_database = planner.resolve_group_database(session, cluster.id, group)
-
-            label = labels.determine_backup_label(
-                session, cluster.id, "full", group_database, custom_name=name
-            )
-            _set_job_label(job_id, label)
-
+            group_databases = planner.resolve_group_databases(session, cluster.id, group)
             tables = planner.find_tables_by_group(session, cluster.id, group)
-            planner.validate_tables_exist(database, group_database, tables, group)
-
-            backup_command = planner.build_full_backup_command(
-                session, cluster.id, group, repository, label, group_database
+            primary_label = labels.determine_backup_label(
+                session, cluster.id, "full", group_databases[0], custom_name=name
             )
-            if not backup_command:
-                raise RuntimeError(
-                    f"No tables found in group '{group}' for database '{group_database}' to backup"
+            _set_job_label(job_id, primary_label)
+            concurrency.reserve_job_slot(database, session, cluster.id, "backup", primary_label)
+
+        final_status = None
+        try:
+            for index, group_database in enumerate(group_databases):
+                with session_scope() as session:
+                    if index == 0:
+                        label = primary_label
+                    else:
+                        custom_name = f"{name}_{group_database}" if name else None
+                        label = labels.determine_backup_label(
+                            session, cluster.id, "full", group_database, custom_name=custom_name
+                        )
+
+                    planner.validate_tables_exist(database, group_database, tables, group)
+
+                    backup_command = planner.build_full_backup_command(
+                        session, cluster.id, group, repository, label, group_database
+                    )
+                    if not backup_command:
+                        raise RuntimeError(
+                            f"No tables found in group '{group}' for database '{group_database}' to backup"
+                        )
+
+                    all_partitions = planner.get_all_partitions_for_tables(database, group_database, tables)
+
+                with session_scope() as session:
+                    result = executor.execute_backup(
+                        database,
+                        session,
+                        cluster.id,
+                        backup_command,
+                        repository=repository,
+                        backup_type="full",
+                        scope="backup",
+                        database=group_database,
+                        job_id=job_id,
+                        on_progress=on_progress,
+                        release_slot=False,
+                    )
+
+                if not result["success"]:
+                    raise _BackupLoopFailure(result)
+
+                final_status = result["final_status"]
+                with session_scope() as session:
+                    planner.record_backup_references(
+                        session,
+                        job_id,
+                        repository,
+                        label,
+                        datetime.datetime.now(datetime.timezone.utc),
+                        all_partitions,
+                    )
+        except _BackupLoopFailure as failure:
+            with session_scope() as session:
+                concurrency.complete_job_slot(
+                    session,
+                    cluster.id,
+                    scope="backup",
+                    label=primary_label,
+                    final_state=(failure.result.get("final_status") or {}).get("state") or "FAILED",
                 )
-
-            all_partitions = planner.get_all_partitions_for_tables(database, group_database, tables)
-
-            concurrency.reserve_job_slot(database, session, cluster.id, "backup", label)
-            planner.record_backup_partitions(session, cluster.id, label, all_partitions)
+            _raise_for_backup_failure(failure.result)
 
         with session_scope() as session:
-            result = executor.execute_backup(
-                database,
-                session,
-                cluster.id,
-                backup_command,
-                repository=repository,
-                backup_type="full",
-                scope="backup",
-                database=group_database,
-                job_id=job_id,
-                on_progress=on_progress,
+            concurrency.complete_job_slot(
+                session, cluster.id, scope="backup", label=primary_label, final_state="FINISHED"
             )
 
-        if not result["success"]:
-            _raise_for_backup_failure(result)
-
-        return {"label": label, "final_status": result["final_status"]}
+        return {"label": primary_label, "final_status": final_status}
 
 
 def run_backup_incremental(
@@ -131,57 +174,109 @@ def run_backup_incremental(
         ensure_ready(database, cluster, repository=repository)
 
         with session_scope() as session:
-            group_database = planner.resolve_group_database(session, cluster.id, group)
-
-            label = labels.determine_backup_label(
-                session, cluster.id, "incremental", group_database, custom_name=name
+            group_databases = planner.resolve_group_databases(session, cluster.id, group)
+            primary_label = labels.determine_backup_label(
+                session, cluster.id, "incremental", group_databases[0], custom_name=name
             )
-            _set_job_label(job_id, label)
+            _set_job_label(job_id, primary_label)
+            concurrency.reserve_job_slot(database, session, cluster.id, "backup", primary_label)
 
-            if baseline_backup:
-                if on_progress:
-                    on_progress({"event": "baseline_specified", "baseline_backup": baseline_backup})
-            else:
-                latest_backup = planner.find_latest_full_backup(
-                    database, session, cluster.id, group_database
+        final_status = None
+        primary_baseline_job_id = None
+        try:
+            for index, group_database in enumerate(group_databases):
+                with session_scope() as session:
+                    if index == 0:
+                        label = primary_label
+                    else:
+                        custom_name = f"{name}_{group_database}" if name else None
+                        label = labels.determine_backup_label(
+                            session, cluster.id, "incremental", group_database, custom_name=custom_name
+                        )
+
+                    if baseline_backup:
+                        if on_progress:
+                            on_progress({"event": "baseline_specified", "baseline_backup": baseline_backup})
+                    else:
+                        latest_backup = planner.find_latest_full_backup(
+                            database, session, cluster.id, group_database
+                        )
+                        if on_progress:
+                            on_progress({"event": "baseline_resolved", "latest_backup": latest_backup})
+
+                    partitions, baseline_job_id = planner.find_recent_partitions(
+                        database,
+                        session,
+                        cluster.id,
+                        group_database,
+                        baseline_backup_label=baseline_backup,
+                        group_id=group,
+                    )
+                    if index == 0:
+                        primary_baseline_job_id = baseline_job_id
+                    if not partitions:
+                        raise RuntimeError(f"No partitions found to backup for database '{group_database}'")
+
+                    backup_command = planner.build_incremental_backup_command(
+                        partitions, repository, label, group_database
+                    )
+
+                with session_scope() as session:
+                    result = executor.execute_backup(
+                        database,
+                        session,
+                        cluster.id,
+                        backup_command,
+                        repository=repository,
+                        backup_type="incremental",
+                        scope="backup",
+                        database=group_database,
+                        job_id=job_id,
+                        on_progress=on_progress,
+                        release_slot=False,
+                    )
+
+                if not result["success"]:
+                    raise _BackupLoopFailure(result)
+
+                final_status = result["final_status"]
+                with session_scope() as session:
+                    planner.record_backup_references(
+                        session,
+                        job_id,
+                        repository,
+                        label,
+                        datetime.datetime.now(datetime.timezone.utc),
+                        partitions,
+                    )
+        except _BackupLoopFailure as failure:
+            with session_scope() as session:
+                concurrency.complete_job_slot(
+                    session,
+                    cluster.id,
+                    scope="backup",
+                    label=primary_label,
+                    final_state=(failure.result.get("final_status") or {}).get("state") or "FAILED",
                 )
-                if on_progress:
-                    on_progress({"event": "baseline_resolved", "latest_backup": latest_backup})
+            _raise_for_backup_failure(failure.result)
 
-            partitions, baseline_job_id = planner.find_recent_partitions(
-                database,
-                session,
-                cluster.id,
-                group_database,
-                baseline_backup_label=baseline_backup,
-                group_id=group,
-            )
-            _set_job_baseline(job_id, baseline_job_id)
-            if not partitions:
-                raise RuntimeError("No partitions found to backup")
-
-            backup_command = planner.build_incremental_backup_command(
-                partitions, repository, label, group_database
-            )
-
-            concurrency.reserve_job_slot(database, session, cluster.id, "backup", label)
-            planner.record_backup_partitions(session, cluster.id, label, partitions)
+        _set_job_baseline(job_id, primary_baseline_job_id)
 
         with session_scope() as session:
-            result = executor.execute_backup(
-                database,
-                session,
-                cluster.id,
-                backup_command,
-                repository=repository,
-                backup_type="incremental",
-                scope="backup",
-                database=group_database,
-                job_id=job_id,
-                on_progress=on_progress,
+            concurrency.complete_job_slot(
+                session, cluster.id, scope="backup", label=primary_label, final_state="FINISHED"
             )
 
-        if not result["success"]:
-            _raise_for_backup_failure(result)
+        return {"label": primary_label, "final_status": final_status}
 
-        return {"label": label, "final_status": result["final_status"]}
+
+class _BackupLoopFailure(Exception):
+    """Internal signal that one database's `execute_backup` call failed mid-loop.
+
+    Carries the failed call's result dict so the `except` block can release the concurrency
+    slot before re-raising as the domain exception `_raise_for_backup_failure` produces.
+    """
+
+    def __init__(self, result: dict) -> None:
+        self.result = result
+        super().__init__(result.get("error_message"))

@@ -21,7 +21,7 @@ from sqlalchemy.orm import sessionmaker
 
 from starrocks_br.store.models import (
     BackupHistory,
-    BackupPartition,
+    BackupReference,
     Base,
     Cluster,
     InventoryGroup,
@@ -197,26 +197,20 @@ def test_run_status_uniqueness_per_cluster(session):
         session.commit()
 
 
-def test_backup_partition_uniqueness_per_cluster(session):
-    cluster = _make_cluster()
-    session.add(cluster)
-    session.commit()
-
-    session.add(
-        BackupPartition(
-            cluster_id=cluster.id, key_hash="hash1", label="lbl1", database_name="db1",
-            table_name="t1", partition_name="p1",
-        )
-    )
-    session.commit()
-
-    session.add(
-        BackupPartition(
-            cluster_id=cluster.id, key_hash="hash1", label="lbl1", database_name="db1",
-            table_name="t1", partition_name="p1",
-        )
-    )
+def test_backup_reference_requires_job_id(session):
+    """`BackupReference` is keyed by `job_id` (FK to `jobs.id`), not `(cluster_id, key_hash)` -
+    see backup-references/design.md. A reference with no `job_id` is rejected."""
     with pytest.raises(IntegrityError):
+        session.add(
+            BackupReference(
+                repository="repo1",
+                snapshot_label="lbl1",
+                snapshot_timestamp=datetime.datetime(2024, 1, 1),
+                database_name="db1",
+                table_name="t1",
+                partition_name="p1",
+            )
+        )
         session.commit()
 
 
@@ -245,9 +239,9 @@ def test_deleting_cluster_cascades_to_all_ops_tables(session):
     declarations - if this fails, suspect the pragma event hook first. Also covers the
     two-level cascade: cluster -> inventory_groups -> table_inventory.
 
-    `backup_history`/`restore_history` no longer cascade directly from `Cluster` - they
-    cascade from `Job` (see `test_deleting_job_cascades_to_its_history_tables`), and
-    `Job.cluster_id` itself has no `ondelete=CASCADE` (deleting a cluster with jobs on
+    `backup_history`/`restore_history`/`backup_references` no longer cascade directly from
+    `Cluster` - they cascade from `Job` (see `test_deleting_job_cascades_to_its_history_tables`),
+    and `Job.cluster_id` itself has no `ondelete=CASCADE` (deleting a cluster with jobs on
     record is a separate, guarded operation - see `commands/clusters.delete_cluster`)."""
     cluster = _make_cluster()
     session.add(cluster)
@@ -262,12 +256,6 @@ def test_deleting_cluster_cascades_to_all_ops_tables(session):
         TableInventory(cluster_id=cluster_id, inventory_group_id=group_id, database_name="db1", table_name="t1")
     )
     session.add(RunStatus(cluster_id=cluster_id, scope="backup", label="lbl1"))
-    session.add(
-        BackupPartition(
-            cluster_id=cluster_id, key_hash="hash1", label="lbl1", database_name="db1",
-            table_name="t1", partition_name="p1",
-        )
-    )
     session.commit()
 
     session.delete(cluster)
@@ -275,15 +263,14 @@ def test_deleting_cluster_cascades_to_all_ops_tables(session):
 
     assert session.query(TableInventory).filter_by(cluster_id=cluster_id).count() == 0
     assert session.query(RunStatus).filter_by(cluster_id=cluster_id).count() == 0
-    assert session.query(BackupPartition).filter_by(cluster_id=cluster_id).count() == 0
     assert session.query(InventoryGroup).filter_by(cluster_id=cluster_id).count() == 0
 
 
 def test_deleting_job_cascades_to_its_history_tables(session):
-    """Two-level cascade: cluster -> job -> backup_history/restore_history.
+    """Two-level cascade: cluster -> job -> backup_history/restore_history/backup_references.
 
     Pruning a snapshot deletes its `Job` row (see `prune.cleanup_backup_history`), which
-    must take that job's execution log with it via `ON DELETE CASCADE`."""
+    must take that job's execution log and reference manifest with it via `ON DELETE CASCADE`."""
     cluster = _make_cluster()
     session.add(cluster)
     session.commit()
@@ -295,6 +282,17 @@ def test_deleting_job_cascades_to_its_history_tables(session):
 
     session.add(BackupHistory(job_id=job_id, status="PENDING"))
     session.add(RestoreHistory(job_id=job_id, status="PENDING"))
+    session.add(
+        BackupReference(
+            job_id=job_id,
+            repository="repo1",
+            snapshot_label="lbl1",
+            snapshot_timestamp=datetime.datetime(2024, 1, 1),
+            database_name="db1",
+            table_name="t1",
+            partition_name="p1",
+        )
+    )
     session.commit()
 
     session.delete(job)
@@ -302,3 +300,4 @@ def test_deleting_job_cascades_to_its_history_tables(session):
 
     assert session.query(BackupHistory).filter_by(job_id=job_id).count() == 0
     assert session.query(RestoreHistory).filter_by(job_id=job_id).count() == 0
+    assert session.query(BackupReference).filter_by(job_id=job_id).count() == 0

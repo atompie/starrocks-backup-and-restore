@@ -15,7 +15,7 @@ import datetime
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ...store.models import BackupPartition, Job, JobStatus, TableInventory
+from ...store.models import BackupReference, Job, JobStatus, TableInventory
 
 
 def find_successful_job(session: Session, cluster_id: int, label: str) -> Job | None:
@@ -31,13 +31,20 @@ def find_successful_job(session: Session, cluster_id: int, label: str) -> Job | 
 def find_latest_full_backup_before(
     session: Session, cluster_id: int, database_name: str, before: datetime.datetime
 ) -> Job | None:
+    """Find the most recent successful full-backup Job covering `database_name`, before `before`.
+
+    Resolved via `BackupReference.database_name` rather than a `Job.label` prefix match - see
+    `backup_catalog.find_latest_full_backup_job`'s docstring for why (a multi-database Job has
+    only one `Job.label`, so it can't be pattern-matched per database).
+    """
     return session.scalars(
         select(Job)
+        .join(BackupReference, BackupReference.job_id == Job.id)
         .where(
             Job.cluster_id == cluster_id,
             Job.job_type == "backup_full",
             Job.status == JobStatus.SUCCESS.value,
-            Job.label.like(f"{database_name}_%"),
+            BackupReference.database_name == database_name,
             Job.finished_at < before,
         )
         .order_by(Job.finished_at.desc())
@@ -46,11 +53,15 @@ def find_latest_full_backup_before(
 
 
 def list_partitions_for_label(session: Session, cluster_id: int, label: str) -> list[tuple[str, str]]:
+    job = find_successful_job(session, cluster_id, label)
+    if job is None:
+        return []
+
     rows = session.execute(
-        select(BackupPartition.database_name, BackupPartition.table_name)
+        select(BackupReference.database_name, BackupReference.table_name)
         .distinct()
-        .where(BackupPartition.cluster_id == cluster_id, BackupPartition.label == label)
-        .order_by(BackupPartition.database_name, BackupPartition.table_name)
+        .where(BackupReference.job_id == job.id)
+        .order_by(BackupReference.database_name, BackupReference.table_name)
     ).all()
     return [(row[0], row[1]) for row in rows]
 
@@ -67,15 +78,18 @@ def list_group_table_memberships(session: Session, cluster_id: int, group_id: in
 def list_partition_names(
     session: Session, cluster_id: int, label: str, database_name: str, table_name: str
 ) -> list[str]:
+    job = find_successful_job(session, cluster_id, label)
+    if job is None:
+        return []
+
     return list(
         session.scalars(
-            select(BackupPartition.partition_name)
+            select(BackupReference.partition_name)
             .where(
-                BackupPartition.cluster_id == cluster_id,
-                BackupPartition.label == label,
-                BackupPartition.database_name == database_name,
-                BackupPartition.table_name == table_name,
+                BackupReference.job_id == job.id,
+                BackupReference.database_name == database_name,
+                BackupReference.table_name == table_name,
             )
-            .order_by(BackupPartition.partition_name)
+            .order_by(BackupReference.partition_name)
         )
     )

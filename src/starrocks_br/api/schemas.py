@@ -147,6 +147,19 @@ class HistoryEntryRead(BaseModel):
     details: dict | None = None
 
 
+class BackupReferenceRead(BaseModel):
+    """One database/table (optionally partition) a backup job's finished StarRocks snapshot covers."""
+
+    id: int
+    job_id: int
+    repository: str
+    snapshot_label: str
+    snapshot_timestamp: datetime.datetime
+    database: str
+    table: str
+    partition: str | None = None
+
+
 class ScheduleCreate(BaseModel):
     job_type: str = Field(pattern="^(backup_full|backup_incremental)$")
     inventory_group_id: int
