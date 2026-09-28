@@ -157,13 +157,11 @@
 
 ## 8. Remaining single-call-site fixes
 
-- [ ] 8.1 Update `api/routes/inventory_groups.py::get_inventory_group`'s
+- [x] 8.1 Update `api/routes/inventory_groups.py::get_inventory_group`'s
       `db.get(InventoryGroup, group_id)` to call
-      `dal.metadata.inventory_groups.get_group_row` (add this one
-      function to the existing `dal/metadata/inventory_groups.py` if not
-      already present); verify with
-      `pytest tests/unit/service/test_api_inventory_groups.py -q`
-      (confirm the actual test module name first).
+      `dal.metadata.inventory_groups.get_group_row` (added to the
+      existing `dal/metadata/inventory_groups.py`); verify with
+      `pytest tests/unit/crud/test_inventory_groups_sql.py tests/unit/service/test_api_inventory_groups.py -q`.
 
 ## 9. Full-suite verification
 

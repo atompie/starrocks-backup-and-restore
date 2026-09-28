@@ -53,6 +53,11 @@ def get_group_id_by_name(session: Session, cluster_id: int, name: str) -> int:
     return group_id
 
 
+def get_group_row(session: Session, group_id: int) -> InventoryGroup | None:
+    """Return the raw `InventoryGroup` row (not cluster-scoped - callers check that separately)."""
+    return session.get(InventoryGroup, group_id)
+
+
 def group_exists(session: Session, cluster_id: int, group_id: int) -> bool:
     """Return whether `group_id` exists on this cluster."""
     return (

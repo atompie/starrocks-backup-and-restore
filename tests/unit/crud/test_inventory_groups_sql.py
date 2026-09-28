@@ -12,6 +12,7 @@ from starrocks_br.dal.metadata.inventory_groups import (
     delete_group,
     get_group,
     get_group_id_by_name,
+    get_group_row,
     group_exists,
     list_groups,
     remove_membership,
@@ -36,6 +37,19 @@ def test_create_group_raises_when_name_exists(sqlite_session, make_cluster, make
 
     with pytest.raises(InventoryGroupAlreadyExistsError):
         create_group(sqlite_session, cluster.id, "prod", [("sales_db", "orders")])
+
+
+def test_get_group_row_returns_row(sqlite_session, make_cluster, make_group):
+    cluster = make_cluster()
+    group_id = make_group(cluster.id, "prod")
+
+    row = get_group_row(sqlite_session, group_id)
+
+    assert row.name == "prod"
+
+
+def test_get_group_row_returns_none_when_missing(sqlite_session):
+    assert get_group_row(sqlite_session, 999) is None
 
 
 def test_get_group_id_by_name_resolves_existing_group(sqlite_session, make_cluster, make_group):
