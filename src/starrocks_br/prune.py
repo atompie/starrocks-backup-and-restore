@@ -18,6 +18,7 @@ from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
 from . import logger
+from .dal.db import prune as prune_dal
 from .store.models import BackupPartition, Job, JobStatus, TableInventory
 
 
@@ -165,16 +166,7 @@ def verify_snapshot_exists(db, repository: str, snapshot_name: str) -> bool:
     Raises:
         Exception if snapshot is not found
     """
-    sql = f"SHOW SNAPSHOT ON {repository} WHERE SNAPSHOT = '{snapshot_name}'"
-
-    try:
-        rows = db.query(sql)
-        if not rows:
-            raise Exception(f"Snapshot '{snapshot_name}' not found in repository '{repository}'")
-        return True
-    except Exception as e:
-        logger.error(f"Failed to verify snapshot '{snapshot_name}': {e}")
-        raise
+    return prune_dal.verify_snapshot_exists(db, repository, snapshot_name)
 
 
 def execute_drop_snapshot(db, repository: str, snapshot_name: str) -> None:
@@ -188,15 +180,7 @@ def execute_drop_snapshot(db, repository: str, snapshot_name: str) -> None:
     Raises:
         Exception if deletion fails
     """
-    sql = f"DROP SNAPSHOT ON {repository} WHERE SNAPSHOT = '{snapshot_name}'"
-
-    try:
-        logger.info(f"Deleting snapshot: {snapshot_name}")
-        db.execute(sql)
-        logger.success(f"Successfully deleted snapshot: {snapshot_name}")
-    except Exception as e:
-        logger.error(f"Failed to delete snapshot '{snapshot_name}': {e}")
-        raise
+    prune_dal.execute_drop_snapshot(db, repository, snapshot_name)
 
 
 def cleanup_backup_history(session: Session, cluster_id: int, snapshot_label: str) -> None:

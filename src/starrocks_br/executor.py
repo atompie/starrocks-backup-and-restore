@@ -19,7 +19,9 @@ from typing import Literal
 
 from sqlalchemy.orm import Session
 
-from . import concurrency, history, logger
+from . import concurrency, logger
+from .dal.db import backup as backup_dal
+from .dal.metadata import history
 from .store.session import get_session_factory
 
 MAX_POLLS = 86400  # 1 day
@@ -65,7 +67,7 @@ def submit_backup_command(
     error_details is a dict with keys like 'error_type' and 'snapshot_name' for specific error cases.
     """
     try:
-        db.execute(backup_command.strip())
+        backup_dal.submit(db, backup_command.strip())
         return True, None, None
     except Exception as e:
         error_str = str(e)
@@ -166,7 +168,6 @@ def poll_backup_status(
     Returns dictionary with keys: state, label
     Possible states: FINISHED, CANCELLED, TIMEOUT, ERROR, LOST
     """
-    query = f"SHOW BACKUP FROM {database}"
     first_poll = True
     last_state = None
     poll_count = 0
@@ -175,7 +176,7 @@ def poll_backup_status(
     for _ in range(max_polls):
         poll_count += 1
         try:
-            rows = db.query(query)
+            rows = backup_dal.show_backup(db, database)
 
             if not rows:
                 time.sleep(current_interval)

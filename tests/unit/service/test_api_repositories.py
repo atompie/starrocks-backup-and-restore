@@ -1,4 +1,4 @@
-from starrocks_br.repository import RepositoryNotFoundError
+from starrocks_br.dal.db.repository import RepositoryNotFoundError
 
 CLUSTER_PAYLOAD = {
     "name": "prod-eu",
@@ -57,7 +57,7 @@ def test_repositories_router_registered_alongside_others(api_client):
 
 
 def test_list_repositories_success(api_client, monkeypatch):
-    from starrocks_br import repository as repository_module
+    from starrocks_br.dal.db import repository as repository_module
 
     fake_db = FakeDB()
     _patch_connect(monkeypatch, fake_db)
@@ -96,7 +96,7 @@ def test_list_repositories_unreachable_cluster_is_distinguishable_error(api_clie
 
 
 def test_create_repository_success(api_client, monkeypatch):
-    from starrocks_br import repository as repository_module
+    from starrocks_br.dal.db import repository as repository_module
 
     fake_db = FakeDB()
     _patch_connect(monkeypatch, fake_db)
@@ -181,7 +181,7 @@ def test_create_repository_missing_required_field_is_422(api_client):
 
 
 def test_create_repository_never_persists_credentials(api_client, monkeypatch):
-    from starrocks_br import repository as repository_module
+    from starrocks_br.dal.db import repository as repository_module
     from starrocks_br.store.models import Cluster, Job
 
     fake_db = FakeDB()
@@ -216,7 +216,7 @@ def test_create_repository_never_persists_credentials(api_client, monkeypatch):
 
 
 def test_delete_repository_blocked_by_snapshot_is_409(api_client, monkeypatch):
-    from starrocks_br import repository as repository_module
+    from starrocks_br.dal.db import repository as repository_module
 
     fake_db = FakeDB()
     _patch_connect(monkeypatch, fake_db)
@@ -229,7 +229,7 @@ def test_delete_repository_blocked_by_snapshot_is_409(api_client, monkeypatch):
 
 
 def test_delete_repository_succeeds_when_empty(api_client, monkeypatch):
-    from starrocks_br import repository as repository_module
+    from starrocks_br.dal.db import repository as repository_module
 
     fake_db = FakeDB()
     _patch_connect(monkeypatch, fake_db)
@@ -250,7 +250,7 @@ def test_delete_repository_unknown_cluster_is_404(api_client):
 
 
 def test_delete_repository_unknown_repository_is_404(api_client, monkeypatch):
-    from starrocks_br import repository as repository_module
+    from starrocks_br.dal.db import repository as repository_module
 
     fake_db = FakeDB()
     _patch_connect(monkeypatch, fake_db)
@@ -267,7 +267,7 @@ def test_delete_repository_unknown_repository_is_404(api_client, monkeypatch):
 
 
 def test_delete_repository_unreachable_storage_is_503(api_client, monkeypatch):
-    from starrocks_br import repository as repository_module
+    from starrocks_br.dal.db import repository as repository_module
     from starrocks_br.exceptions import RepositoryUnreachableError
 
     fake_db = FakeDB()

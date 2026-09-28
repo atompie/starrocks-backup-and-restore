@@ -10,7 +10,7 @@ from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
 from ... import db as db_module
-from ... import repository as repository_module
+from ...dal.db import repository as repository_module
 from ...store.crypto import decrypt_password
 from ...store.models import Cluster
 from ..schemas import ClusterVerifyResponse

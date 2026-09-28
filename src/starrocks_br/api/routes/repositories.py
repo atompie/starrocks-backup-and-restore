@@ -10,8 +10,9 @@ the cluster reuses the same `_connect`/`decrypt_password` pattern as
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
-from ... import exceptions, repository, s3_verify
+from ... import exceptions, s3_verify
 from ...commands import repositories as repository_commands
+from ...dal.db import repository
 from ..auth import require_api_key
 from ..deps import get_db
 from ..schemas import (

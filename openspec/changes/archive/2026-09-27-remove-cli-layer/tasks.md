@@ -111,10 +111,10 @@ metastore) — flag such staleness as a known gap on completion rather than fixi
         `api/app.py` — docstrings/comments describing `cli.py` as a live sibling adapter to the
         API. Updated to describe the API as the sole adapter over the commands layer.
       Left untouched (unlinked from any living doc, historical/external in nature, same category
-      as `CHANGELOG.md`): `TASK_4.md` (a completed-task planning note predating this change) and
+      as `CHANGELOG.md`): and
       `starrocks-br-article.md` (a marketing article draft) both still contain CLI command
       examples — flagging rather than rewriting, consistent with the bounded-scope decision for
       other pre-existing staleness in task 4.x.
 - [x] 5.1 Run the full test suite (`pytest`) and confirm it passes. (Full suite green.)
 - [x] 5.2 Run `openspec validate remove-cli-layer --strict` (append `--store <id>` if applicable) and confirm it passes with no errors. (Valid.)
-- [x] 5.3 Grep the repo (excluding `.venv` and `openspec/changes/archive`) for `starrocks-br `, `cli.py`, and `cli_api` to confirm no stray references remain in source, docs, or CI config outside of this change's own archived spec history. (Remaining hits are `CHANGELOG.md` (historical), `TASK_4.md`/`starrocks-br-article.md` (flagged above, out of bounded scope), this change's own planning artifacts, and incidental product-name/env-name matches in `run.sh`, `docs/installation.md`, `src/starrocks_br/api/app.py` that are not CLI invocations.)
+- [x] 5.3 Grep the repo (excluding `.venv` and `openspec/changes/archive`) for `starrocks-br `, `cli.py`, and `cli_api` to confirm no stray references remain in source, docs, or CI config outside of this change's own archived spec history. (Remaining hits are `CHANGELOG.md` (historical), this change's own planning artifacts, and incidental product-name/env-name matches in `run.sh`, `docs/installation.md`, `src/starrocks_br/api/app.py` that are not CLI invocations.)

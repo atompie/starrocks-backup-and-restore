@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import starrocks_br.health as health
+import starrocks_br.dal.db.health as health
 
 
 def test_should_report_healthy_when_all_nodes_alive_and_ready(mocker):
