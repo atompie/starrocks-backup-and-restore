@@ -58,17 +58,19 @@ Raised, and settled, while merging former section 8 items 8.1-8.4 into section 5
 
 ## 0d. Follow-up decision for section 9 (answered 2026-09-28)
 
-- [x] Q13 Section 9's CLI-based scheduler tick reverses `openspec/changes/archive/2026-09-27-remove-cli-layer`,
-  which deleted the CLI surface entirely — including, by name, "the cron-friendly schedule-runner
-  CLI command" under its removed `cli-api-client` capability — in favor of the HTTP API's
-  `POST /backup/schedules/run` as the sole periodic-trigger surface. That reversal is confirmed
-  intentional (2026-09-28): the scheduler tick is driven by an externally-invoked CLI command, not
-  by cron/a timer calling the HTTP endpoint. The reinstated CLI is scoped narrowly to the scheduler
-  tick command (and whatever it needs, e.g. lock status) — it is **not** a revival of the old
-  YAML-config-driven `cli.py`/`cli_api/` surface that change removed for unrelated reasons
-  (redundant HTTP-client subcommands, PyInstaller packaging); those stay removed. `POST
-  /backup/schedules/run` is kept, unchanged, as a manual/on-demand trigger (e.g. for an operator or
-  a test), but is no longer the documented periodic-trigger mechanism — see 9.1.
+- [x] Q13 Section 9 adds a CLI-based scheduler tick as a new, additional way to trigger due-schedule
+  execution. This is not a reversal of `openspec/changes/archive/2026-09-27-remove-cli-layer`: that
+  change removed one specific surface (the YAML-config-driven `cli.py`/`cli_api/` HTTP-client
+  subcommands, for reasons unrelated to scheduling — redundant with the API, unmaintained,
+  PyInstaller/PyPI packaging overhead) and never claimed the project would have no CLI ever again.
+  Likewise `api-scheduling`'s Purpose line describing cron/a Kubernetes CronJob calling
+  `POST /backup/schedules/run` documents one supported trigger path, not an exclusivity constraint —
+  nothing in the spec says that endpoint is the only way to trigger a run. Confirmed intentional
+  (2026-09-28): both mechanisms are kept and documented as valid ways to trigger due-schedule
+  execution — `POST /backup/schedules/run` (HTTP, unchanged) and the new CLI tick (process-local,
+  scoped narrowly to the scheduler command and whatever it needs, e.g. lock status — not a revival
+  of the removed YAML-config CLI surface). An operator picks whichever fits their environment
+  (call the API from cron, or run the CLI from cron/a timer/CronJob directly); see 9.1.
 
 ## 1. Baseline — already done and verified
 
@@ -226,14 +228,13 @@ Because cron-style scheduling can overlap a slow-running tick with the next one,
 nothing stops an operator from also running the command by hand, the tick itself must guard
 against two invocations running at once.
 
-- [ ] 9.1 OpenSpec change (e.g. `reinstate-cli-scheduler-command`) that formally reverses
-  `openspec/changes/archive/2026-09-27-remove-cli-layer` for this one capability: reinstate a `cli`
-  capability scoped strictly to the scheduler tick command (not the removed YAML-config `cli.py`/
-  `cli_api/` surface — that removal stands). Update `openspec/specs/api-scheduling/spec.md`'s
-  Purpose (currently: "lets a lightweight periodic trigger... ask the server to run whatever is
-  due" via the HTTP endpoint) and its "Running due schedules" requirement to describe the CLI tick
-  as the periodic-trigger surface, with `POST /backup/schedules/run` kept as a secondary,
-  manual/on-demand trigger (see Q13). Archive this change before starting 9.2.
+- [ ] 9.1 OpenSpec change (e.g. `add-cli-scheduler-command`) that adds a new `cli` capability scoped
+  strictly to the scheduler tick command — distinct from, and not a revival of, the removed
+  YAML-config `cli.py`/`cli_api/` surface (`2026-09-27-remove-cli-layer` stands unchanged for that
+  surface). Update `openspec/specs/api-scheduling/spec.md`'s Purpose and its "Running due
+  schedules" requirement to document both supported ways to trigger due-schedule execution:
+  `POST /backup/schedules/run` (HTTP, existing, unchanged) and the new CLI tick (see Q13) — the CLI
+  is additive, not a replacement for the endpoint. Archive this change before starting 9.2.
 - [ ] 9.2 Add a CLI command under `src/starrocks_br/cli/` (e.g. `python -m starrocks_br.cli.scheduler tick`,
   wired as a console-script entry point) that, per invocation, calls `commands.schedules.run_due_schedules`
   and one-shot expiry once and exits with a non-zero status on failure. Per AGENTS.md's architectural
