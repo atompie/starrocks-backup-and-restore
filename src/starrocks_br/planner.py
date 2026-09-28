@@ -13,14 +13,12 @@
 # limitations under the License.
 
 import datetime
-import hashlib
 
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from starrocks_br import exceptions, logger, timezone
 from starrocks_br.dal.db import backup as backup_dal
-from starrocks_br.store.models import BackupPartition, Job, JobStatus, TableInventory
+from starrocks_br.dal.metadata import backup_catalog
 
 
 def find_latest_full_backup(db, session: Session, cluster_id: int, database: str) -> dict[str, str] | None:
@@ -40,17 +38,7 @@ def find_latest_full_backup(db, session: Session, cluster_id: int, database: str
         Dictionary with keys: label, backup_type, finished_at, or None if no full backup found.
         The finished_at value is returned as a string in the cluster timezone format.
     """
-    job = session.scalars(
-        select(Job)
-        .where(
-            Job.cluster_id == cluster_id,
-            Job.job_type == "backup_full",
-            Job.status == JobStatus.SUCCESS.value,
-            Job.label.like(f"{database}_%"),
-        )
-        .order_by(Job.finished_at.desc())
-        .limit(1)
-    ).first()
+    job = backup_catalog.find_latest_full_backup_job(session, cluster_id, database)
 
     if job is None:
         return None
@@ -72,11 +60,7 @@ def find_tables_by_group(session: Session, cluster_id: int, group_id: int) -> li
     Returns list of dictionaries with keys: database, table.
     Supports '*' table wildcard which signifies all tables in a database.
     """
-    rows = session.scalars(
-        select(TableInventory)
-        .where(TableInventory.cluster_id == cluster_id, TableInventory.inventory_group_id == group_id)
-        .order_by(TableInventory.database_name, TableInventory.table_name)
-    )
+    rows = backup_catalog.list_group_table_memberships(session, cluster_id, group_id)
     return [{"database": row.database_name, "table": row.table_name} for row in rows]
 
 
@@ -171,13 +155,7 @@ def find_recent_partitions(
     cluster_tz = db.timezone
 
     if baseline_backup_label:
-        baseline_job = session.scalars(
-            select(Job).where(
-                Job.cluster_id == cluster_id,
-                Job.label == baseline_backup_label,
-                Job.status == JobStatus.SUCCESS.value,
-            )
-        ).first()
+        baseline_job = backup_catalog.find_successful_job_by_label(session, cluster_id, baseline_backup_label)
         if baseline_job is None:
             raise exceptions.BackupLabelNotFoundError(baseline_backup_label)
         baseline_time_raw = baseline_job.finished_at
@@ -304,26 +282,7 @@ def record_backup_partitions(
         label: Backup label
         partitions: List of partitions with keys: database, table, partition_name
     """
-    if not partitions:
-        return
-
-    for partition in partitions:
-        composite_key = (
-            f"{label}|{partition['database']}|{partition['table']}|{partition['partition_name']}"
-        )
-        key_hash = hashlib.md5(composite_key.encode("utf-8")).hexdigest()
-
-        session.add(
-            BackupPartition(
-                cluster_id=cluster_id,
-                key_hash=key_hash,
-                label=label,
-                database_name=partition["database"],
-                table_name=partition["table"],
-                partition_name=partition["partition_name"],
-            )
-        )
-    session.flush()
+    backup_catalog.record_partitions(session, cluster_id, label, partitions)
 
 
 def get_all_partitions_for_tables(

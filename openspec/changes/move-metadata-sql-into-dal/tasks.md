@@ -121,20 +121,21 @@
 
 ## 6. Backup catalog (planner)
 
-- [ ] 6.1 Create `src/starrocks_br/dal/metadata/backup_catalog.py` with
-      `find_latest_full_backup`, `find_tables_by_group`,
-      `find_baseline_job` (the `session.scalars` lookup inside
-      `find_recent_partitions`), and `record_backup_partitions`, lifted
+- [x] 6.1 Create `src/starrocks_br/dal/metadata/backup_catalog.py` with
+      `find_latest_full_backup_job`, `find_successful_job_by_label` (the
+      baseline-job lookup inside `find_recent_partitions`),
+      `list_group_table_memberships`, and `record_partitions`, lifted
       from `planner.py`.
-- [ ] 6.2 Add `tests/unit/crud/test_dal_backup_catalog.py` covering all
+- [x] 6.2 Add `tests/unit/crud/test_dal_backup_catalog.py` covering all
       four functions; verify with
       `pytest tests/unit/crud/test_dal_backup_catalog.py -q`.
-- [ ] 6.3 Update `planner.py` to call through the new DAL module,
+- [x] 6.3 Update `planner.py`'s `find_latest_full_backup`,
+      `find_tables_by_group`, `find_recent_partitions`, and
+      `record_backup_partitions` to call through the new DAL module,
       keeping `resolve_group_database`, `validate_tables_exist`,
       `find_recent_partitions`'s StarRocks calls, and the backup-command
       builders unchanged; verify with
-      `pytest tests/unit -k planner -q` (confirm the actual planner test
-      module name first).
+      `pytest tests/unit/service/test_planner.py -q`.
 
 ## 7. Concurrency
 
