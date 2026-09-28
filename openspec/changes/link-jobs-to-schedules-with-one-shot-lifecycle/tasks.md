@@ -87,8 +87,8 @@
 
 ## 5. Job.baseline_job_id
 
-- [ ] 5.1 Add a `"job_id": job.id` key to the dict `planner.find_latest_full_backup` returns.
-- [ ] 5.2 Change `planner.find_recent_partitions`'s return type from `list[dict]` to
+- [x] 5.1 Add a `"job_id": job.id` key to the dict `planner.find_latest_full_backup` returns.
+- [x] 5.2 Change `planner.find_recent_partitions`'s return type from `list[dict]` to
       `tuple[list[dict], int | None]` (partitions, resolved baseline job id), threading the
       baseline job's id through both the explicit-`baseline_backup_label` path (already has the
       `Job` object via `backup_catalog.find_successful_job_by_label`) and the resolved-latest path
@@ -96,12 +96,12 @@
       `return ([], baseline_job_id)`.
 - [x] 5.3 Add `dal.metadata.jobs.set_baseline_job_id(db, job_id, baseline_job_id)`, matching the
       shape of the existing `set_label`.
-- [ ] 5.4 Add `commands.backup._set_job_baseline(job_id, baseline_job_id)`, matching
+- [x] 5.4 Add `commands.backup._set_job_baseline(job_id, baseline_job_id)`, matching
       `_set_job_label` exactly (its own `session_scope()`, calls `jobs_dal.set_baseline_job_id`).
       Update `run_backup_incremental` to unpack `partitions, baseline_job_id =
       planner.find_recent_partitions(...)` and call `_set_job_baseline(job_id, baseline_job_id)`
       once resolved.
-- [ ] 5.5 Update `tests/unit/service/test_planner.py`'s `find_latest_full_backup`/
+- [x] 5.5 Update `tests/unit/service/test_planner.py`'s `find_latest_full_backup`/
       `find_recent_partitions` assertions for the new return shapes. Add a test in
       `tests/unit/service/test_commands_backup.py` asserting that after `run_backup_incremental`
       completes, the resulting `Job.baseline_job_id` matches the full job it was based on. Verify
@@ -119,8 +119,8 @@
 
 ## 7. Full-suite verification
 
-- [ ] 7.1 Run the full unit suite (`pytest tests/unit -q`) and verify it passes, including every
+- [x] 7.1 Run the full unit suite (`pytest tests/unit -q`) and verify it passes, including every
       updated `ScheduleCreate` payload from task 3.6.
-- [ ] 7.2 Re-run the migration round-trip from 1.2 (`alembic upgrade head` /
+- [x] 7.2 Re-run the migration round-trip from 1.2 (`alembic upgrade head` /
       `alembic downgrade -1`) against a fresh scratch database to confirm it still applies cleanly
       on top of the finished code.

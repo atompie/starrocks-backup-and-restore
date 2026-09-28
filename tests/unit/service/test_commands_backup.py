@@ -142,7 +142,7 @@ def test_run_backup_incremental_passes_baseline_and_progress_callback(
     )
     mocker.patch(
         "starrocks_br.planner.find_recent_partitions",
-        return_value=[{"database": "d", "table": "t", "partition_name": "p1"}],
+        return_value=([{"database": "d", "table": "t", "partition_name": "p1"}], 7),
     )
     mocker.patch(
         "starrocks_br.planner.build_incremental_backup_command", return_value="BACKUP INC ..."
@@ -163,6 +163,40 @@ def test_run_backup_incremental_passes_baseline_and_progress_callback(
     )
 
     assert execute_backup.call_args.kwargs["on_progress"] is progress_cb
+
+
+def test_run_backup_incremental_records_baseline_job_id(
+    cluster, mock_decrypt, mock_db, fake_session, mock_healthy_cluster, mock_repo_exists, mocker
+):
+    """`Job.baseline_job_id` is set from whatever `find_recent_partitions` resolves as the
+    baseline - the full job this incremental backup depends on."""
+    mocker.patch("starrocks_br.dal.metadata.labels.determine_backup_label", return_value="lbl_inc")
+    mocker.patch(
+        "starrocks_br.planner.find_tables_by_group",
+        return_value=[{"database": "d", "table": "t"}],
+    )
+    mocker.patch(
+        "starrocks_br.planner.find_recent_partitions",
+        return_value=([{"database": "d", "table": "t", "partition_name": "p1"}], 99),
+    )
+    mocker.patch(
+        "starrocks_br.planner.build_incremental_backup_command", return_value="BACKUP INC ..."
+    )
+    mocker.patch("starrocks_br.concurrency.reserve_job_slot")
+    mocker.patch("starrocks_br.planner.record_backup_partitions")
+    mocker.patch(
+        "starrocks_br.executor.execute_backup",
+        return_value={"success": True, "final_status": {"state": "FINISHED"}},
+    )
+    set_baseline_job_id = mocker.patch("starrocks_br.dal.metadata.jobs.set_baseline_job_id")
+
+    backup.run_backup_incremental(
+        cluster,
+        {"group_id": 42, "repository": "test_repo"},
+        job_id=1,
+    )
+
+    set_baseline_job_id.assert_called_once_with(fake_session, 1, 99)
 
 
 def test_run_backup_full_raises_clear_error_when_group_missing(cluster, mock_decrypt):
