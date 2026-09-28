@@ -84,13 +84,15 @@
 
 ## 4. Prune
 
-- [ ] 4.1 Create `src/starrocks_br/dal/metadata/prune.py` with
+- [x] 4.1 Create `src/starrocks_br/dal/metadata/prune.py` with
       `get_successful_backups` (the `Job`/`BackupPartition`/
       `TableInventory` join `session.execute(select(...))`) and
-      `cleanup_backup_history`, lifted verbatim from `prune.py`.
-- [ ] 4.2 Add `tests/unit/crud/test_dal_prune.py` covering both
+      `cleanup_backup_history`, lifted verbatim from `prune.py` (the
+      logging/try-except wrapper around `cleanup_backup_history` stayed
+      in `prune.py` - it's orchestration, not data access).
+- [x] 4.2 Add `tests/unit/crud/test_dal_prune.py` covering both
       functions; verify with `pytest tests/unit/crud/test_dal_prune.py -q`.
-- [ ] 4.3 Update `prune.py` to call through the new DAL module for both
+- [x] 4.3 Update `prune.py` to call through the new DAL module for both
       functions, leaving `filter_snapshots_to_delete` and the
       `dal/db/prune.py` StarRocks pass-throughs unchanged; verify with
       `pytest tests/unit/service/test_prune.py -q`.

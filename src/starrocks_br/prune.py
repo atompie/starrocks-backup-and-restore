@@ -14,12 +14,11 @@
 
 from datetime import datetime
 
-from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
 from . import logger
 from .dal.db import prune as prune_dal
-from .store.models import BackupPartition, Job, JobStatus, TableInventory
+from .dal.metadata import prune as prune_metadata_dal
 
 
 def get_successful_backups(session: Session, cluster_id: int, group: int) -> list[dict]:
@@ -31,10 +30,6 @@ def get_successful_backups(session: Session, cluster_id: int, group: int) -> lis
     recorded `repository` instead (see openspec/changes/decouple-database-and-
     repository-from-cluster/design.md "`group_id` becomes required for prune").
 
-    Backup metadata is resolved from `Job` (`label`/`repository`/`status`/`finished_at`)
-    rather than a separate backup catalog - see add-job-history-log's design.md "The backup
-    catalog moves from `backup_history` to two new columns on `Job`".
-
     Args:
         session: SQLite metastore session
         cluster_id: Cluster this backup belongs to
@@ -43,41 +38,7 @@ def get_successful_backups(session: Session, cluster_id: int, group: int) -> lis
     Returns:
         List of backup records as dicts with keys: label, finished_at, repository, inventory_group_id
     """
-    rows = session.execute(
-        select(
-            Job.label,
-            Job.finished_at,
-            Job.repository,
-            TableInventory.inventory_group_id,
-        )
-        .distinct()
-        .join(BackupPartition, BackupPartition.label == Job.label)
-        .join(
-            TableInventory,
-            and_(
-                TableInventory.database_name == BackupPartition.database_name,
-                or_(TableInventory.table_name == BackupPartition.table_name, TableInventory.table_name == "*"),
-                TableInventory.cluster_id == cluster_id,
-            ),
-        )
-        .where(
-            Job.cluster_id == cluster_id,
-            BackupPartition.cluster_id == cluster_id,
-            Job.status == JobStatus.SUCCESS.value,
-            TableInventory.inventory_group_id == group,
-        )
-        .order_by(Job.finished_at.asc())
-    ).all()
-
-    return [
-        {
-            "label": label,
-            "finished_at": str(finished_at),
-            "repository": repository,
-            "inventory_group_id": inventory_group_id,
-        }
-        for label, finished_at, repository, inventory_group_id in rows
-    ]
+    return prune_metadata_dal.get_successful_backups(session, cluster_id, group)
 
 
 def filter_snapshots_to_delete(all_snapshots: list[dict], strategy: str, **kwargs) -> list[dict]:
@@ -198,17 +159,7 @@ def cleanup_backup_history(session: Session, cluster_id: int, snapshot_label: st
         snapshot_label: Snapshot label to remove from the catalog
     """
     try:
-        session.execute(
-            BackupPartition.__table__.delete().where(
-                BackupPartition.cluster_id == cluster_id, BackupPartition.label == snapshot_label
-            )
-        )
-        job = session.scalars(
-            select(Job).where(Job.cluster_id == cluster_id, Job.label == snapshot_label)
-        ).first()
-        if job is not None:
-            session.delete(job)
-        session.flush()
+        prune_metadata_dal.cleanup_backup_history(session, cluster_id, snapshot_label)
         logger.debug(f"Cleaned up backup history for: {snapshot_label}")
     except Exception as e:
         logger.warning(f"Failed to cleanup backup history for '{snapshot_label}': {e}")
