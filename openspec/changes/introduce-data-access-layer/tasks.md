@@ -40,7 +40,7 @@
 
 ## 8. concurrency.py extraction
 
-- [ ] 8.1 Move `_is_backup_job_stale`, `_get_user_databases` (`SHOW DATABASES`), and `_check_backup_job_in_database` (`SHOW BACKUP FROM`, already quoted) into `dal/db/concurrency.py`; update `concurrency.py` to call through it, keeping `reserve_job_slot`, `_get_active_jobs_for_scope`, `_insert_new_job`, `_handle_active_job_conflicts`, `_cleanup_stale_job`, `complete_job_slot` (ORM orchestration) in place, with no change to `reserve_job_slot`'s control flow or the `backup` scope reservation policy; verify `tests/unit` concurrency tests (including staleness/healing and scope-reservation cases) pass unchanged.
+- [x] 8.1 Move `_is_backup_job_stale`, `_get_user_databases` (`SHOW DATABASES`), and `_check_backup_job_in_database` (`SHOW BACKUP FROM`, already quoted) into `dal/db/concurrency.py`; update `concurrency.py` to call through it, keeping `reserve_job_slot`, `_get_active_jobs_for_scope`, `_insert_new_job`, `_handle_active_job_conflicts`, `_cleanup_stale_job`, `complete_job_slot` (ORM orchestration) in place, with no change to `reserve_job_slot`'s control flow or the `backup` scope reservation policy; verify `tests/unit` concurrency tests (including staleness/healing and scope-reservation cases) pass unchanged.
 
 ## 9. Full-suite verification
 
