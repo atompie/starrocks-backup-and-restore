@@ -16,7 +16,7 @@ from __future__ import annotations
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from .store.models import InventoryGroup, Schedule, TableInventory
+from ...store.models import InventoryGroup, Schedule, TableInventory
 
 
 class InventoryGroupNotFoundError(RuntimeError):

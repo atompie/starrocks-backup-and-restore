@@ -5,7 +5,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ... import inventory_groups
+from ...dal.metadata import inventory_groups
 from ...commands.jobs import list_jobs, submit_job
 from ...jobs.backend import UnknownBackendError
 from ...store.models import BackupHistory, Job, RestoreHistory

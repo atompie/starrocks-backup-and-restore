@@ -8,7 +8,8 @@ frameworks; the API's job backend calls these functions directly.
 from collections.abc import Callable
 from typing import Any
 
-from .. import concurrency, executor, labels, planner
+from .. import concurrency, executor, planner
+from ..dal.metadata import labels
 from ..exceptions import BackupExecutionError, SnapshotAlreadyExistsError
 from ..store.models import Cluster, Job
 from ..store.session import session_scope

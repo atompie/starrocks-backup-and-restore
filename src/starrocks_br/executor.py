@@ -19,7 +19,8 @@ from typing import Literal
 
 from sqlalchemy.orm import Session
 
-from . import concurrency, history, logger
+from . import concurrency, logger
+from .dal.metadata import history
 from .store.session import get_session_factory
 
 MAX_POLLS = 86400  # 1 day

@@ -11,10 +11,10 @@
 
 ## 3. Pure metadata modules (already-clean ORM, relocation only)
 
-- [ ] 3.1 Move `labels.py`'s `determine_backup_label` into `dal/metadata/labels.py`; update callers' imports; verify `tests/unit` tests for label determination pass unchanged.
-- [ ] 3.2 Move `inventory_groups.py`'s CRUD functions into `dal/metadata/inventory_groups.py`; update callers' imports; verify `tests/unit/crud` tests for inventory groups pass unchanged.
-- [ ] 3.3 Move `history.py`'s `BackupHistory`/`RestoreHistory` append/query functions into `dal/metadata/history.py`; update callers' imports (`executor.py`, `commands/*`); verify `tests/unit` history tests pass unchanged.
-- [ ] 3.4 Move `commands/jobs.py`'s direct `Job` ORM access (`submit_job`, `list_jobs`) into `dal/metadata/jobs.py`, leaving `commands/jobs.py` to call through it; verify `tests/unit` job-submission/listing tests pass unchanged.
+- [x] 3.1 Move `labels.py`'s `determine_backup_label` into `dal/metadata/labels.py`; update callers' imports; verify `tests/unit` tests for label determination pass unchanged.
+- [x] 3.2 Move `inventory_groups.py`'s CRUD functions into `dal/metadata/inventory_groups.py`; update callers' imports; verify `tests/unit/crud` tests for inventory groups pass unchanged.
+- [x] 3.3 Move `history.py`'s `BackupHistory`/`RestoreHistory` append/query functions into `dal/metadata/history.py`; update callers' imports (`executor.py`, `commands/*`); verify `tests/unit` history tests pass unchanged.
+- [x] 3.4 Move `commands/jobs.py`'s direct `Job` ORM access (`submit_job`, `list_jobs`) into `dal/metadata/jobs.py`, leaving `commands/jobs.py` to call through it; verify `tests/unit` job-submission/listing tests pass unchanged.
 
 ## 4. prune.py extraction (includes bug fix)
 

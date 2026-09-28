@@ -1,6 +1,6 @@
 import pytest
 
-from starrocks_br.inventory_groups import (
+from starrocks_br.dal.metadata.inventory_groups import (
     InventoryGroupAlreadyExistsError,
     InventoryGroupInUseError,
     InventoryGroupNotFoundError,

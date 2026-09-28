@@ -18,7 +18,8 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from starrocks_br import history, restore
+from starrocks_br import restore
+from starrocks_br.dal.metadata import history
 from starrocks_br.store.models import BackupPartition, Job, JobStatus, TableInventory
 
 _BACKUP_TYPE_TO_JOB_TYPE = {"full": "backup_full", "incremental": "backup_incremental"}

@@ -19,7 +19,8 @@ from collections.abc import Callable
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from . import concurrency, exceptions, history, logger, utils
+from . import concurrency, exceptions, logger, utils
+from .dal.metadata import history
 from .store.models import BackupPartition, Job, JobStatus, TableInventory
 from .store.session import get_session_factory
 

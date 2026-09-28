@@ -94,7 +94,7 @@ def test_delete_idle_cluster_succeeds(api_client):
 
 
 def test_delete_cluster_blocked_by_active_job(api_client, monkeypatch):
-    from starrocks_br import inventory_groups
+    from starrocks_br.dal.metadata import inventory_groups
     from starrocks_br.jobs import handlers
 
     def slow_handler(cluster, params, job_id, on_progress=None):
