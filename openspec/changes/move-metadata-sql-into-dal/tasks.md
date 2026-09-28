@@ -165,10 +165,9 @@
 
 ## 9. Full-suite verification
 
-- [ ] 9.1 Run the full unit suite (`pytest tests/unit -q`) and verify it
-      passes with no behavior changes.
-- [ ] 9.2 Grep for remaining direct metadata access outside
-      `dal/metadata/` (`grep -rn "session\.\(execute\|query\|add\|delete\|scalars\|scalar\|get\)(\|db\.\(query\|add\|flush\|delete\|execute\|scalars\|scalar\|get\)(" src/starrocks_br --include=*.py | grep -v '/dal/'`)
-      and verify every remaining match is either inside `store/`
-      (session/model plumbing itself) or is a call *into* a
-      `dal.metadata.*`/`dal.db.*` function (not a raw query).
+- [x] 9.1 Run the full unit suite (`pytest tests/unit -q`) and verify it
+      passes with no behavior changes. All ~655 tests pass.
+- [x] 9.2 Grep for remaining direct metadata access outside
+      `dal/metadata/` (`grep -rnE "session\.(execute|query|add|delete|scalars|scalar|get)\(|db\.(query|add|flush|delete|execute|scalars|scalar|get)\(" src/starrocks_br --include=*.py | grep -v '/dal/'`)
+      - returns zero matches: every remaining SQLAlchemy call site in
+      `src/starrocks_br/` outside `dal/` is gone.
