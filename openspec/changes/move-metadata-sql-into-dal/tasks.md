@@ -56,30 +56,30 @@
 
 ## 3. Jobs (status transitions and lookups)
 
-- [ ] 3.1 Extend `src/starrocks_br/dal/metadata/jobs.py` with `get`,
+- [x] 3.1 Extend `src/starrocks_br/dal/metadata/jobs.py` with `get`,
       `mark_running`, `mark_progress`, `mark_failed`, `mark_success`, and
       `set_label`, matching the exact fields each call site in
       `jobs/thread_backend.py` and `commands/backup.py::_set_job_label`
-      sets today.
-- [ ] 3.2 Add the new functions to `tests/unit/crud/test_dal_jobs.py`
-      (create if it doesn't exist, otherwise extend the existing DAL job
-      tests); verify with `pytest tests/unit/crud/test_dal_jobs.py -q`.
-- [ ] 3.3 Update `jobs/thread_backend.py`'s four `session.get(Job,
+      sets today. Also added `list_history_for_job` (job-type -> history
+      model routing) for task 3.5.
+- [x] 3.2 Add the new functions to `tests/unit/crud/test_dal_jobs.py`
+      (created - none existed); verify with
+      `pytest tests/unit/crud/test_dal_jobs.py -q`.
+- [x] 3.3 Update `jobs/thread_backend.py`'s four `session.get(Job,
       job_id)` call sites (`_make_progress_callback`, `_run_job`'s
       start/failure/success paths) to call the new DAL functions instead,
       keeping the surrounding `session_scope()` blocks and control flow
-      unchanged; verify with `pytest tests/unit/service/test_executor.py
-      tests/unit -k thread_backend -q` (confirm the actual test module
-      name for the thread backend first).
-- [ ] 3.4 Update `commands/backup.py::_set_job_label` to call
+      unchanged; verify with
+      `pytest tests/unit/service/test_jobs_thread_backend.py -q`.
+- [x] 3.4 Update `commands/backup.py::_set_job_label` to call
       `dal.metadata.jobs.set_label`; verify with
       `pytest tests/unit/service/test_commands_backup.py -q`.
-- [ ] 3.5 Add `get_job`/`get_job_history` to `commands/jobs.py` calling
-      `dal.metadata.jobs.get`/a new `list_history_for_job`, and update
+- [x] 3.5 Add `get_job`/`get_job_history` to `commands/jobs.py` calling
+      `dal.metadata.jobs.get`/`list_history_for_job`, and update
       `api/routes/jobs.py`'s `get_job`/`get_job_history` routes to call
       them instead of `db.get(Job, ...)`/`db.scalars(select(model)...)`
       directly, keeping the existing 404 and job-type-to-history-model
-      branching in the route; verify with
+      branching (now inside the DAL) behavior identical; verify with
       `pytest tests/unit/service/test_api_jobs.py -q`.
 
 ## 4. Prune

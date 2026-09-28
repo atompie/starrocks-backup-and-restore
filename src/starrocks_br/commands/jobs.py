@@ -51,3 +51,11 @@ def list_jobs(
         limit=limit,
         offset=offset,
     )
+
+
+def get_job(db: Session, job_id: int) -> Job | None:
+    return jobs_dal.get(db, job_id)
+
+
+def get_job_history(db: Session, job_type: str, job_id: int) -> list:
+    return jobs_dal.list_history_for_job(db, job_type, job_id)

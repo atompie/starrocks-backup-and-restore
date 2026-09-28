@@ -9,9 +9,10 @@ from collections.abc import Callable
 from typing import Any
 
 from .. import concurrency, executor, planner
+from ..dal.metadata import jobs as jobs_dal
 from ..dal.metadata import labels
 from ..exceptions import BackupExecutionError, SnapshotAlreadyExistsError
-from ..store.models import Cluster, Job
+from ..store.models import Cluster
 from ..store.session import session_scope
 from ._shared import connect, ensure_ready
 
@@ -27,9 +28,7 @@ def _set_job_label(job_id: int, label: str) -> None:
     than at job submission time.
     """
     with session_scope() as session:
-        job = session.get(Job, job_id)
-        if job is not None:
-            job.label = label
+        jobs_dal.set_label(session, job_id, label)
 
 
 def _raise_for_backup_failure(result: dict) -> None:

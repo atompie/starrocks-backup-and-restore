@@ -21,44 +21,31 @@ and a separate worker process would call the same JOB_HANDLERS functions -
 see design.md Decision 3.
 """
 
-import datetime
 import json
 from concurrent.futures import ThreadPoolExecutor
 
-from ..store.models import Job, JobStatus
+from ..dal.metadata import jobs as jobs_dal
 from ..store.session import session_scope
 from .handlers import JOB_HANDLERS
-
-
-def _utcnow() -> datetime.datetime:
-    return datetime.datetime.now(datetime.timezone.utc)
 
 
 def _make_progress_callback(job_id: int):
     def _on_progress(update: dict) -> None:
         with session_scope() as session:
-            job = session.get(Job, job_id)
-            if job is None:
-                return
-            job.state_detail = update.get("state")
-            progress_pct = update.get("progress_pct")
-            if progress_pct is not None:
-                job.progress_pct = progress_pct
+            jobs_dal.mark_progress(session, job_id, update.get("state"), update.get("progress_pct"))
 
     return _on_progress
 
 
 def _run_job(job_id: int) -> None:
     with session_scope() as session:
-        job = session.get(Job, job_id)
+        job = jobs_dal.get(session, job_id)
         if job is None:
             return
         cluster = job.cluster
         job_type = job.job_type
         params = json.loads(job.params_json or "{}")
-        job.status = JobStatus.RUNNING.value
-        job.started_at = _utcnow()
-        session.flush()
+        jobs_dal.mark_running(session, job_id)
         session.expunge(cluster)
         session.expunge(job)
 
@@ -69,19 +56,11 @@ def _run_job(job_id: int) -> None:
         result = handler(cluster, params, job_id, on_progress)
     except Exception as e:
         with session_scope() as session:
-            job = session.get(Job, job_id)
-            if job is not None:
-                job.status = JobStatus.FAILED.value
-                job.error_message = str(e)
-                job.finished_at = _utcnow()
+            jobs_dal.mark_failed(session, job_id, str(e))
         return
 
     with session_scope() as session:
-        job = session.get(Job, job_id)
-        if job is not None:
-            job.status = JobStatus.SUCCESS.value
-            job.result_json = json.dumps(result, default=str)
-            job.finished_at = _utcnow()
+        jobs_dal.mark_success(session, job_id, json.dumps(result, default=str))
 
 
 class ThreadBackend:
