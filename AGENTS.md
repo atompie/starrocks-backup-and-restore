@@ -20,7 +20,7 @@ HTTP API
  commands layer -----> core operations
       |                 (planner, executor, restore, prune, etc.)
       v
- data access layer
+ data access layer (DAL folder)
  (SQLAlchemy models and sessions; Alembic migrations)
 ```
 
