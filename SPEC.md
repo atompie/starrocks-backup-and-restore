@@ -170,6 +170,14 @@ a Schedule, a Backup Reference, a restore target — it does so by `(cluster, re
 validated live against that cluster's repositories. StarRocks enforces the name's uniqueness
 within a cluster, so no separate uniqueness constraint is needed.
 
+The `(cluster_id, name)` pair is the reference pattern for a Repository everywhere it is used:
+the same name on two different clusters identifies two different repositories, and a reference
+is validated only against the repositories of the one cluster it names. Today the only entity
+that holds such a reference is the Schedule, whose `repository` is validated live against its own
+Cluster on both creation and update. A Backup Reference and a restore target will hold the same
+kind of `(cluster_id, name)` reference once implemented (§14-15, §27); this is forward-looking
+intent for those not-yet-built entities, not a description of code that exists today.
+
 ---
 
 # 5. Inventory

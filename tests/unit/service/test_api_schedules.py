@@ -123,6 +123,42 @@ def test_create_schedule_unknown_repository_404(api_client, monkeypatch):
     assert response.status_code == 404
 
 
+def test_create_schedule_cross_cluster_repository_404(api_client, monkeypatch):
+    """A repository that exists only on a different cluster must not be accepted."""
+    from starrocks_br.api.routes import _cluster_connect
+
+    class FakeDB:
+        def __init__(self, cluster_name):
+            self.cluster_name = cluster_name
+
+        def close(self):
+            pass
+
+    repos_by_cluster = {"cluster-a": [], "cluster-b": [{"name": "b_only_repo"}]}
+
+    monkeypatch.setattr(_cluster_connect, "connect_or_503", lambda cluster: FakeDB(cluster.name))
+    monkeypatch.setattr(
+        _cluster_connect.repository_module,
+        "list_repositories",
+        lambda db: repos_by_cluster[db.cluster_name],
+    )
+
+    cluster_a = _create_cluster(api_client, "cluster-a")
+    _create_cluster(api_client, "cluster-b")
+    group_a = _create_group(api_client, cluster_a)
+
+    response = api_client.post(
+        f"/backup/schedules/cluster/{cluster_a}",
+        json={
+            "job_type": "backup_full",
+            "inventory_group_id": group_a,
+            "repository": "b_only_repo",
+            "cadence": "0 1 * * *",
+        },
+    )
+    assert response.status_code == 404
+
+
 def test_create_schedule_missing_repository_422(api_client):
     cluster_id = _create_cluster(api_client)
     group_id = _create_group(api_client, cluster_id)
@@ -273,6 +309,53 @@ def test_update_schedule_unknown_repository_404(api_client, monkeypatch):
     )
 
     assert response.status_code == 404
+
+
+def test_update_schedule_cross_cluster_repository_404(api_client, monkeypatch):
+    """A repository that exists only on a different cluster must not be accepted on update."""
+    from starrocks_br.api.routes import _cluster_connect
+
+    _mock_repository_check(monkeypatch)
+    cluster_a = _create_cluster(api_client, "cluster-a")
+    _create_cluster(api_client, "cluster-b")
+    group_a = _create_group(api_client, cluster_a)
+    created = api_client.post(
+        f"/backup/schedules/cluster/{cluster_a}",
+        json={
+            "job_type": "backup_full",
+            "inventory_group_id": group_a,
+            "repository": "s3_repo",
+            "cadence": "0 1 * * *",
+        },
+    ).json()
+
+    from starrocks_br.api.routes import schedules as schedules_module
+
+    class FakeDB:
+        def __init__(self, cluster_name):
+            self.cluster_name = cluster_name
+
+        def close(self):
+            pass
+
+    repos_by_cluster = {"cluster-a": [], "cluster-b": [{"name": "b_only_repo"}]}
+
+    monkeypatch.setattr(schedules_module, "ensure_repository_exists", _cluster_connect.ensure_repository_exists)
+    monkeypatch.setattr(_cluster_connect, "connect_or_503", lambda cluster: FakeDB(cluster.name))
+    monkeypatch.setattr(
+        _cluster_connect.repository_module,
+        "list_repositories",
+        lambda db: repos_by_cluster[db.cluster_name],
+    )
+
+    response = api_client.patch(
+        f"/backup/schedules/cluster/{cluster_a}/schedule_id/{created['id']}",
+        json={"repository": "b_only_repo"},
+    )
+
+    assert response.status_code == 404
+    unchanged = api_client.get(f"/backup/schedules/cluster/{cluster_a}/schedule_id/{created['id']}").json()
+    assert unchanged["repository"] == "s3_repo"
 
 
 def test_disable_schedule_excludes_it_from_run_due(api_client, monkeypatch):

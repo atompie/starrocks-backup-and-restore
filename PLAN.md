@@ -61,10 +61,10 @@ Repository is not a persisted entity in this system's metadata store — StarRoc
 source of truth (0.1, reversed 2026-09-27). This section formalizes and hardens the existing
 live-validation pattern rather than adding schema.
 
-- [ ] 3.1 Confirm `Schedule.repository` (string) stays as-is; both create and update validate it live against `SHOW REPOSITORIES` on the schedule's cluster (already implemented via `ensure_repository_exists`)
-- [ ] 3.2 Add a same-cluster cross-check test: a schedule cannot reference a repository name that only exists on a different cluster
-- [ ] 3.3 Document the `(cluster_id, name)` reference pattern in `SPEC.md` §4, and note it applies wherever a repository is referenced (Schedule, Backup Reference, restore target)
-- [ ] 3.4 Tests: repository validated live on schedule create/update; cross-cluster repository name rejected
+- [x] 3.1 Confirm `Schedule.repository` (string) stays as-is; both create and update validate it live against `SHOW REPOSITORIES` on the schedule's cluster (already implemented via `ensure_repository_exists`)
+- [x] 3.2 Add a same-cluster cross-check test: a schedule cannot reference a repository name that only exists on a different cluster
+- [x] 3.3 Document the `(cluster_id, name)` reference pattern in `SPEC.md` §4, and note it applies wherever a repository is referenced (Schedule, Backup Reference, restore target)
+- [x] 3.4 Tests: repository validated live on schedule create/update; cross-cluster repository name rejected
 
 ## 4. Job event log (Backup, Restore and Retention History)
 
