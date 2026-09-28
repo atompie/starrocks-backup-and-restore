@@ -10,7 +10,7 @@ API. See [API Server](api.md) for the full guide.
 |----------|----------|---------|---------|
 | `STARROCKS_BR_API_KEY` | Yes | — | Shared bearer token every API request must present. Server refuses to start without it. Generate with `python -c "import secrets; print(secrets.token_urlsafe(32))"`. |
 | `STARROCKS_BR_DB_ENCRYPTION_KEY` | Yes | — | Key used to encrypt registered clusters' StarRocks passwords at rest. Server refuses to start without it. Generate with `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`. |
-| `STARROCKS_BR_DATABASE_URL` | No | `sqlite:///./starrocks_br_api.db` | SQLAlchemy URL for the API's own metadata store (registered clusters, jobs, schedules, table inventory, backup/restore history). Point this at MySQL/Postgres for production; run `alembic upgrade head` (from the repo root, using `alembic.ini`) against it first. |
+| `STARROCKS_BR_DATABASE_URL` | No | `sqlite:///<repo-root>/starrocks_br_api.db` | SQLAlchemy URL for the API's own metadata store (registered clusters, jobs, schedules, table inventory, backup/restore history). Point this at MySQL/Postgres for production; run `alembic upgrade head` (from the repo root, using `alembic.ini`) against it first. |
 | `STARROCKS_BR_ENABLED_BACKENDS` | No | `thread` | Comma-separated list of job execution backends to enable. Only `thread` (in-process) ships today. |
 | `STARROCKS_BR_DEFAULT_BACKEND` | No | `thread` | Backend used when a job submission or schedule doesn't specify one. |
 

@@ -62,7 +62,7 @@ registered dynamically through the API.
 |----------|----------|---------|---------|
 | `STARROCKS_BR_API_KEY` | Yes | — | Shared bearer token every API request must present. The server refuses to start without it. |
 | `STARROCKS_BR_DB_ENCRYPTION_KEY` | Yes | — | Key used to encrypt registered clusters' StarRocks passwords at rest. The server refuses to start without it. |
-| `STARROCKS_BR_DATABASE_URL` | No | `sqlite:///./starrocks_br_api.db` | SQLAlchemy URL for the API's own metadata store. Point at MySQL/Postgres for production. |
+| `STARROCKS_BR_DATABASE_URL` | No | `sqlite:///<repo-root>/starrocks_br_api.db` | SQLAlchemy URL for the API's own metadata store. Point at MySQL/Postgres for production. |
 | `STARROCKS_BR_ENABLED_BACKENDS` | No | `thread` | Comma-separated job execution backends to enable. Only `thread` ships today. |
 | `STARROCKS_BR_DEFAULT_BACKEND` | No | `thread` | Backend used when a job/schedule doesn't specify one. |
 

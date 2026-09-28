@@ -3,11 +3,18 @@ import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
 from functools import lru_cache
+from pathlib import Path
 
 from sqlalchemy import Engine, create_engine, event
 from sqlalchemy.orm import Session, sessionmaker
 
-DEFAULT_DATABASE_URL = "sqlite:///./starrocks_br_api.db"
+# Anchored to the repo root (src/starrocks_br/store/session.py -> repo root) so the
+# default database location is independent of the process's working directory - a
+# relative path here previously meant a test runner or shell that cd'd elsewhere
+# (e.g. a PyCharm run configuration defaulting to the test file's directory) would
+# create/read a stray starrocks_br_api.db in that directory instead.
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+DEFAULT_DATABASE_URL = f"sqlite:///{_REPO_ROOT / 'starrocks_br_api.db'}"
 
 
 @event.listens_for(Engine, "connect")
