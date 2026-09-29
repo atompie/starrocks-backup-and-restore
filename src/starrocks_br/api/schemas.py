@@ -56,25 +56,6 @@ class ClusterRead(BaseModel):
     updated_at: datetime.datetime
 
 
-class BackupFullRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    group_id: int
-    repository: str = Field(min_length=1, max_length=128)
-    name: str | None = None
-    backend: Backend | None = None
-
-
-class BackupIncrementalRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    group_id: int
-    repository: str = Field(min_length=1, max_length=128)
-    name: str | None = None
-    baseline_backup: str | None = None
-    backend: Backend | None = None
-
-
 class RestoreRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -130,6 +111,7 @@ class JobRead(BaseModel):
     schedule_id: int | None
     group_id: int | None
     baseline_job_id: int | None
+    source_backup_job_id: int | None
     result_json: str | None
     created_at: datetime.datetime
     started_at: datetime.datetime | None
@@ -197,6 +179,7 @@ class ScheduleRead(BaseModel):
     retention: int | None
     expire_after_days: int | None
     last_run_job_id: int | None
+    deletion_requested_at: datetime.datetime | None
     created_at: datetime.datetime
     updated_at: datetime.datetime
 
@@ -204,6 +187,7 @@ class ScheduleRead(BaseModel):
 class RunDueResponse(BaseModel):
     triggered_job_ids: list[int]
     triggered_count: int
+    cleanup_job_ids: list[int] = Field(default_factory=list)
 
 
 class RepositoryCreate(BaseModel):

@@ -21,12 +21,21 @@ def submit_job(
     params: dict,
     requested_backend: str | None,
     schedule_id: int | None = None,
+    source_backup_job_id: int | None = None,
 ) -> Job:
     """Create a Job row and enqueue it on the resolved backend."""
     registry = get_registry()
     backend_name = registry.resolve(requested_backend, cluster.default_backend)
 
-    job = jobs_dal.create_job(db, cluster, job_type, params, backend_name, schedule_id=schedule_id)
+    job = jobs_dal.create_job(
+        db,
+        cluster,
+        job_type,
+        params,
+        backend_name,
+        schedule_id=schedule_id,
+        source_backup_job_id=source_backup_job_id,
+    )
 
     registry.get(backend_name).enqueue(job.id)
     return job

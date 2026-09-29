@@ -17,10 +17,10 @@ from ... import exceptions
 from ...commands import schedules as schedules_commands
 from ...dal.metadata import inventory_groups
 from ...jobs.backend import UnknownBackendError
-from ...store.models import Schedule
+from ...store.models import Job, Schedule
 from ..auth import require_api_key
 from ..deps import get_db
-from ..schemas import RunDueResponse, ScheduleCreate, ScheduleRead, ScheduleUpdate
+from ..schemas import JobRead, RunDueResponse, ScheduleCreate, ScheduleRead, ScheduleUpdate
 from ._cluster_connect import ensure_repository_exists, get_cluster_or_404
 
 router = APIRouter(tags=["schedules"], dependencies=[Depends(require_api_key)])
@@ -117,7 +117,7 @@ def update_schedule(
 
     try:
         return schedules_commands.update_schedule(db, schedule, updates)
-    except exceptions.ScheduleImmutableError as e:
+    except (exceptions.ScheduleImmutableError, exceptions.SchedulePendingDeletionError) as e:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e)) from e
     except (exceptions.InvalidCadenceError, exceptions.InvalidScheduleFieldsError) as e:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(e)) from e
@@ -125,20 +125,35 @@ def update_schedule(
 
 @router.delete(
     "/backup/schedules/cluster/{cluster_id}/schedule_id/{schedule_id}",
-    status_code=status.HTTP_204_NO_CONTENT,
+    response_model=JobRead,
+    status_code=status.HTTP_202_ACCEPTED,
 )
-def delete_schedule(cluster_id: int, schedule_id: int, db: Session = Depends(get_db)) -> None:
+def delete_schedule(cluster_id: int, schedule_id: int, db: Session = Depends(get_db)) -> Job:
     get_cluster_or_404(db, cluster_id)
     schedule = _get_schedule_or_404(db, cluster_id, schedule_id)
-    schedules_commands.delete_schedule(db, schedule)
+    try:
+        return schedules_commands.delete_schedule(db, schedule)
+    except (
+        exceptions.ScheduleHasActiveJobError,
+        exceptions.ScheduleHasActiveRestoreError,
+        exceptions.ScheduleHasIncrementalBaselineError,
+    ) as e:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e)) from e
+    except UnknownBackendError as e:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(e)) from e
 
 
 @router.post("/backup/schedules/run", response_model=RunDueResponse)
 def run_due(db: Session = Depends(get_db)) -> RunDueResponse:
     try:
         triggered_job_ids, triggered_count = schedules_commands.run_due_schedules(db, _utcnow())
+        cleanup_job_ids = schedules_commands.expire_due_schedules(db, _utcnow())
     except exceptions.InvalidCadenceError as e:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(e)) from e
     except UnknownBackendError as e:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(e)) from e
-    return RunDueResponse(triggered_job_ids=triggered_job_ids, triggered_count=triggered_count)
+    return RunDueResponse(
+        triggered_job_ids=triggered_job_ids,
+        triggered_count=triggered_count,
+        cleanup_job_ids=cleanup_job_ids,
+    )

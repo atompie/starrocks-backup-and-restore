@@ -15,7 +15,7 @@ import datetime
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ...store.models import BackupReference, Job, JobStatus, TableInventory
+from ...store.models import BackupReference, Job, JobStatus, Schedule, TableInventory
 
 
 def find_successful_job(session: Session, cluster_id: int, label: str) -> Job | None:
@@ -26,6 +26,21 @@ def find_successful_job(session: Session, cluster_id: int, label: str) -> Job | 
             Job.status == JobStatus.SUCCESS.value,
         )
     ).first()
+
+
+def source_schedule_pending_deletion(session: Session, source_backup_job_id: int) -> bool:
+    """Whether the schedule that submitted `source_backup_job_id` is pending deletion.
+
+    A source backup job with no `schedule_id` (submitted directly, or from before schedule
+    linkage existed) has no schedule to be pending deletion, so this returns `False`.
+    """
+    schedule_id = session.scalars(select(Job.schedule_id).where(Job.id == source_backup_job_id)).first()
+    if schedule_id is None:
+        return False
+    deletion_requested_at = session.scalars(
+        select(Schedule.deletion_requested_at).where(Schedule.id == schedule_id)
+    ).first()
+    return deletion_requested_at is not None
 
 
 def find_latest_full_backup_before(

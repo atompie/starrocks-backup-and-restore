@@ -94,7 +94,6 @@ def test_delete_idle_cluster_succeeds(api_client):
 
 
 def test_delete_cluster_blocked_by_active_job(api_client, monkeypatch):
-    from starrocks_br.dal.metadata import inventory_groups
     from starrocks_br.jobs import handlers
 
     def slow_handler(cluster, params, job_id, on_progress=None):
@@ -103,16 +102,19 @@ def test_delete_cluster_blocked_by_active_job(api_client, monkeypatch):
         time.sleep(0.3)
         return {}
 
-    from starrocks_br.api.routes import jobs as jobs_module
+    from starrocks_br.api.routes import schedules as schedules_module
 
     monkeypatch.setitem(handlers.JOB_HANDLERS, "backup_full", slow_handler)
-    monkeypatch.setattr(inventory_groups, "group_exists", lambda db, cluster_id, group_id: True)
-    monkeypatch.setattr(jobs_module, "_ensure_repository_exists", lambda cluster, repository_name: None)
+    monkeypatch.setattr(schedules_module, "ensure_repository_exists", lambda cluster, repository_name: None)
 
     created = api_client.post("/cluster", json=CLUSTER_PAYLOAD).json()
+    group = api_client.post(
+        f"/inventories/cluster/{created['id']}",
+        json={"name": "g1", "tables": [{"database": "sales_db", "table": "*"}]},
+    ).json()
     api_client.post(
-        f"/backup/manual/full/cluster/{created['id']}",
-        json={"group_id": 1, "repository": "s3_repo"},
+        f"/backup/schedules/cluster/{created['id']}",
+        json={"job_type": "backup_full", "inventory_group_id": group["id"], "repository": "s3_repo"},
     )
 
     response = api_client.delete(f"/cluster/{created['id']}")

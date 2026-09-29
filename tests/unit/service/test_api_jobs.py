@@ -1,5 +1,6 @@
 import threading
 import time
+import uuid
 
 CLUSTER_PAYLOAD = {
     "name": "prod-eu",
@@ -23,11 +24,34 @@ def _mock_group_check(monkeypatch, exists=True):
     )
 
 
-def _mock_repository_check(monkeypatch):
-    """Bypass the synchronous live repository-existence check for backup job submission."""
-    from starrocks_br.api.routes import jobs as jobs_module
+def _mock_schedule_repository_check(monkeypatch):
+    """Bypass the synchronous live repository-existence check for schedule creation.
 
-    monkeypatch.setattr(jobs_module, "_ensure_repository_exists", lambda cluster, repository_name: None)
+    Manual full/incremental backup submission is retired - a backup job is now only ever
+    created through a schedule (one-shot for an immediate full backup, recurring for
+    incremental), so tests that need a running backup job go through schedule creation.
+    """
+    from starrocks_br.api.routes import schedules as schedules_module
+
+    monkeypatch.setattr(schedules_module, "ensure_repository_exists", lambda cluster, repository_name: None)
+
+
+def _create_one_shot_backup_full(api_client, cluster_id, group_id=None) -> dict:
+    """Create a one-shot schedule and return the PENDING `backup_full` Job it submitted.
+
+    Manual full backup submission is retired; a one-shot schedule is the only way left to
+    submit an immediate backup_full job. `Schedule.inventory_group_id` is a real FK, so a
+    group is created automatically when the caller doesn't need a specific one. Caller is
+    responsible for having already mocked group/repository existence and any job handler it
+    needs.
+    """
+    if group_id is None:
+        group_id = _create_group(api_client, cluster_id)
+    schedule = api_client.post(
+        f"/backup/schedules/cluster/{cluster_id}",
+        json={"job_type": "backup_full", "inventory_group_id": group_id, "repository": "s3_repo"},
+    ).json()
+    return api_client.get(f"/job/{schedule['last_run_job_id']}").json()
 
 
 def _wait_for_terminal(api_client, job_id, timeout=2.0):
@@ -40,30 +64,16 @@ def _wait_for_terminal(api_client, job_id, timeout=2.0):
     raise TimeoutError("job did not finish in time")
 
 
-def test_submit_backup_full_returns_202_with_job(api_client, monkeypatch):
-    from starrocks_br.jobs import handlers
-
-    _mock_group_check(monkeypatch)
-    _mock_repository_check(monkeypatch)
-    monkeypatch.setitem(
-        handlers.JOB_HANDLERS, "backup_full", lambda cluster, params, job_id, on_progress=None: {"label": "x"}
-    )
-
-    cluster_id = _create_cluster(api_client)
+def test_manual_backup_full_route_is_retired(api_client):
     response = api_client.post(
-        f"/backup/manual/full/cluster/{cluster_id}", json={"group_id": 1, "repository": "s3_repo"}
+        "/backup/manual/full/cluster/1", json={"group_id": 1, "repository": "s3_repo"}
     )
-
-    assert response.status_code == 202
-    body = response.json()
-    assert body["status"] == "PENDING"
-    assert body["cluster_id"] == cluster_id
-    assert body["job_type"] == "backup_full"
+    assert response.status_code == 404
 
 
-def test_submit_job_against_unknown_cluster_is_404(api_client):
+def test_manual_backup_incremental_route_is_retired(api_client):
     response = api_client.post(
-        "/backup/manual/full/cluster/999", json={"group_id": 1, "repository": "s3_repo"}
+        "/backup/manual/incremental/cluster/1", json={"group_id": 1, "repository": "s3_repo"}
     )
     assert response.status_code == 404
 
@@ -79,21 +89,23 @@ def test_submit_then_poll_to_terminal_state_success(api_client, monkeypatch):
         return {"label": "done"}
 
     _mock_group_check(monkeypatch)
-    _mock_repository_check(monkeypatch)
+    _mock_schedule_repository_check(monkeypatch)
     monkeypatch.setitem(handlers.JOB_HANDLERS, "backup_full", handler)
 
     cluster_id = _create_cluster(api_client)
-    submitted = api_client.post(
-        f"/backup/manual/full/cluster/{cluster_id}", json={"group_id": 1, "repository": "s3_repo"}
+    group_id = _create_group(api_client, cluster_id)
+    schedule = api_client.post(
+        f"/backup/schedules/cluster/{cluster_id}",
+        json={"job_type": "backup_full", "inventory_group_id": group_id, "repository": "s3_repo"},
     ).json()
 
-    final = _wait_for_terminal(api_client, submitted["id"])
+    final = _wait_for_terminal(api_client, schedule["last_run_job_id"])
 
     assert final["status"] == "SUCCESS"
     assert final["started_at"] is not None
     assert final["finished_at"] is not None
-    assert final["schedule_id"] is None
-    assert final["group_id"] == 1
+    assert final["schedule_id"] == schedule["id"]
+    assert final["group_id"] == group_id
     assert final["baseline_job_id"] is None
     assert final["result_json"] is not None
 
@@ -109,13 +121,16 @@ def test_poll_reports_progress_mid_run_then_terminal(api_client, monkeypatch):
         return {}
 
     _mock_group_check(monkeypatch)
-    _mock_repository_check(monkeypatch)
+    _mock_schedule_repository_check(monkeypatch)
     monkeypatch.setitem(handlers.JOB_HANDLERS, "backup_full", handler)
 
     cluster_id = _create_cluster(api_client)
-    submitted = api_client.post(
-        f"/backup/manual/full/cluster/{cluster_id}", json={"group_id": 1, "repository": "s3_repo"}
+    group_id = _create_group(api_client, cluster_id)
+    schedule = api_client.post(
+        f"/backup/schedules/cluster/{cluster_id}",
+        json={"job_type": "backup_full", "inventory_group_id": group_id, "repository": "s3_repo"},
     ).json()
+    submitted = {"id": schedule["last_run_job_id"]}
 
     deadline = time.time() + 2
     seen_progress = None
@@ -146,13 +161,16 @@ def test_no_progress_phase_reports_running_without_percentage(api_client, monkey
         return {}
 
     _mock_group_check(monkeypatch)
-    _mock_repository_check(monkeypatch)
+    _mock_schedule_repository_check(monkeypatch)
     monkeypatch.setitem(handlers.JOB_HANDLERS, "backup_full", handler)
 
     cluster_id = _create_cluster(api_client)
-    submitted = api_client.post(
-        f"/backup/manual/full/cluster/{cluster_id}", json={"group_id": 1, "repository": "s3_repo"}
+    group_id = _create_group(api_client, cluster_id)
+    schedule = api_client.post(
+        f"/backup/schedules/cluster/{cluster_id}",
+        json={"job_type": "backup_full", "inventory_group_id": group_id, "repository": "s3_repo"},
     ).json()
+    submitted = {"id": schedule["last_run_job_id"]}
 
     deadline = time.time() + 2
     seen_running = None
@@ -178,15 +196,17 @@ def test_submit_job_failure_is_reported(api_client, monkeypatch):
         raise RuntimeError("connection refused")
 
     _mock_group_check(monkeypatch)
-    _mock_repository_check(monkeypatch)
+    _mock_schedule_repository_check(monkeypatch)
     monkeypatch.setitem(handlers.JOB_HANDLERS, "backup_full", failing_handler)
 
     cluster_id = _create_cluster(api_client)
-    submitted = api_client.post(
-        f"/backup/manual/full/cluster/{cluster_id}", json={"group_id": 1, "repository": "s3_repo"}
+    group_id = _create_group(api_client, cluster_id)
+    schedule = api_client.post(
+        f"/backup/schedules/cluster/{cluster_id}",
+        json={"job_type": "backup_full", "inventory_group_id": group_id, "repository": "s3_repo"},
     ).json()
 
-    final = _wait_for_terminal(api_client, submitted["id"])
+    final = _wait_for_terminal(api_client, schedule["last_run_job_id"])
 
     assert final["status"] == "FAILED"
     assert final["error_message"] == "connection refused"
@@ -196,18 +216,24 @@ def test_backend_override_is_honored(api_client, monkeypatch):
     from starrocks_br.jobs import handlers
 
     _mock_group_check(monkeypatch)
-    _mock_repository_check(monkeypatch)
+    _mock_schedule_repository_check(monkeypatch)
     monkeypatch.setitem(
         handlers.JOB_HANDLERS, "backup_full", lambda cluster, params, job_id, on_progress=None: {}
     )
 
     cluster_id = _create_cluster(api_client)
+    group_id = _create_group(api_client, cluster_id)
     response = api_client.post(
-        f"/backup/manual/full/cluster/{cluster_id}",
-        json={"group_id": 1, "repository": "s3_repo", "backend": "thread"},
+        f"/backup/schedules/cluster/{cluster_id}",
+        json={
+            "job_type": "backup_full",
+            "inventory_group_id": group_id,
+            "repository": "s3_repo",
+            "backend": "thread",
+        },
     )
 
-    assert response.status_code == 202
+    assert response.status_code == 201
     assert response.json()["backend"] == "thread"
 
 
@@ -217,8 +243,13 @@ def test_unrecognized_backend_value_is_rejected_with_422(api_client, monkeypatch
     cluster_id = _create_cluster(api_client)
 
     response = api_client.post(
-        f"/backup/manual/full/cluster/{cluster_id}",
-        json={"group_id": 1, "repository": "s3_repo", "backend": "kafka"},
+        f"/backup/schedules/cluster/{cluster_id}",
+        json={
+            "job_type": "backup_full",
+            "inventory_group_id": 1,
+            "repository": "s3_repo",
+            "backend": "kafka",
+        },
     )
 
     assert response.status_code == 422
@@ -227,89 +258,20 @@ def test_unrecognized_backend_value_is_rejected_with_422(api_client, monkeypatch
 def test_recognized_but_disabled_backend_is_rejected_with_422(api_client, monkeypatch):
     """"job" is a recognized backend identifier but not enabled in this test server
     (STARROCKS_BR_ENABLED_BACKENDS=thread) - it must be rejected by the enabled-
-    backend check in jobs.py, distinct from the schema-level enum check above."""
+    backend check, distinct from the schema-level enum check above."""
     _mock_group_check(monkeypatch)
-    _mock_repository_check(monkeypatch)
+    _mock_schedule_repository_check(monkeypatch)
     cluster_id = _create_cluster(api_client)
+    group_id = _create_group(api_client, cluster_id)
 
     response = api_client.post(
-        f"/backup/manual/full/cluster/{cluster_id}",
-        json={"group_id": 1, "repository": "s3_repo", "backend": "job"},
-    )
-
-    assert response.status_code == 422
-
-
-def test_submit_backup_full_unknown_group_is_404(api_client, monkeypatch):
-    _mock_group_check(monkeypatch, exists=False)
-    cluster_id = _create_cluster(api_client)
-
-    response = api_client.post(
-        f"/backup/manual/full/cluster/{cluster_id}", json={"group_id": 999, "repository": "s3_repo"}
-    )
-
-    assert response.status_code == 404
-
-
-def test_submit_backup_incremental_unknown_group_is_404(api_client, monkeypatch):
-    _mock_group_check(monkeypatch, exists=False)
-    cluster_id = _create_cluster(api_client)
-
-    response = api_client.post(
-        f"/backup/manual/incremental/cluster/{cluster_id}",
-        json={"group_id": 999, "repository": "s3_repo"},
-    )
-
-    assert response.status_code == 404
-
-
-def test_submit_backup_full_missing_group_is_422(api_client, monkeypatch):
-    _mock_group_check(monkeypatch, exists=False)
-    cluster_id = _create_cluster(api_client)
-
-    response = api_client.post(
-        f"/backup/manual/full/cluster/{cluster_id}", json={"repository": "s3_repo"}
-    )
-
-    assert response.status_code == 422
-
-
-def test_submit_backup_full_missing_repository_is_422(api_client, monkeypatch):
-    _mock_group_check(monkeypatch)
-    cluster_id = _create_cluster(api_client)
-
-    response = api_client.post(f"/backup/manual/full/cluster/{cluster_id}", json={"group_id": 1})
-
-    assert response.status_code == 422
-
-
-def test_submit_backup_full_unknown_repository_is_404(api_client, monkeypatch):
-    from starrocks_br.api.routes import _cluster_connect
-
-    _mock_group_check(monkeypatch)
-    monkeypatch.setattr(
-        _cluster_connect, "connect_or_503", lambda cluster: type(
-            "FakeDB", (), {"close": lambda self: None}
-        )()
-    )
-    monkeypatch.setattr(_cluster_connect.repository_module, "list_repositories", lambda db: [])
-    cluster_id = _create_cluster(api_client)
-
-    response = api_client.post(
-        f"/backup/manual/full/cluster/{cluster_id}", json={"group_id": 1, "repository": "missing_repo"}
-    )
-
-    assert response.status_code == 404
-
-
-def test_submit_backup_full_rejects_foreign_field_is_422(api_client, monkeypatch):
-    _mock_group_check(monkeypatch)
-    _mock_repository_check(monkeypatch)
-    cluster_id = _create_cluster(api_client)
-
-    response = api_client.post(
-        f"/backup/manual/full/cluster/{cluster_id}",
-        json={"group_id": 1, "repository": "s3_repo", "keep_last": 5},
+        f"/backup/schedules/cluster/{cluster_id}",
+        json={
+            "job_type": "backup_full",
+            "inventory_group_id": group_id,
+            "repository": "s3_repo",
+            "backend": "job",
+        },
     )
 
     assert response.status_code == 422
@@ -369,19 +331,17 @@ def test_submit_prune_extra_field_is_422(api_client):
     assert response.status_code == 422
 
 
-def _submit_backup_full(api_client, monkeypatch, cluster_id, group_id=1):
-    from starrocks_br.jobs import handlers
+def _submit_backup_full(api_client, monkeypatch, cluster_id, group_id=None):
+    """Submit a one-shot `backup_full` schedule and return the terminal Job it created.
 
-    _mock_group_check(monkeypatch)
-    _mock_repository_check(monkeypatch)
-    monkeypatch.setitem(
-        handlers.JOB_HANDLERS, "backup_full", lambda cluster, params, job_id, on_progress=None: {}
-    )
-    submitted = api_client.post(
-        f"/backup/manual/full/cluster/{cluster_id}",
-        json={"group_id": group_id, "repository": "s3_repo"},
-    ).json()
-    return _wait_for_terminal(api_client, submitted["id"])
+    `Schedule.inventory_group_id` is a real FK (unlike the retired manual route's plain
+    `Job.group_id` int), so a group must actually exist - one is created automatically when
+    the caller doesn't need a specific group id.
+    """
+    if group_id is None:
+        group_id = _create_group(api_client, cluster_id)
+    job, _schedule = _submit_via_one_shot_schedule(api_client, monkeypatch, cluster_id, group_id)
+    return job
 
 
 def _submit_prune(api_client, monkeypatch, cluster_id, group_id=1):
@@ -441,26 +401,29 @@ def test_backup_history_filters_by_status(api_client, monkeypatch):
     from starrocks_br.jobs import handlers
 
     cluster_id = _create_cluster(api_client)
+    group_id = _create_group(api_client, cluster_id)
     _mock_group_check(monkeypatch)
-    _mock_repository_check(monkeypatch)
+    _mock_schedule_repository_check(monkeypatch)
+
+    def _submit_one_shot():
+        return api_client.post(
+            f"/backup/schedules/cluster/{cluster_id}",
+            json={"job_type": "backup_full", "inventory_group_id": group_id, "repository": "s3_repo"},
+        ).json()
 
     monkeypatch.setitem(
         handlers.JOB_HANDLERS,
         "backup_full",
         lambda cluster, params, job_id, on_progress=None: (_ for _ in ()).throw(RuntimeError("boom")),
     )
-    failed = api_client.post(
-        f"/backup/manual/full/cluster/{cluster_id}", json={"group_id": 1, "repository": "s3_repo"}
-    ).json()
-    _wait_for_terminal(api_client, failed["id"])
+    failed_schedule = _submit_one_shot()
+    failed = _wait_for_terminal(api_client, failed_schedule["last_run_job_id"])
 
     monkeypatch.setitem(
         handlers.JOB_HANDLERS, "backup_full", lambda cluster, params, job_id, on_progress=None: {}
     )
-    succeeded = api_client.post(
-        f"/backup/manual/full/cluster/{cluster_id}", json={"group_id": 1, "repository": "s3_repo"}
-    ).json()
-    _wait_for_terminal(api_client, succeeded["id"])
+    succeeded_schedule = _submit_one_shot()
+    _wait_for_terminal(api_client, succeeded_schedule["last_run_job_id"])
 
     response = api_client.get(f"/backup/history/cluster/{cluster_id}", params={"status": "FAILED"})
 
@@ -509,10 +472,12 @@ def test_backup_history_filters_by_job_id_with_no_match(api_client, monkeypatch)
 
 def test_backup_history_filters_by_group_id(api_client, monkeypatch):
     cluster_id = _create_cluster(api_client)
-    group_1_job = _submit_backup_full(api_client, monkeypatch, cluster_id, group_id=1)
-    _submit_backup_full(api_client, monkeypatch, cluster_id, group_id=2)
+    group_1 = _create_group(api_client, cluster_id)
+    group_2 = _create_group(api_client, cluster_id)
+    group_1_job = _submit_backup_full(api_client, monkeypatch, cluster_id, group_id=group_1)
+    _submit_backup_full(api_client, monkeypatch, cluster_id, group_id=group_2)
 
-    response = api_client.get(f"/backup/history/cluster/{cluster_id}", params={"group_id": 1})
+    response = api_client.get(f"/backup/history/cluster/{cluster_id}", params={"group_id": group_1})
 
     assert response.status_code == 200
     body = response.json()
@@ -521,7 +486,7 @@ def test_backup_history_filters_by_group_id(api_client, monkeypatch):
 
 def test_backup_history_filters_by_group_id_with_no_match(api_client, monkeypatch):
     cluster_id = _create_cluster(api_client)
-    _submit_backup_full(api_client, monkeypatch, cluster_id, group_id=1)
+    _submit_backup_full(api_client, monkeypatch, cluster_id)
 
     response = api_client.get(f"/backup/history/cluster/{cluster_id}", params={"group_id": 999999})
 
@@ -531,12 +496,13 @@ def test_backup_history_filters_by_group_id_with_no_match(api_client, monkeypatc
 
 def test_backup_history_filters_by_group_id_and_job_type_combined(api_client, monkeypatch):
     cluster_id = _create_cluster(api_client)
-    backup_job = _submit_backup_full(api_client, monkeypatch, cluster_id, group_id=1)
-    _submit_prune(api_client, monkeypatch, cluster_id, group_id=1)
+    group_id = _create_group(api_client, cluster_id)
+    backup_job = _submit_backup_full(api_client, monkeypatch, cluster_id, group_id=group_id)
+    _submit_prune(api_client, monkeypatch, cluster_id, group_id=group_id)
 
     response = api_client.get(
         f"/backup/history/cluster/{cluster_id}",
-        params={"group_id": 1, "job_type": "backup_full"},
+        params={"group_id": group_id, "job_type": "backup_full"},
     )
 
     assert response.status_code == 200
@@ -544,22 +510,23 @@ def test_backup_history_filters_by_group_id_and_job_type_combined(api_client, mo
     assert [job["id"] for job in body] == [backup_job["id"]]
 
 
-def _create_group(api_client, cluster_id, name="g1") -> int:
+def _create_group(api_client, cluster_id, name=None) -> int:
     response = api_client.post(
         f"/inventories/cluster/{cluster_id}",
-        json={"name": name, "tables": [{"database": "sales_db", "table": "*"}]},
+        json={
+            "name": name or f"g-{uuid.uuid4().hex[:8]}",
+            "tables": [{"database": "sales_db", "table": "*"}],
+        },
     )
     assert response.status_code == 201
     return response.json()["id"]
 
 
 def _submit_via_one_shot_schedule(api_client, monkeypatch, cluster_id, group_id) -> dict:
-    from starrocks_br.api.routes import schedules as schedules_module
     from starrocks_br.jobs import handlers
 
-    monkeypatch.setattr(
-        schedules_module, "ensure_repository_exists", lambda cluster, repository_name: None
-    )
+    _mock_group_check(monkeypatch)
+    _mock_schedule_repository_check(monkeypatch)
     monkeypatch.setitem(
         handlers.JOB_HANDLERS, "backup_full", lambda cluster, params, job_id, on_progress=None: {}
     )
@@ -583,7 +550,7 @@ def test_backup_history_filters_by_schedule_id(api_client, monkeypatch):
     cluster_id = _create_cluster(api_client)
     group_id = _create_group(api_client, cluster_id)
     scheduled_job, schedule = _submit_via_one_shot_schedule(api_client, monkeypatch, cluster_id, group_id)
-    _submit_backup_full(api_client, monkeypatch, cluster_id, group_id=1)
+    _submit_backup_full(api_client, monkeypatch, cluster_id)
 
     response = api_client.get(
         f"/backup/history/cluster/{cluster_id}", params={"schedule_id": schedule["id"]}
@@ -601,7 +568,7 @@ def test_backup_history_filters_by_schedule_id_excludes_directly_submitted_jobs(
     cluster_id = _create_cluster(api_client)
     group_id = _create_group(api_client, cluster_id)
     scheduled_job, schedule = _submit_via_one_shot_schedule(api_client, monkeypatch, cluster_id, group_id)
-    direct_job = _submit_backup_full(api_client, monkeypatch, cluster_id, group_id=1)
+    direct_job = _submit_backup_full(api_client, monkeypatch, cluster_id)
 
     response = api_client.get(
         f"/backup/history/cluster/{cluster_id}", params={"schedule_id": schedule["id"]}
@@ -615,13 +582,14 @@ def test_backup_history_filters_by_schedule_id_excludes_directly_submitted_jobs(
 
 def test_backup_history_filters_by_group_id_paginates(api_client, monkeypatch):
     cluster_id = _create_cluster(api_client)
-    jobs = [_submit_backup_full(api_client, monkeypatch, cluster_id, group_id=1) for _ in range(3)]
-    _submit_backup_full(api_client, monkeypatch, cluster_id, group_id=2)
+    group_id = _create_group(api_client, cluster_id)
+    jobs = [_submit_backup_full(api_client, monkeypatch, cluster_id, group_id=group_id) for _ in range(3)]
+    _submit_backup_full(api_client, monkeypatch, cluster_id)
     expected_order = list(reversed(jobs))
 
     response = api_client.get(
         f"/backup/history/cluster/{cluster_id}",
-        params={"group_id": 1, "limit": 2, "offset": 1},
+        params={"group_id": group_id, "limit": 2, "offset": 1},
     )
 
     assert response.status_code == 200
@@ -644,13 +612,11 @@ def test_get_job_history_empty_for_pending_job(api_client, monkeypatch):
     from starrocks_br.jobs import handlers
 
     _mock_group_check(monkeypatch)
-    _mock_repository_check(monkeypatch)
+    _mock_schedule_repository_check(monkeypatch)
     monkeypatch.setitem(handlers.JOB_HANDLERS, "backup_full", handler)
 
     cluster_id = _create_cluster(api_client)
-    submitted = api_client.post(
-        f"/backup/manual/full/cluster/{cluster_id}", json={"group_id": 1, "repository": "s3_repo"}
-    ).json()
+    submitted = _create_one_shot_backup_full(api_client, cluster_id)
 
     try:
         response = api_client.get(f"/job/{submitted['id']}/history")
@@ -672,13 +638,11 @@ def test_get_backup_job_history_returns_time_ordered_entries(api_client, monkeyp
         return {}
 
     _mock_group_check(monkeypatch)
-    _mock_repository_check(monkeypatch)
+    _mock_schedule_repository_check(monkeypatch)
     monkeypatch.setitem(handlers.JOB_HANDLERS, "backup_full", handler)
 
     cluster_id = _create_cluster(api_client)
-    submitted = api_client.post(
-        f"/backup/manual/full/cluster/{cluster_id}", json={"group_id": 1, "repository": "s3_repo"}
-    ).json()
+    submitted = _create_one_shot_backup_full(api_client, cluster_id)
 
     _wait_for_terminal(api_client, submitted["id"])
 
@@ -752,13 +716,11 @@ def test_get_job_references_empty_for_pending_job(api_client, monkeypatch):
     from starrocks_br.jobs import handlers
 
     _mock_group_check(monkeypatch)
-    _mock_repository_check(monkeypatch)
+    _mock_schedule_repository_check(monkeypatch)
     monkeypatch.setitem(handlers.JOB_HANDLERS, "backup_full", handler)
 
     cluster_id = _create_cluster(api_client)
-    submitted = api_client.post(
-        f"/backup/manual/full/cluster/{cluster_id}", json={"group_id": 1, "repository": "s3_repo"}
-    ).json()
+    submitted = _create_one_shot_backup_full(api_client, cluster_id)
 
     try:
         response = api_client.get(f"/job/{submitted['id']}/references")
@@ -792,13 +754,11 @@ def test_get_job_references_returns_recorded_rows_for_successful_job(api_client,
     from starrocks_br.jobs import handlers
 
     _mock_group_check(monkeypatch)
-    _mock_repository_check(monkeypatch)
+    _mock_schedule_repository_check(monkeypatch)
     monkeypatch.setitem(handlers.JOB_HANDLERS, "backup_full", handler)
 
     cluster_id = _create_cluster(api_client)
-    submitted = api_client.post(
-        f"/backup/manual/full/cluster/{cluster_id}", json={"group_id": 1, "repository": "s3_repo"}
-    ).json()
+    submitted = _create_one_shot_backup_full(api_client, cluster_id)
 
     _wait_for_terminal(api_client, submitted["id"])
 
@@ -824,13 +784,11 @@ def test_get_job_references_empty_for_failed_job(api_client, monkeypatch):
     from starrocks_br.jobs import handlers
 
     _mock_group_check(monkeypatch)
-    _mock_repository_check(monkeypatch)
+    _mock_schedule_repository_check(monkeypatch)
     monkeypatch.setitem(handlers.JOB_HANDLERS, "backup_full", handler)
 
     cluster_id = _create_cluster(api_client)
-    submitted = api_client.post(
-        f"/backup/manual/full/cluster/{cluster_id}", json={"group_id": 1, "repository": "s3_repo"}
-    ).json()
+    submitted = _create_one_shot_backup_full(api_client, cluster_id)
 
     finished = _wait_for_terminal(api_client, submitted["id"])
     assert finished["status"] == "FAILED"

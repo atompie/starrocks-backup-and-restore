@@ -18,6 +18,7 @@ def create_job(
     params: dict,
     backend_name: str,
     schedule_id: int | None = None,
+    source_backup_job_id: int | None = None,
 ) -> Job:
     """Insert and commit a new Job row.
 
@@ -32,6 +33,7 @@ def create_job(
         backend=backend_name,
         repository=params.get("repository"),
         schedule_id=schedule_id,
+        source_backup_job_id=source_backup_job_id,
     )
     db.add(job)
     db.flush()

@@ -181,3 +181,43 @@ class ScheduleImmutableError(StarRocksBRError):
 class InvalidScheduleFieldsError(StarRocksBRError):
     def __init__(self, message: str):
         super().__init__(message)
+
+
+class ScheduleHasActiveJobError(StarRocksBRError):
+    def __init__(self, schedule_id: int):
+        self.schedule_id = schedule_id
+        super().__init__(
+            f"Schedule {schedule_id} has a PENDING or RUNNING backup job; cannot delete"
+        )
+
+
+class ScheduleHasActiveRestoreError(StarRocksBRError):
+    def __init__(self, schedule_id: int):
+        self.schedule_id = schedule_id
+        super().__init__(
+            f"Schedule {schedule_id} has a PENDING or RUNNING restore using one of its backup jobs; "
+            "cannot delete"
+        )
+
+
+class ScheduleHasIncrementalBaselineError(StarRocksBRError):
+    def __init__(self, schedule_id: int):
+        self.schedule_id = schedule_id
+        super().__init__(
+            f"Schedule {schedule_id} has a full backup that is the baseline of an existing "
+            "incremental backup from another schedule; cannot delete"
+        )
+
+
+class SchedulePendingDeletionError(StarRocksBRError):
+    def __init__(self, schedule_id: int):
+        self.schedule_id = schedule_id
+        super().__init__(f"Schedule {schedule_id} is pending deletion and cannot be modified")
+
+
+class RestoreSourcePendingDeletionError(StarRocksBRError):
+    def __init__(self, target_label: str):
+        self.target_label = target_label
+        super().__init__(
+            f"Backup '{target_label}' belongs to a schedule that is pending deletion; cannot restore"
+        )

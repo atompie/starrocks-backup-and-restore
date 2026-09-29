@@ -207,22 +207,22 @@ into section 5 — see that section's intro. What's left here needs Backup Refer
 the snapshot-dropping cleanup job, or the scheduler loop (section 9) for automatic expiry — neither
 exists yet — or is a separable API-surface removal (8.1 below).
 
-- [ ] 8.1 Retire `/backup/manual/full` and `/backup/manual/incremental` (no compatibility
+- [x] 8.1 Retire `/backup/manual/full` and `/backup/manual/incremental` (no compatibility
   wrappers): clients submit an immediate full backup by creating a one-shot schedule; incremental
   backups remain available only through recurring schedules (Q3). Update the
   `api-job-execution` and `api-scheduling` specs (was 8.5)
-- [ ] 8.2 Add job type `schedule_cleanup`: given a schedule id, `DROP SNAPSHOT` for every reference
+- [x] 8.2 Add job type `schedule_cleanup`: given a schedule id, `DROP SNAPSHOT` for every reference
   (Q8, needs section 6's Backup References), then delete the schedule's jobs; events, references
   and dependent restore jobs cascade (Q6); finally delete the schedule row (was 8.6)
-- [ ] 8.3 Schedule delete (`commands/schedules.delete_schedule` / `DELETE /backup/schedules/.../{id}`):
+- [x] 8.3 Schedule delete (`commands/schedules.delete_schedule` / `DELETE /backup/schedules/.../{id}`):
   validate synchronously — 409 if any job is `PENDING`/`RUNNING` (Q5); 409 if any of its full jobs is
   the `baseline_job_id` of an existing incremental in another schedule (Q2) — then submit a
   `schedule_cleanup` job and respond `202` with the job id (a **BREAKING** change to today's `204`
   contract; update `api-scheduling`) (was 8.7)
-- [ ] 8.4 Expiry: one-shot schedules past `created_at + expire_after_days` go through the same
+- [x] 8.4 Expiry: one-shot schedules past `created_at + expire_after_days` go through the same
   synchronous checks and `schedule_cleanup` job as 8.3, run from the scheduler tick in section 9. If
   blocked (Q2/Q5), skip, log a warning and retry on the next tick. (was 8.8)
-- [ ] 8.5 Tests: delete returns 202 and the cleanup job drops snapshots and rows, delete blocked by
+- [x] 8.5 Tests: delete returns 202 and the cleanup job drops snapshots and rows, delete blocked by
   active job or dependent incremental, expiry triggers cleanup, blocked expiry retried, never-expiring
   schedules kept (was the remainder of 8.9)
 

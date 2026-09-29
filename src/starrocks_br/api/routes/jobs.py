@@ -1,96 +1,25 @@
 import json
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from ... import exceptions
 from ...commands.jobs import get_job as _get_job_command
 from ...commands.jobs import get_job_history as _get_job_history_command
 from ...commands.jobs import get_job_references as _get_job_references_command
 from ...commands.jobs import list_jobs, submit_job
+from ...commands.restore import submit_restore_job
 from ...dal.metadata import inventory_groups
 from ...jobs.backend import UnknownBackendError
 from ...store.models import Job
 from ..auth import require_api_key
 from ..deps import get_db
-from ..schemas import (
-    BackupFullRequest,
-    BackupIncrementalRequest,
-    BackupReferenceRead,
-    HistoryEntryRead,
-    JobRead,
-    PruneRequest,
-    RestoreRequest,
-)
-from ._cluster_connect import ensure_repository_exists as _ensure_repository_exists
+from ..schemas import BackupReferenceRead, HistoryEntryRead, JobRead, PruneRequest, RestoreRequest
 from ._cluster_connect import get_cluster_or_404 as _get_cluster_or_404
 
 router = APIRouter(tags=["manual-backups"], dependencies=[Depends(require_api_key)])
 
 _DEFAULT_BACKUP_JOB_TYPES = ["backup_full", "backup_incremental"]
-
-
-def _submit(
-    db: Session, cluster_id: int, job_type: str, payload: BaseModel
-) -> Job:
-    cluster = _get_cluster_or_404(db, cluster_id)
-    params = payload.model_dump(exclude={"backend"})
-    try:
-        return submit_job(db, cluster, job_type, params, payload.backend)
-    except UnknownBackendError as e:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(e)) from e
-
-
-def _submit_backup_job(
-    db: Session,
-    cluster_id: int,
-    job_type: str,
-    payload: BackupFullRequest | BackupIncrementalRequest,
-) -> Job:
-    """Submit a backup_full/backup_incremental job, failing fast on an unknown group.
-
-    Per specs/api-job-execution "Submitting an operation returns immediately
-    with a job", a missing group is rejected with 422 by Pydantic before this
-    function runs; an unknown group is rejected synchronously with 404 before
-    a job is ever created, instead of letting the job fail later asynchronously.
-    """
-    cluster = _get_cluster_or_404(db, cluster_id)
-
-    if not inventory_groups.group_exists(db, cluster_id, payload.group_id):
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Inventory group id {payload.group_id} not found on cluster '{cluster.name}'",
-        )
-
-    _ensure_repository_exists(cluster, payload.repository)
-
-    params = payload.model_dump(exclude={"backend"})
-    try:
-        return submit_job(db, cluster, job_type, params, payload.backend)
-    except UnknownBackendError as e:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(e)) from e
-
-
-@router.post(
-    "/backup/manual/full/cluster/{cluster_id}",
-    response_model=JobRead,
-    status_code=status.HTTP_202_ACCEPTED,
-)
-def submit_backup_full(
-    cluster_id: int, payload: BackupFullRequest, db: Session = Depends(get_db)
-) -> Job:
-    return _submit_backup_job(db, cluster_id, "backup_full", payload)
-
-
-@router.post(
-    "/backup/manual/incremental/cluster/{cluster_id}",
-    response_model=JobRead,
-    status_code=status.HTTP_202_ACCEPTED,
-)
-def submit_backup_incremental(
-    cluster_id: int, payload: BackupIncrementalRequest, db: Session = Depends(get_db)
-) -> Job:
-    return _submit_backup_job(db, cluster_id, "backup_incremental", payload)
 
 
 @router.post(
@@ -101,7 +30,14 @@ def submit_backup_incremental(
 def submit_restore(
     cluster_id: int, payload: RestoreRequest, db: Session = Depends(get_db)
 ) -> Job:
-    return _submit(db, cluster_id, "restore", payload)
+    cluster = _get_cluster_or_404(db, cluster_id)
+    params = payload.model_dump(exclude={"backend"})
+    try:
+        return submit_restore_job(db, cluster, params, payload.backend)
+    except exceptions.RestoreSourcePendingDeletionError as e:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e)) from e
+    except UnknownBackendError as e:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(e)) from e
 
 
 def _submit_prune_job(db: Session, cluster_id: int, payload: PruneRequest) -> Job:

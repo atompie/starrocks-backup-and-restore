@@ -6,13 +6,41 @@ See `commands/backup.py` for the module-level rationale.
 from collections.abc import Callable
 from typing import Any
 
+from sqlalchemy.orm import Session
+
 from .. import restore
-from ..exceptions import NoTablesFoundError, RestoreExecutionError
-from ..store.models import Cluster
+from ..dal.metadata import restore_catalog
+from ..exceptions import NoTablesFoundError, RestoreExecutionError, RestoreSourcePendingDeletionError
+from ..store.models import Cluster, Job
 from ..store.session import session_scope
 from ._shared import connect, ensure_ready
+from .jobs import submit_job
 
 OnProgress = Callable[[dict], None] | None
+
+
+def submit_restore_job(
+    db: Session, cluster: Cluster, params: dict, requested_backend: str | None
+) -> Job:
+    """Resolve the restore's source backup and record it as `source_backup_job_id`, rejecting
+    submission if that backup's schedule is pending deletion (design.md "Use a durable
+    restore-to-backup relationship" / specs/api-job-execution "Restore submission cannot race
+    with source backup cleanup"). A `target_label` with no resolvable successful backup Job is
+    left with no source link - submission still proceeds and fails during execution exactly as
+    before, since resolving the label is not itself new validation.
+    """
+    target_label = params["target_label"]
+    source_job = restore_catalog.find_successful_job(db, cluster.id, target_label)
+    source_backup_job_id = source_job.id if source_job is not None else None
+
+    if source_backup_job_id is not None and restore_catalog.source_schedule_pending_deletion(
+        db, source_backup_job_id
+    ):
+        raise RestoreSourcePendingDeletionError(target_label)
+
+    return submit_job(
+        db, cluster, "restore", params, requested_backend, source_backup_job_id=source_backup_job_id
+    )
 
 
 def run_restore(

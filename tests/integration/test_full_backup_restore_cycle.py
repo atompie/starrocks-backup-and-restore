@@ -9,6 +9,7 @@ MinIO) on 127.0.0.1:9000 with a bucket named "test" - see `tests/integration/con
 for connection details. The whole module is skipped if either isn't reachable.
 """
 
+import json
 import time
 import uuid
 
@@ -57,7 +58,6 @@ def it_names():
         "cluster": f"it_cluster_{suffix}",
         "repository": f"it_repo_{suffix}",
         "group": f"it_group_{suffix}",
-        "backup_label": f"it_full_{suffix}",
     }
 
 
@@ -125,18 +125,24 @@ def test_full_backup_then_restore_recovers_dropped_database(
         assert group_resp.status_code == 201, group_resp.text
         group_id = group_resp.json()["id"]
 
-        # 4. Run a full backup.
-        backup_resp = api_client.post(
-            f"/backup/manual/full/cluster/{cluster_id}",
+        # 4. Run a full backup via a one-shot schedule - manual full backup submission is
+        # retired, so an immediate backup is only ever submitted this way now. A one-shot
+        # schedule has no way to pin a custom label (unlike the retired manual route's
+        # `name` field), so the label backup_full resolved on its own is read back from the
+        # finished job's `result_json` instead of being chosen up front.
+        schedule_resp = api_client.post(
+            f"/backup/schedules/cluster/{cluster_id}",
             json={
-                "group_id": group_id,
+                "job_type": "backup_full",
+                "inventory_group_id": group_id,
                 "repository": repository_name,
-                "name": seeded_database["backup_label"],
             },
         )
-        assert backup_resp.status_code == 202, backup_resp.text
-        backup_job = _wait_for_job(api_client, backup_resp.json()["id"])
+        assert schedule_resp.status_code == 201, schedule_resp.text
+        backup_job_id = schedule_resp.json()["last_run_job_id"]
+        backup_job = _wait_for_job(api_client, backup_job_id)
         assert backup_job["status"] == "SUCCESS", backup_job
+        backup_label = json.loads(backup_job["result_json"])["label"]
 
         # 5. Simulate total data loss: drop the whole database.
         #
@@ -156,7 +162,7 @@ def test_full_backup_then_restore_recovers_dropped_database(
         # 6. Restore from the full backup.
         restore_resp = api_client.post(
             f"/backup/manual/restore/cluster/{cluster_id}",
-            json={"target_label": seeded_database["backup_label"], "group_id": group_id},
+            json={"target_label": backup_label, "group_id": group_id},
         )
         assert restore_resp.status_code == 202, restore_resp.text
         restore_job = _wait_for_job(api_client, restore_resp.json()["id"])

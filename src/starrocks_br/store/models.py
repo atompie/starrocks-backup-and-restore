@@ -30,6 +30,7 @@ class JobType(str, enum.Enum):
     BACKUP_INCREMENTAL = "backup_incremental"
     RESTORE = "restore"
     PRUNE = "prune"
+    SCHEDULE_CLEANUP = "schedule_cleanup"
 
 
 class JobStatus(str, enum.Enum):
@@ -82,6 +83,9 @@ class Job(Base):
     baseline_job_id: Mapped[int | None] = mapped_column(
         ForeignKey("jobs.id", ondelete="SET NULL"), nullable=True, index=True
     )
+    source_backup_job_id: Mapped[int | None] = mapped_column(
+        ForeignKey("jobs.id", ondelete="CASCADE"), nullable=True, index=True
+    )
     created_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     started_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     finished_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -105,7 +109,12 @@ class Schedule(Base):
     next_run_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     retention: Mapped[int | None] = mapped_column(Integer, nullable=True)
     expire_after_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    last_run_job_id: Mapped[int | None] = mapped_column(ForeignKey("jobs.id"), nullable=True)
+    last_run_job_id: Mapped[int | None] = mapped_column(
+        ForeignKey("jobs.id", ondelete="SET NULL"), nullable=True
+    )
+    deletion_requested_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     created_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     updated_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, onupdate=_utcnow

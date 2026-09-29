@@ -14,6 +14,7 @@
 
 import datetime
 import threading
+import time
 
 CLUSTER_PAYLOAD = {
     "name": "prod-eu",
@@ -36,6 +37,16 @@ def _create_group(api_client, cluster_id, name="g1") -> int:
     )
     assert response.status_code == 201
     return response.json()["id"]
+
+
+def _wait_for_terminal(api_client, job_id, timeout=2.0) -> dict:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        body = api_client.get(f"/job/{job_id}").json()
+        if body["status"] in ("SUCCESS", "FAILED"):
+            return body
+        time.sleep(0.02)
+    raise TimeoutError("job did not finish in time")
 
 
 def _mock_repository_check(monkeypatch):
@@ -415,7 +426,9 @@ def test_delete_schedule_removes_it(api_client, monkeypatch):
 
     response = api_client.delete(f"/backup/schedules/cluster/{cluster_id}/schedule_id/{created['id']}")
 
-    assert response.status_code == 204
+    assert response.status_code == 202
+    cleanup_job = _wait_for_terminal(api_client, response.json()["id"])
+    assert cleanup_job["status"] == "SUCCESS"
     assert api_client.get(f"/backup/schedules/cluster/{cluster_id}/schedule_id/{created['id']}").status_code == 404
 
 
@@ -484,7 +497,7 @@ def test_run_due_with_no_schedules_is_a_no_op(api_client):
     response = api_client.post("/backup/schedules/run")
 
     assert response.status_code == 200
-    assert response.json() == {"triggered_job_ids": [], "triggered_count": 0}
+    assert response.json() == {"triggered_job_ids": [], "triggered_count": 0, "cleanup_job_ids": []}
 
 
 def test_run_due_is_idempotent_under_concurrent_calls(api_client, monkeypatch):
@@ -668,10 +681,13 @@ def test_deleting_a_one_shot_schedule_succeeds(api_client, monkeypatch):
     cluster_id = _create_cluster(api_client)
     group_id = _create_group(api_client, cluster_id)
     created = _create_one_shot_schedule(api_client, monkeypatch, cluster_id, group_id)
+    _wait_for_terminal(api_client, created["last_run_job_id"])
 
     response = api_client.delete(f"/backup/schedules/cluster/{cluster_id}/schedule_id/{created['id']}")
 
-    assert response.status_code == 204
+    assert response.status_code == 202
+    cleanup_job = _wait_for_terminal(api_client, response.json()["id"])
+    assert cleanup_job["status"] == "SUCCESS"
     assert api_client.get(f"/backup/schedules/cluster/{cluster_id}/schedule_id/{created['id']}").status_code == 404
 
 
