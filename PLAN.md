@@ -207,8 +207,10 @@ into section 5 — see that section's intro. What's left here needs Backup Refer
 the snapshot-dropping cleanup job, or the scheduler loop (section 9) for automatic expiry — neither
 exists yet — or is a separable API-surface removal (8.1 below).
 
-- [ ] 8.1 Replace `/backup/manual/full` with one-shot schedule creation (thin wrapper, or removal);
-  remove `/backup/manual/incremental` (Q3); update the `api-job-execution` spec (was 8.5)
+- [ ] 8.1 Retire `/backup/manual/full` and `/backup/manual/incremental` (no compatibility
+  wrappers): clients submit an immediate full backup by creating a one-shot schedule; incremental
+  backups remain available only through recurring schedules (Q3). Update the
+  `api-job-execution` and `api-scheduling` specs (was 8.5)
 - [ ] 8.2 Add job type `schedule_cleanup`: given a schedule id, `DROP SNAPSHOT` for every reference
   (Q8, needs section 6's Backup References), then delete the schedule's jobs; events, references
   and dependent restore jobs cascade (Q6); finally delete the schedule row (was 8.6)

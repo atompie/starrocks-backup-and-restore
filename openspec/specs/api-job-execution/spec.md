@@ -2,76 +2,34 @@
 
 ## Purpose
 
-Lets clients trigger backup, restore, and prune operations against a registered cluster as asynchronous jobs, observe their progress without blocking on the HTTP request, and lets operators choose (per job or by default) which execution backend runs the work so the same API contract can be served by an in-process thread today and by distributed workers later.
+Lets clients start restore and prune operations against a registered cluster as asynchronous jobs, observe job progress without blocking on the HTTP request, and lets operators choose (per job or by default) which execution backend runs the work. Backup jobs are created through recurring or one-shot schedules as specified by `api-scheduling`; the manual full and incremental backup submission routes are retired.
 
 ## Requirements
 
 ### Requirement: Submitting an operation returns immediately with a job
-The system SHALL accept requests to start a full backup, incremental backup, restore, or prune
-operation against a registered cluster, SHALL create a job record in PENDING state, SHALL return
+The system SHALL accept requests to start a restore or prune operation against a registered
+cluster, SHALL create a job record in PENDING state, SHALL return
 an HTTP 202 response containing the job id and status without waiting for the operation to
-complete, and SHALL begin executing the operation asynchronously. For a full or incremental backup
-request, the system SHALL reject a request that is missing `group_id` (or supplies a value that
-cannot be parsed as an inventory group id) with HTTP 422 before any job is created. For a full or
-incremental backup request that does supply a `group_id`, the system SHALL synchronously verify
-that an inventory group with that id exists on the target cluster before creating the job, and
-SHALL respond with HTTP 404 without creating a job if it does not. A full or incremental backup
-request SHALL also include a `repository` naming the destination backup repository; the system
-SHALL reject a request missing `repository` with HTTP 422 before any job is created, and SHALL
-synchronously verify that a repository with that name currently exists on the target cluster
-(via the same live StarRocks-side catalog lookup used to list repositories) before creating the
-job, responding with HTTP 404 without creating a job if it does not. An inventory group targeted by
-a full or incremental backup request MAY span more than one database; the system SHALL execute one
-StarRocks backup operation per database in the group under the single created Backup Job, and SHALL
-record backup references for every database/table the job covers once each database's operation
-reaches `FINISHED`.
+complete, and SHALL begin executing the operation asynchronously. Backup Jobs created by schedule
+submission SHALL use the same asynchronous job lifecycle and SHALL record references for every
+database/table covered once each database's StarRocks operation reaches `FINISHED`.
 
-#### Scenario: Full backup submission
-- **WHEN** an authenticated client submits a full backup request for a registered cluster, an
-  inventory group id that exists on that cluster, and a repository that exists on that cluster
-- **THEN** the system responds with HTTP 202, a job id, and status PENDING, and the operation
-  continues running after the response is sent
+#### Scenario: Manual backup submission routes are retired
+- **WHEN** an authenticated client submits a request to `/backup/manual/full/cluster/{cluster_id}`
+  or `/backup/manual/incremental/cluster/{cluster_id}`
+- **THEN** the request is rejected with HTTP 404 and creates no job; clients create a one-shot
+  schedule for an immediate full backup or a recurring schedule for an incremental backup
 
 #### Scenario: Submission against an unknown cluster
 - **WHEN** an authenticated client submits any job against a cluster id that is not registered
 - **THEN** the system responds with HTTP 404 and does not create a job
-
-#### Scenario: Full or incremental backup submitted with an unknown group
-- **WHEN** an authenticated client submits a full or incremental backup request naming an
-  inventory group id that does not exist on the target cluster
-- **THEN** the system responds with HTTP 404, does not create a job, and no asynchronous failure
-  is produced
-
-#### Scenario: Full or incremental backup submitted with no group
-- **WHEN** an authenticated client submits a full or incremental backup request with no inventory
-  group id specified, or one that cannot be parsed as an id
-- **THEN** the system responds with HTTP 422 before any job is created, rather than accepting the
-  request and failing asynchronously
-
-#### Scenario: Full or incremental backup submitted with no repository
-- **WHEN** an authenticated client submits a full or incremental backup request with no
-  `repository` specified
-- **THEN** the system responds with HTTP 422 before any job is created, rather than accepting the
-  request and failing asynchronously
-
-#### Scenario: Full or incremental backup submitted with an unknown repository
-- **WHEN** an authenticated client submits a full or incremental backup request naming a
-  `repository` that does not exist on the target cluster
-- **THEN** the system responds with HTTP 404, does not create a job, and no asynchronous failure
-  is produced
-
-#### Scenario: Full backup submitted for a group spanning multiple databases
-- **WHEN** an authenticated client submits a full backup request naming an inventory group whose
-  table memberships span two databases
-- **THEN** the system responds with HTTP 202 and a single job id, and the job's execution backs up
-  both databases, recording backup references for each once its StarRocks operation finishes
 
 ### Requirement: Each job-submission endpoint validates a request schema scoped to its own fields
 The system SHALL reject a job-submission request that includes a field not used by that specific
 endpoint with HTTP 422, rather than silently accepting and ignoring it.
 
 #### Scenario: Foreign field rejected
-- **WHEN** an authenticated client submits a full backup request that includes a field only used
+- **WHEN** an authenticated client submits a restore request that includes a field only used
   by another job type (e.g. `keep_last`, which only prune uses)
 - **THEN** the system responds with HTTP 422 and does not create a job
 
@@ -359,7 +317,7 @@ The system SHALL produce the same backup labels, bookkeeping records (persisted 
 SQLite metastore rather than on the StarRocks side), and StarRocks-side snapshot behavior for a
 given backup/restore/prune operation regardless of which execution backend runs it.
 
-#### Scenario: API-submitted full backup is indistinguishable from a CLI backup
+#### Scenario: Schedule-submitted full backup uses the selected backend
 - **WHEN** the same full backup (same cluster, inventory group, and repository) is submitted via
   the API twice, once to each of two enabled execution backends
 - **THEN** the resulting snapshot label, the backup job's own recorded label/repository and

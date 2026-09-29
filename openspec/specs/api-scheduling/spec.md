@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Lets operators define recurring backup schedules per cluster/group through the API instead of maintaining external cron entries by hand, and lets a lightweight periodic trigger (cron, Kubernetes CronJob) ask the server to run whatever is due.
+Lets operators define recurring and one-shot backup schedules per cluster/group through the API instead of maintaining external cron entries by hand, and lets a lightweight periodic trigger (cron, Kubernetes CronJob) ask the server to run whatever is due. Schedules are the API path for creating backup jobs: one-shot schedules start full backups immediately, while incremental backups are available only through recurring schedules.
 
 ## Requirements
 
