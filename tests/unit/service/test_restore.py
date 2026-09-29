@@ -1192,6 +1192,7 @@ def test_should_build_restore_command_without_rename():
 def test_should_perform_atomic_rename(mocker):
     """Test performing atomic rename of temporary tables."""
     db = mocker.Mock()
+    db.query.return_value = [("fact_sales",), ("dim_customers",)]
     tables = ["sales_db.fact_sales", "sales_db.dim_customers"]
     rename_suffix = "_restored"
 
@@ -1220,9 +1221,22 @@ def test_should_perform_atomic_rename(mocker):
     )
 
 
+def test_should_skip_backup_rename_when_live_table_is_missing(mocker):
+    """Restoring into a dropped database has no live table to move aside."""
+    db = mocker.Mock()
+    db.query.return_value = [("fact_sales_restored",)]
+
+    result = restore._perform_atomic_rename(db, ["demo_db.fact_sales"], "_restored")
+
+    assert result["success"] is True
+    calls = [call[0][0] for call in db.execute.call_args_list]
+    assert calls == ["ALTER TABLE `demo_db`.`fact_sales_restored` RENAME `fact_sales`"]
+
+
 def test_should_handle_atomic_rename_failure(mocker):
     """Test handling of atomic rename failure."""
     db = mocker.Mock()
+    db.query.return_value = [("fact_sales",)]
     db.execute.side_effect = Exception("Rename failed")
     tables = ["sales_db.fact_sales"]
     rename_suffix = "_restored"

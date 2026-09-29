@@ -69,14 +69,23 @@ def perform_atomic_rename(db, tables: list[str], rename_suffix: str) -> dict:
     """Perform atomic rename of temporary tables to make them live."""
     try:
         rename_statements = []
+        existing_by_database: dict[str, set[str]] = {}
         for table in tables:
             database, table_name = table.split(".", 1)
             temp_table_name = f"{table_name}{rename_suffix}"
-            backup_table_name = _generate_timestamped_backup_name(table_name)
 
-            rename_statements.append(
-                f"ALTER TABLE {utils.build_qualified_table_name(database, table_name)} RENAME {utils.quote_identifier(backup_table_name)}"
-            )
+            if database not in existing_by_database:
+                existing_by_database[database] = {
+                    row[0] for row in db.query(f"SHOW TABLES FROM {utils.quote_identifier(database)}")
+                }
+
+            # The live table is absent when restoring into a dropped database/table;
+            # there is nothing to move aside in that case.
+            if table_name in existing_by_database[database]:
+                backup_table_name = _generate_timestamped_backup_name(table_name)
+                rename_statements.append(
+                    f"ALTER TABLE {utils.build_qualified_table_name(database, table_name)} RENAME {utils.quote_identifier(backup_table_name)}"
+                )
             rename_statements.append(
                 f"ALTER TABLE {utils.build_qualified_table_name(database, temp_table_name)} RENAME {utils.quote_identifier(table_name)}"
             )
