@@ -26,4 +26,4 @@
 
 - [ ] 5.1 Tests: failed or deleted source rejected; restore leaves the source job, events and references unchanged (SPEC §29); restore of a non-latest job; incremental chain; cross-cluster repository 409; incremental cross-cluster 422
 - [ ] 5.2 Integration test restoring into a second cluster (skips cleanly when no second cluster is reachable); verify it runs or skips per `tests/integration/conftest.py`
-- [ ] 5.3 Update `docs/` restore API description and note the breaking change; align `PLAN.md` §11 wording (`source_backup_job_id`, no `job_events`) in the same commit
+- [ ] 5.3 Update `docs/` restore API description and note the breaking change; verify the docs no longer mention `/backup/manual/restore` or `target_label`

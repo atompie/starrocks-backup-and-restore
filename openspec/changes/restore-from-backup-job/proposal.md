@@ -39,4 +39,4 @@ Operators need to pick any successful Backup Job and recreate its databases on a
 - API: breaking change to restore submission (route and body); new restore listing routes.
 - Tests: unit tests for validation, chain resolution and cross-cluster repository checks; an integration test
   needing two StarRocks clusters sharing one S3 (see design.md).
-- Docs: `PLAN.md` §11 wording (`job_events`, `source_job_id` name) should be aligned after this change.
+- Docs: `docs/` restore API description.

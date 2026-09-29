@@ -115,16 +115,25 @@ builds only on earlier ones.
 
 ## 11. Restore from a Backup Job, into any cluster
 
-- [ ] 11.1 Add `Job.source_job_id` (FK `ON DELETE CASCADE`, Q6) and `Job.target_cluster_id` for restore jobs; drop `restore_history` in favour of `job_events`
-- [ ] 11.2 Restore request takes `source_job_id` and optional `target_cluster_id` (default: source cluster). Validate synchronously: exists, is a backup, `SUCCESS`, data not deleted → otherwise 404/409.
-- [ ] 11.3 Resolve the chain from references: full → `[full]`; incremental → `[baseline full, incremental]` using `baseline_job_id` (replaces the label lookup in `restore.py`)
-- [ ] 11.4 Cross-cluster: ensure the target cluster has a repository at the same location (register it read-only if missing), then `RESTORE SNAPSHOT` on the target; take the concurrency slot on the target cluster
+- [ ] 11.1 Add `Job.target_cluster_id` (nullable, null = source cluster) for restore jobs. `Job.source_backup_job_id` (FK `ON DELETE CASCADE`, Q6) already exists; keep its name. `Job.cluster_id` stays the source cluster; admission, concurrency and reconcile use the target. Keep `restore_history` (per-kind history tables, add-job-history-log); there is no `job_events` table.
+- [ ] 11.2 Restore request takes `source_job_id` and optional `target_cluster_id` (default: source cluster; path cluster is the source). Validate synchronously: exists, belongs to the path cluster, is a backup, `SUCCESS`, data not deleted, schedule not pending deletion → 404/409. Cross-cluster accepts full backups only (incremental → 422). `group_id` is resolved on the source cluster.
+- [ ] 11.3 Resolve the chain from references: full → `[full]`; incremental (same cluster only) → `[baseline full, incremental]` using `baseline_job_id` (replaces the label lookup in `restore.py`). Known gap: `baseline_job_id` holds only the first database's baseline for multi-database incrementals.
+- [ ] 11.4 Cross-cluster: restore never creates repositories. At submit, verify live that the target cluster has a repository at the same location as the source's (using the target's own name); otherwise 409 naming the source repository and its location (502/503 if a cluster is unreachable). At execution create the database on the target if missing, then `RESTORE SNAPSHOT` on the target; take the concurrency slot on the target cluster
 - [ ] 11.5 Routes: `POST /restore/manual/cluster/{cluster_id}`, `GET /restore/history/cluster/{cluster_id}` (filters `source_job_id`, `status`), `GET /backup/job/{job_id}/restores`; retire `/backup/manual/restore/...`
-- [ ] 11.6 Tests: failed or deleted source rejected; restore writes nothing to the source job, events or references (§27); restore of a non-latest job; incremental chain resolution; cross-cluster repository setup
+- [ ] 11.6 Tests: failed or deleted source rejected; restore writes nothing to the source job, events or references (§27); restore of a non-latest job; incremental chain resolution; cross-cluster repository 409 and incremental 422; integration test into a second cluster (needs two StarRocks clusters sharing S3)
 
 ## 12. Restore into differnet database then the source database
 
-- [ ] 12.1 Investigate how can we implement restore into a different database than the source database
+Builds on §11 (`source_job_id`, `target_cluster_id`, chain resolution, cross-cluster repository check). Works on the same cluster and cross-cluster.
+
+- [ ] 12.1 Investigate: confirm against a real StarRocks that `RESTORE SNAPSHOT <target_db>.<snapshot> FROM <repo> ON (...)` restores into a database different from the backed-up one (target db name in the `RESTORE` statement vs. the source db baked into the snapshot). Record findings (works / constraints / incremental-chain behaviour / need for table `AS` aliases) in the change `design.md` before implementing.
+- [ ] 12.2 Add an optional `target_database` to the restore request (`POST /restore/manual/cluster/{cluster_id}`; default: source database). Store it on the restore job (nullable column, Alembic migration; null = restore into the source database). Expose it in `JobRead` and the restore history filters.
+- [ ] 12.3 Multi-database backups: accept a database mapping (`{source_db: target_db}`) instead of a single name; a single `target_database` is valid only when the backup covers exactly one database (otherwise 422). Unmapped databases restore into their source name.
+- [ ] 12.4 Validate synchronously: `target_database` is a legal StarRocks identifier, and the restore does not overwrite existing tables unintentionally — 409 if the target database already contains a table that the restore would replace (unless an explicit overwrite flag is set, if 12.1 shows overwrite is needed). Restoring into the source database on the source cluster keeps today's behaviour.
+- [ ] 12.5 Execution: create the target database if missing, then issue `RESTORE SNAPSHOT` against the target database on the target cluster, applying the mapping. Poll with `SHOW RESTORE FROM <target_db>` (not the source db) and reflect the target database in `restore_history` events. Keep the target-cluster concurrency slot and short metadata transactions (§11.4).
+- [ ] 12.6 Incremental chains: apply the same target database to every restore step in the chain (`[baseline full, incremental]`); reject the request if 12.1 shows a chain cannot be restored into a different database.
+- [ ] 12.7 Update `SPEC.md` (restore section) and the `api-*` spec for the restore route, documenting `target_database`, the mapping rule and error codes.
+- [ ] 12.8 Tests: unit/service — validation (bad identifier, multi-database without mapping, existing-table conflict), request → restore statement uses the target database, polling uses the target database, source job/references untouched; integration — restore a backup into a different database on the same cluster and verify data, then the same cross-cluster.
 
 ## 13. Consistency and integrity
 
