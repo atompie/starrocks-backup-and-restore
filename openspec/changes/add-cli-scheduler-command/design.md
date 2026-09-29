@@ -78,3 +78,5 @@ Per `AGENTS.md`, metadata database sessions are committed/closed before opening 
   *Mitigation:* Locks carry `expires_at = acquired_at + STARROCKS_BR_SCHEDULER_LOCK_TIMEOUT_SECONDS` (default 300s). The atomic conditional update reclaims any expired lock on the subsequent tick and logs a warning.
 - **[Risk] Health check overhead on metadata store**  
   *Mitigation:* `GET /health` only queries the single row of `scheduler_lock` (`SELECT last_tick_at FROM scheduler_lock WHERE id = 1`), maintaining fast response times without lock contention.
+- **[Risk] `api-scheduling`'s existing "one-shot never selected by run-due" scenario read as blocking expiry**  
+  *Mitigation:* that scenario governs only recurring backup submission (`run_due_schedules`), not the separate `expire_due_schedules` path this tick also invokes; corrected in this change's `specs/api-scheduling/spec.md` to say so explicitly, so the merged main spec is unambiguous once both changes archive.

@@ -53,6 +53,7 @@ Provide `commands.schedules.expire_due_schedules(db, now)` as the shared command
 - **A source-backup migration may not match every legacy Restore Job** → backfill only unambiguous successful backup matches and retain unmatched history; new restore submissions always record the FK.
 - **Concurrent delete and due-dispatch transactions can contend** → use a conditional metadata update including the deletion marker and keep validation, marker, and cleanup-job creation in short transactions.
 - **Clients relying on manual backup endpoints or `204` schedule deletion break** → document the route migration to one-shot/recurring schedules and return the cleanup job id for polling.
+- **`add-cli-scheduler-command`'s existing `api-scheduling` delta scenario said a one-shot schedule is "never modified" by due-schedule execution, which read as contradicting this change's expiry cleanup** → corrected in that change's spec delta to scope the exclusion to recurring backup submission only, distinct from `expire_due_schedules`; verify on sync that the merged main `api-scheduling/spec.md` keeps both scenarios non-contradictory.
 
 ## Migration Plan
 
