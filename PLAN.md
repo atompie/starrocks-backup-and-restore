@@ -195,10 +195,10 @@ separable API-surface removal. See §0c for the decisions (Q9-Q12) this merge re
 
 ## 7. Backup job lifecycle hardening
 
-- [ ] 7.1 Split StarRocks polling from metadata writes in `commands/backup.py` / `executor.execute_backup` so no session stays open during polling
-- [ ] 7.2 Always release the concurrency slot in `finally`; on submit failure, record `ERROR` + `FAILED` with the real message
-- [ ] 7.3 Replace `except Exception: pass` in the executor with logged errors
-- [ ] 7.4 Tests: slot is released on failure; failure produces `ERROR` then `FAILED`
+- [x] 7.1 Split StarRocks polling from metadata writes in `commands/backup.py` / `executor.execute_backup` so no session stays open during polling
+- [x] 7.2 Always release the concurrency slot in `finally`; on submit failure, record `ERROR` + `FAILED` with the real message
+- [x] 7.3 Replace `except Exception: pass` in the executor with logged errors
+- [x] 7.4 Tests: slot is released on failure; failure produces `ERROR` then `FAILED`
 
 ## 8. Retire manual backup routes; schedule delete/expiry cascade
 

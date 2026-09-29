@@ -4,7 +4,7 @@ import pytest
 
 from starrocks_br import exceptions
 from starrocks_br.commands import backup
-from starrocks_br.store.models import BackupReference, Cluster, JobStatus
+from starrocks_br.store.models import BackupHistory, BackupReference, Cluster, JobStatus, RunStatus
 
 
 @pytest.fixture
@@ -77,9 +77,8 @@ def test_run_backup_full_builds_same_command_as_cli(
     assert kwargs["repository"] == "test_repo"
     assert "ops_database" not in kwargs
     assert args[0] is mock_db
-    assert args[1] is fake_session
-    assert args[2] == cluster.id
-    assert args[3] == "BACKUP DATABASE test_db SNAPSHOT test_db_20251016_full TO test_repo"
+    assert args[1] == cluster.id
+    assert args[2] == "BACKUP DATABASE test_db SNAPSHOT test_db_20251016_full TO test_repo"
 
 
 def test_run_backup_full_raises_on_unhealthy_cluster(
@@ -340,3 +339,177 @@ def test_run_backup_full_multi_database_stops_and_keeps_only_prior_successes_on_
     assert {r.database_name for r in rows} == {"orders_db"}
     complete_slot.assert_called_once()
     assert complete_slot.call_args.kwargs["final_state"] == "FAILED"
+
+
+def test_run_backup_full_execute_backup_runs_with_no_open_session(
+    cluster, mock_decrypt, mock_db, mock_healthy_cluster, mock_repo_exists, mocker
+):
+    """No metadata-store session may be open while `execute_backup` runs - it polls StarRocks for
+    up to a day, and AGENTS.md forbids holding a transaction open across a StarRocks operation."""
+    open_scopes = []
+
+    @contextmanager
+    def _tracking_scope():
+        open_scopes.append(1)
+        try:
+            yield mocker.Mock()
+        finally:
+            open_scopes.pop()
+
+    mocker.patch("starrocks_br.commands.backup.session_scope", _tracking_scope)
+    mocker.patch("starrocks_br.dal.metadata.labels.determine_backup_label", return_value="lbl")
+    mocker.patch(
+        "starrocks_br.planner.find_tables_by_group", return_value=[{"database": "d", "table": "t"}]
+    )
+    mocker.patch("starrocks_br.planner.validate_tables_exist")
+    mocker.patch("starrocks_br.planner.build_full_backup_command", return_value="BACKUP ...")
+    mocker.patch("starrocks_br.planner.get_all_partitions_for_tables", return_value=[])
+    mocker.patch("starrocks_br.concurrency.reserve_job_slot")
+    mocker.patch("starrocks_br.concurrency.complete_job_slot")
+    mocker.patch("starrocks_br.planner.record_backup_references")
+
+    open_scope_count_during_execute_backup = []
+
+    def _execute_backup(*args, **kwargs):
+        open_scope_count_during_execute_backup.append(len(open_scopes))
+        return {"success": True, "final_status": {"state": "FINISHED"}}
+
+    mocker.patch("starrocks_br.executor.execute_backup", side_effect=_execute_backup)
+
+    backup.run_backup_full(cluster, {"group_id": 42, "repository": "test_repo"}, job_id=1)
+
+    assert open_scope_count_during_execute_backup == [0]
+
+
+def test_run_backup_full_releases_slot_when_failure_precedes_execute_backup(
+    mock_decrypt,
+    mock_db,
+    real_session,
+    mock_healthy_cluster,
+    mock_repo_exists,
+    mock_validate_tables_exist,
+    mocker,
+    make_cluster,
+    make_job,
+    history_session_factory,
+):
+    """A failure raised before `execute_backup` is ever called (e.g. no tables to back up) must
+    still release the `backup` concurrency slot - not just failures `execute_backup` itself
+    reports - and must record why the job failed."""
+    cluster = make_cluster()
+    job = make_job(cluster.id, job_type="backup_full", status=JobStatus.PENDING.value)
+    mocker.patch(
+        "starrocks_br.commands.backup.get_session_factory", return_value=history_session_factory
+    )
+
+    mocker.patch("starrocks_br.planner.resolve_group_databases", return_value=["sales_db"])
+    mocker.patch("starrocks_br.planner.find_tables_by_group", return_value=[])
+    mocker.patch(
+        "starrocks_br.dal.metadata.labels.determine_backup_label", return_value="sales_db_lbl"
+    )
+    mocker.patch("starrocks_br.planner.build_full_backup_command", return_value=None)
+    execute_backup = mocker.patch("starrocks_br.executor.execute_backup")
+
+    with pytest.raises(RuntimeError, match="No tables found"):
+        backup.run_backup_full(cluster, {"group_id": 42, "repository": "test_repo"}, job_id=job.id)
+
+    execute_backup.assert_not_called()
+
+    row = real_session.query(RunStatus).filter_by(cluster_id=cluster.id, scope="backup").one()
+    assert row.state == "FAILED"
+
+    history_rows = real_session.query(BackupHistory).filter_by(job_id=job.id).all()
+    assert len(history_rows) == 1
+    assert history_rows[0].status == "FAILED"
+    assert "No tables found" in history_rows[0].message
+
+
+def test_run_backup_full_releases_slot_when_recording_references_fails_after_success(
+    mock_decrypt,
+    mock_db,
+    real_session,
+    mock_healthy_cluster,
+    mock_repo_exists,
+    mock_validate_tables_exist,
+    mocker,
+    make_cluster,
+    make_job,
+    history_session_factory,
+):
+    """A failure recording backup references after a successful `execute_backup` call must still
+    release the slot and leave a `FAILED` history entry explaining why."""
+    cluster = make_cluster()
+    job = make_job(cluster.id, job_type="backup_full", status=JobStatus.PENDING.value)
+    mocker.patch(
+        "starrocks_br.commands.backup.get_session_factory", return_value=history_session_factory
+    )
+
+    mocker.patch("starrocks_br.planner.resolve_group_databases", return_value=["sales_db"])
+    mocker.patch(
+        "starrocks_br.planner.find_tables_by_group", return_value=[{"database": "sales_db", "table": "t"}]
+    )
+    mocker.patch(
+        "starrocks_br.dal.metadata.labels.determine_backup_label", return_value="sales_db_lbl"
+    )
+    mocker.patch("starrocks_br.planner.build_full_backup_command", return_value="BACKUP CMD")
+    mocker.patch("starrocks_br.planner.get_all_partitions_for_tables", return_value=[])
+    mocker.patch(
+        "starrocks_br.executor.execute_backup",
+        return_value={"success": True, "final_status": {"state": "FINISHED"}},
+    )
+    mocker.patch(
+        "starrocks_br.planner.record_backup_references", side_effect=RuntimeError("db write failed")
+    )
+
+    with pytest.raises(RuntimeError, match="db write failed"):
+        backup.run_backup_full(cluster, {"group_id": 42, "repository": "test_repo"}, job_id=job.id)
+
+    row = real_session.query(RunStatus).filter_by(cluster_id=cluster.id, scope="backup").one()
+    assert row.state == "FAILED"
+
+    history_rows = real_session.query(BackupHistory).filter_by(job_id=job.id).all()
+    assert len(history_rows) == 1
+    assert history_rows[0].status == "FAILED"
+    assert "db write failed" in history_rows[0].message
+
+
+def test_run_backup_incremental_releases_slot_when_failure_precedes_execute_backup(
+    mock_decrypt,
+    mock_db,
+    real_session,
+    mock_healthy_cluster,
+    mock_repo_exists,
+    mocker,
+    make_cluster,
+    make_job,
+    history_session_factory,
+):
+    """Same guarantee as the full-backup case, for the incremental loop."""
+    cluster = make_cluster()
+    job = make_job(cluster.id, job_type="backup_incremental", status=JobStatus.PENDING.value)
+    mocker.patch(
+        "starrocks_br.commands.backup.get_session_factory", return_value=history_session_factory
+    )
+
+    mocker.patch("starrocks_br.planner.resolve_group_databases", return_value=["sales_db"])
+    mocker.patch(
+        "starrocks_br.dal.metadata.labels.determine_backup_label", return_value="sales_db_lbl"
+    )
+    mocker.patch("starrocks_br.planner.find_recent_partitions", return_value=([], 99))
+    execute_backup = mocker.patch("starrocks_br.executor.execute_backup")
+
+    with pytest.raises(RuntimeError, match="No partitions found"):
+        backup.run_backup_incremental(
+            cluster, {"group_id": 42, "repository": "test_repo"}, job_id=job.id
+        )
+
+    execute_backup.assert_not_called()
+
+    row = real_session.query(RunStatus).filter_by(cluster_id=cluster.id, scope="backup").one()
+    assert row.state == "FAILED"
+
+    history_rows = real_session.query(BackupHistory).filter_by(job_id=job.id).all()
+    assert len(history_rows) == 1
+    assert history_rows[0].status == "FAILED"
+    assert "No partitions found" in history_rows[0].message
+

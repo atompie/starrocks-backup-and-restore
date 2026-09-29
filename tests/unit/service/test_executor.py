@@ -12,11 +12,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from contextlib import contextmanager
 from unittest.mock import Mock, patch
 
 import pytest
 
 from starrocks_br import executor
+
+
+@contextmanager
+def _fake_session_scope(session):
+    yield session
 
 
 @pytest.fixture
@@ -147,7 +153,6 @@ def test_should_handle_snapshot_exists_error_in_execute_backup(mocker, db_with_t
 
     result = executor.execute_backup(
         db,
-        sqlite_session,
         cluster.id,
         backup_command,
         repository="repo",
@@ -257,7 +262,6 @@ def test_should_execute_full_backup_workflow(
 
     result = executor.execute_backup(
         db,
-        sqlite_session,
         cluster.id,
         backup_command,
         max_polls=5,
@@ -286,16 +290,19 @@ def test_should_execute_full_backup_workflow(
     assert [row.status for row in rows] == ["PENDING", "FINISHED", "SUCCESS"]
 
 
-def test_should_handle_backup_execution_failure_in_workflow(mocker, db_with_timezone, sqlite_session, make_cluster):
+def test_should_handle_backup_execution_failure_in_workflow(
+    mocker, db_with_timezone, sqlite_session, make_cluster, make_job, history_session_factory
+):
     db = db_with_timezone
     cluster = make_cluster()
+    job = make_job(cluster.id)
+    mocker.patch("starrocks_br.executor.get_session_factory", return_value=history_session_factory)
     db.execute.side_effect = Exception("Database connection failed")
 
     backup_command = "BACKUP DATABASE test_db SNAPSHOT test_backup TO repo"
 
     result = executor.execute_backup(
         db,
-        sqlite_session,
         cluster.id,
         backup_command,
         max_polls=5,
@@ -304,13 +311,25 @@ def test_should_handle_backup_execution_failure_in_workflow(mocker, db_with_time
         backup_type="full",
         scope="backup",
         database="test_db",
-        job_id=1,
+        job_id=job.id,
     )
 
     assert result["success"] is False
     assert result["final_status"] is None
     assert "Failed to submit backup command" in result["error_message"]
     assert "Database connection failed" in result["error_message"]
+
+    from starrocks_br.store.models import BackupHistory
+
+    rows = (
+        sqlite_session.query(BackupHistory)
+        .filter_by(job_id=job.id)
+        .order_by(BackupHistory.id)
+        .all()
+    )
+    assert len(rows) == 1
+    assert rows[0].status == "FAILED"
+    assert "Database connection failed" in rows[0].message
 
 
 def test_should_handle_backup_polling_failure_in_workflow(
@@ -327,7 +346,6 @@ def test_should_handle_backup_polling_failure_in_workflow(
 
     result = executor.execute_backup(
         db,
-        sqlite_session,
         cluster.id,
         backup_command,
         max_polls=5,
@@ -361,12 +379,14 @@ def test_should_handle_lost_backup_in_workflow(
 
     append_backup_event = mocker.patch("starrocks_br.executor.history.append_backup_event")
     complete_slot = mocker.patch("starrocks_br.executor.concurrency.complete_job_slot")
+    mocker.patch(
+        "starrocks_br.executor.session_scope", lambda: _fake_session_scope(sqlite_session)
+    )
 
     backup_command = "BACKUP DATABASE test_db SNAPSHOT test_backup TO repo"
 
     result = executor.execute_backup(
         db,
-        sqlite_session,
         cluster.id,
         backup_command,
         max_polls=3,
@@ -410,12 +430,14 @@ def test_should_log_history_and_finalize_on_success(
 
     append_backup_event = mocker.patch("starrocks_br.executor.history.append_backup_event")
     complete_slot = mocker.patch("starrocks_br.executor.concurrency.complete_job_slot")
+    mocker.patch(
+        "starrocks_br.executor.session_scope", lambda: _fake_session_scope(sqlite_session)
+    )
 
     backup_command = "BACKUP DATABASE test_db SNAPSHOT test_backup TO repo"
 
     result = executor.execute_backup(
         db,
-        sqlite_session,
         cluster.id,
         backup_command,
         max_polls=3,
@@ -455,12 +477,14 @@ def test_should_log_history_and_finalize_on_failure(
 
     append_backup_event = mocker.patch("starrocks_br.executor.history.append_backup_event")
     complete_slot = mocker.patch("starrocks_br.executor.concurrency.complete_job_slot")
+    mocker.patch(
+        "starrocks_br.executor.session_scope", lambda: _fake_session_scope(sqlite_session)
+    )
 
     backup_command = "BACKUP DATABASE test_db SNAPSHOT test_backup TO repo"
 
     result = executor.execute_backup(
         db,
-        sqlite_session,
         cluster.id,
         backup_command,
         max_polls=3,
@@ -572,28 +596,35 @@ def test_should_execute_backup_with_history_logging_exception(
 
     append_backup_event = Mock(side_effect=Exception("Logging failed"))
     complete_slot = Mock()
+    logger_error = Mock()
 
     with patch("starrocks_br.executor.get_session_factory", return_value=history_session_factory):
         with patch("starrocks_br.executor.history.append_backup_event", append_backup_event):
             with patch("starrocks_br.executor.concurrency.complete_job_slot", complete_slot):
-                result = executor.execute_backup(
-                    db,
-                    sqlite_session,
-                    cluster.id,
-                    "BACKUP DATABASE test_db SNAPSHOT test_backup TO repo",
-                    max_polls=3,
-                    poll_interval=0.001,
-                    repository="repo",
-                    backup_type="incremental",
-                    scope="backup",
-                    database="test_db",
-                    job_id=job.id,
-                )
+                with patch(
+                    "starrocks_br.executor.session_scope",
+                    lambda: _fake_session_scope(sqlite_session),
+                ):
+                    with patch("starrocks_br.executor.logger.error", logger_error):
+                        result = executor.execute_backup(
+                            db,
+                            cluster.id,
+                            "BACKUP DATABASE test_db SNAPSHOT test_backup TO repo",
+                            max_polls=3,
+                            poll_interval=0.001,
+                            repository="repo",
+                            backup_type="incremental",
+                            scope="backup",
+                            database="test_db",
+                            job_id=job.id,
+                        )
 
     assert result["success"] is True
     assert result["final_status"]["state"] == "FINISHED"
     assert append_backup_event.call_count == 3  # UPLOADING + FINISHED via on_progress, plus terminal SUCCESS
     assert complete_slot.call_count == 1
+    # The terminal history write's failure is logged, not silently swallowed.
+    assert logger_error.called
 
 
 def test_should_execute_backup_with_job_slot_completion_exception(
@@ -610,26 +641,32 @@ def test_should_execute_backup_with_job_slot_completion_exception(
     ]
 
     complete_slot = Mock(side_effect=Exception("Slot completion failed"))
+    logger_error = Mock()
 
     with patch("starrocks_br.executor.get_session_factory", return_value=history_session_factory):
         with patch("starrocks_br.executor.concurrency.complete_job_slot", complete_slot):
-            result = executor.execute_backup(
-                db,
-                sqlite_session,
-                cluster.id,
-                "BACKUP DATABASE test_db SNAPSHOT test_backup TO repo",
-                max_polls=3,
-                poll_interval=0.001,
-                repository="repo",
-                backup_type="incremental",
-                scope="backup",
-                database="test_db",
-                job_id=job.id,
-            )
+            with patch(
+                "starrocks_br.executor.session_scope", lambda: _fake_session_scope(sqlite_session)
+            ):
+                with patch("starrocks_br.executor.logger.error", logger_error):
+                    result = executor.execute_backup(
+                        db,
+                        cluster.id,
+                        "BACKUP DATABASE test_db SNAPSHOT test_backup TO repo",
+                        max_polls=3,
+                        poll_interval=0.001,
+                        repository="repo",
+                        backup_type="incremental",
+                        scope="backup",
+                        database="test_db",
+                        job_id=job.id,
+                    )
 
     assert result["success"] is True
     assert result["final_status"]["state"] == "FINISHED"
     assert complete_slot.call_count == 1
+    # The slot-release failure is logged, not silently swallowed.
+    assert logger_error.called
 
 
 def test_should_extract_label_from_both_backup_syntaxes():
@@ -703,7 +740,6 @@ def test_should_handle_backup_execution_with_zero_poll_interval(db_with_timezone
 
     result = executor.execute_backup(
         db,
-        sqlite_session,
         cluster.id,
         "BACKUP DATABASE test_db SNAPSHOT test_backup TO repo",
         max_polls=1,
@@ -728,7 +764,6 @@ def test_should_handle_backup_execution_with_very_small_poll_interval(db_with_ti
 
     result = executor.execute_backup(
         db,
-        sqlite_session,
         cluster.id,
         "BACKUP DATABASE test_db SNAPSHOT test_backup TO repo",
         max_polls=1,
@@ -753,7 +788,6 @@ def test_should_handle_backup_execution_with_large_max_polls(db_with_timezone, s
 
     result = executor.execute_backup(
         db,
-        sqlite_session,
         cluster.id,
         "BACKUP DATABASE test_db SNAPSHOT test_backup TO repo",
         max_polls=100000,
@@ -777,7 +811,6 @@ def test_should_handle_backup_execution_with_negative_max_polls(db_with_timezone
 
     result = executor.execute_backup(
         db,
-        sqlite_session,
         cluster.id,
         "BACKUP DATABASE test_db SNAPSHOT test_backup TO repo",
         max_polls=-1,
@@ -884,7 +917,6 @@ def test_should_propagate_submit_error_to_execute_backup(mocker, db_with_timezon
 
     result = executor.execute_backup(
         db,
-        sqlite_session,
         cluster.id,
         backup_command,
         max_polls=5,

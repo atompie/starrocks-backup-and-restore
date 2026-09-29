@@ -3,12 +3,10 @@ import time
 from collections.abc import Callable
 from typing import Literal
 
-from sqlalchemy.orm import Session
-
 from . import concurrency, logger
 from .dal.db import backup as backup_dal
 from .dal.metadata import history
-from .store.session import get_session_factory
+from .store.session import get_session_factory, session_scope
 
 MAX_POLLS = 86400  # 1 day
 
@@ -218,7 +216,6 @@ def poll_backup_status(
 
 def execute_backup(
     db,
-    session: Session,
     cluster_id: int,
     backup_command: str,
     max_polls: int = MAX_POLLS,
@@ -236,7 +233,6 @@ def execute_backup(
 
     Args:
         db: Database connection
-        session: SQLite metastore session
         cluster_id: Cluster this backup belongs to
         backup_command: Backup SQL command to execute
         max_polls: Maximum polling attempts
@@ -265,18 +261,23 @@ def execute_backup(
     if not database:
         database = _extract_database_from_command(backup_command)
 
+    session_factory = get_session_factory()
+
     success, submit_error, error_details = submit_backup_command(db, backup_command)
     if not success:
+        error_message = submit_error or "Failed to submit backup command (unknown error)"
+        try:
+            history.append_backup_event(session_factory, job_id, "FAILED", message=error_message)
+        except Exception:
+            logger.error(f"Failed to append backup history for job {job_id}")
         result = {
             "success": False,
             "final_status": None,
-            "error_message": submit_error or "Failed to submit backup command (unknown error)",
+            "error_message": error_message,
         }
         if error_details:
             result["error_details"] = error_details
         return result
-
-    session_factory = get_session_factory()
 
     def _on_progress(update: dict) -> None:
         try:
@@ -301,19 +302,20 @@ def execute_backup(
                 message=None if success else final_status["state"],
             )
         except Exception:
-            pass
+            logger.error(f"Failed to append terminal backup history for job {job_id}")
 
         if release_slot:
             try:
-                concurrency.complete_job_slot(
-                    session,
-                    cluster_id,
-                    scope=scope,
-                    label=label,
-                    final_state=final_status["state"],
-                )
+                with session_scope() as slot_session:
+                    concurrency.complete_job_slot(
+                        slot_session,
+                        cluster_id,
+                        scope=scope,
+                        label=label,
+                        final_state=final_status["state"],
+                    )
             except Exception:
-                pass
+                logger.error(f"Failed to release concurrency slot for job {job_id}")
 
         return {
             "success": success,
