@@ -291,12 +291,12 @@ against two invocations running at once.
 
 ## 10. Schedule-scoped retention (own job)
 
-- [ ] 10.1 Add job type `retention` (now a documented domain entity, `SPEC.md` §2 — a peer of Backup Job/Restore Job, not just an implementation detail). When a recurring full-backup job succeeds, submit a `retention` job for that schedule, reserved under the same `backup` concurrency scope (0.6); it logs its own events (`RETENTION_STARTED`, `SNAPSHOT_DROPPED`, `RETENTION_FINISHED`, `ERROR`, `FAILED`).
-- [ ] 10.2 Selection: that schedule's `SUCCESS` full jobs whose data is not deleted, newest first; keep `schedule.retention`; skip any job that is `baseline_job_id` of an existing incremental (Q1); drop the rest
-- [ ] 10.3 Deletion = `DROP SNAPSHOT` per reference and set `deleted_at`. The backup Job and its events are kept.
-- [ ] 10.4 A retention failure never changes the backup job's status
-- [ ] 10.5 Retire the inventory-scoped `prune` job and its route (it conflicts with spec §11), or keep it admin-only; `prune.cleanup_backup_history` must stop deleting history rows
-- [ ] 10.6 Tests: the §22 example (only Job 1 dropped), failed jobs ignored, incrementals and their baselines never dropped, two schedules on the same inventory keep independent pools
+- [x] 10.1 Add job type `retention` (now a documented domain entity, `SPEC.md` §2 — a peer of Backup Job/Restore Job, not just an implementation detail). When a recurring full-backup job succeeds, submit a `retention` job for that schedule, reserved under the same `backup` concurrency scope (0.6); it logs its own events (`RETENTION_STARTED`, `SNAPSHOT_DROPPED`, `RETENTION_FINISHED`, `ERROR`, `FAILED`).
+- [x] 10.2 Selection: that schedule's `SUCCESS` full jobs whose data is not deleted, newest first; keep `schedule.retention`; skip any job that is `baseline_job_id` of an existing incremental (Q1); drop the rest
+- [x] 10.3 Deletion = `DROP SNAPSHOT` per reference and set `deleted_at`. The backup Job and its events are kept.
+- [x] 10.4 A retention failure never changes the backup job's status
+- [x] 10.5 Retire the inventory-scoped `prune` job and its route (it conflicts with spec §11), or keep it admin-only; `prune.cleanup_backup_history` must stop deleting history rows
+- [x] 10.6 Tests: the §22 example (only Job 1 dropped), failed jobs ignored, incrementals and their baselines never dropped, two schedules on the same inventory keep independent pools
 
 ## 11. Restore from a Backup Job, into any cluster
 
