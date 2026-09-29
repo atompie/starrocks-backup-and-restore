@@ -112,6 +112,20 @@ curl -s -H "Authorization: Bearer $STARROCKS_BR_API_KEY" -H "Content-Type: appli
   -d '{"group_id": 1, "older_than": "2024-01-01 00:00:00"}'
 ```
 
+**Run the background scheduler (one tick):**
+
+Recurring and one-shot schedules only advance when something calls the run-due endpoint. Trigger a
+single tick — it checks what's due, submits jobs for it, and returns immediately regardless of how
+long those jobs take to finish:
+```bash
+curl -s -H "Authorization: Bearer $STARROCKS_BR_API_KEY" \
+  -X POST http://localhost:8000/backup/schedules/run
+```
+
+Point a cron entry or Kubernetes CronJob at this endpoint on a short, fixed interval (e.g. every
+minute) to keep schedules running unattended. See [Scheduling & Monitoring](docs/scheduling.md)
+for the full cron/CronJob setup.
+
 See [API Server](docs/api.md) for the full reference and [Configuration Reference](docs/configuration.md) for TLS and advanced options.
 
 ## How It Works
