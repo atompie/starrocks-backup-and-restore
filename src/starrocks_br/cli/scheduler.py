@@ -1,4 +1,4 @@
-"""`starrocks-br-scheduler tick`: run one scheduler tick and exit.
+"""`starrocks-br-scheduler tick`: run one scheduler tick (including job dispatch) and exit.
 
 Meant to be invoked by cron, a systemd timer or a Kubernetes CronJob, which supply the cadence;
 this process has no loop, no sleep and no enable switch. Like the HTTP routes, it calls only into
@@ -34,7 +34,7 @@ def _build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser(
         "tick",
-        help="reconcile stale jobs, run due schedules and one-shot expiry once, then exit",
+        help="reconcile stale jobs, run due schedules, one-shot expiry and job dispatch once, then exit",
     )
     return parser
 
@@ -80,10 +80,12 @@ def _run_tick() -> int:
         return EXIT_TEMPFAIL
 
     recon = result.reconciliation
+    dispatch = result.dispatch
     logger.info(
         f"Scheduler tick complete: {len(result.triggered_job_ids)} schedule(s) triggered, "
         f"{len(result.cleanup_job_ids)} expiry cleanup(s) submitted, "
-        f"{len(recon.requeued)} job(s) re-enqueued, {len(recon.failed)} stale job(s) failed"
+        f"{len(dispatch.admitted)} job(s) started, {len(dispatch.failed)} job(s) failed to start, "
+        f"{len(recon.failed)} stale job(s) failed"
     )
     return EXIT_OK
 

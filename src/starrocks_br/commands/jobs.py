@@ -1,10 +1,13 @@
-"""The single implementation of job submission.
+"""The single implementation of job submission and dispatch.
 
-Shared by direct API job-submission routes and `commands.schedules.run_due_schedules`,
+Submission is shared by direct API job-submission routes and `commands.schedules.run_due_schedules`,
 per specs/api-scheduling "submits a job through the same job-submission path
 used by direct API job submission". Raises `jobs.backend.UnknownBackendError`
 (already a plain `ValueError` subclass, no HTTP concept) instead of
 `HTTPException` on an unresolvable backend - the caller translates it.
+
+Submitting only queues a job (`PENDING`). `dispatch_pending_jobs`, called by the scheduler tick,
+is the only thing that starts jobs: it admits at most one job per cluster at a time.
 """
 
 import datetime
@@ -19,7 +22,7 @@ from ..dal.metadata import history
 from ..dal.metadata import jobs as jobs_dal
 from ..jobs.backend import get_registry
 from ..runtime_config import get_job_stale_seconds
-from ..store.models import Cluster, Job, JobStatus
+from ..store.models import Cluster, Job
 from ..store.session import get_session_factory, session_scope
 from ._shared import connect
 
@@ -33,11 +36,11 @@ def submit_job(
     schedule_id: int | None = None,
     source_backup_job_id: int | None = None,
 ) -> Job:
-    """Create a Job row and enqueue it on the resolved backend."""
+    """Create a `PENDING` Job row on the resolved backend; a scheduler tick starts it later."""
     registry = get_registry()
     backend_name = registry.resolve(requested_backend, cluster.default_backend)
 
-    job = jobs_dal.create_job(
+    return jobs_dal.create_job(
         db,
         cluster,
         job_type,
@@ -47,8 +50,66 @@ def submit_job(
         source_backup_job_id=source_backup_job_id,
     )
 
-    registry.get(backend_name).enqueue(job.id)
-    return job
+
+@dataclass
+class DispatchSummary:
+    """Job ids the dispatch pass acted on: `admitted` were started, `failed` could not be enqueued."""
+
+    admitted: list[int] = field(default_factory=list)
+    failed: list[int] = field(default_factory=list)
+
+
+def _admit_next_job(cluster_id: int, now: datetime.datetime) -> tuple[int, str] | None:
+    """Claim the next job for `cluster_id` if its lane is free; returns `(job_id, backend)`.
+
+    One short session: metadata only, StarRocks is never contacted. The claim commits before the
+    job is handed to its backend, so the worker (and the next dispatcher) see it as `RUNNING`.
+    """
+    with session_scope() as session:
+        if jobs_dal.cluster_has_running_job(session, cluster_id):
+            return None
+        job = jobs_dal.next_pending_job(session, cluster_id)
+        if job is None or not jobs_dal.claim_pending_job(session, job.id, now):
+            return None
+        return job.id, job.backend
+
+
+def dispatch_pending_jobs(now: datetime.datetime | None = None) -> DispatchSummary:
+    """Admit at most one `PENDING` job per cluster whose lane is free, and enqueue it.
+
+    A cluster with a `RUNNING` job admits nothing, so jobs on one cluster run one after another
+    (restore, then backup, then other work; oldest first), while different clusters proceed
+    independently. A job whose backend cannot take it is marked `FAILED`; one cluster's error
+    never stops the pass.
+    """
+    now = now or _utcnow()
+    summary = DispatchSummary()
+
+    with session_scope() as session:
+        cluster_ids = jobs_dal.clusters_with_pending_jobs(session)
+
+    for cluster_id in cluster_ids:
+        try:
+            admitted = _admit_next_job(cluster_id, now)
+        except Exception as e:
+            logger.error(f"Failed to admit a job on cluster {cluster_id}: {e}")
+            continue
+        if admitted is None:
+            continue
+
+        job_id, backend_name = admitted
+        try:
+            get_registry().get(backend_name).enqueue(job_id)
+        except Exception as e:
+            logger.error(f"Failed to enqueue job {job_id} on backend '{backend_name}': {e}")
+            with session_scope() as session:
+                jobs_dal.mark_failed(session, job_id, f"Failed to start on backend '{backend_name}': {e}")
+            summary.failed.append(job_id)
+            continue
+        summary.admitted.append(job_id)
+        logger.info(f"Admitted job {job_id} on cluster {cluster_id}")
+
+    return summary
 
 
 def list_jobs(
@@ -91,7 +152,6 @@ def get_job_references(db: Session, job_id: int) -> list:
 class ReconciliationSummary:
     """Job ids the reconciliation pass acted on, grouped by outcome."""
 
-    requeued: list[int] = field(default_factory=list)
     failed: list[int] = field(default_factory=list)
     left_running: list[int] = field(default_factory=list)
     skipped: list[int] = field(default_factory=list)
@@ -105,7 +165,6 @@ class _StaleJob:
     cluster_id: int
     job_type: str
     status: str
-    backend: str
     label: str | None
     params: dict
     group_id: int | None
@@ -125,7 +184,8 @@ def reconcile_stale_jobs(now: datetime.datetime | None = None) -> Reconciliation
     A job is stale when its liveness (heartbeat, else start, else creation time) is older than
     `STARROCKS_BR_JOB_STALE_SECONDS`. Each stale job is claimed with an atomic conditional
     update first, so a concurrent tick (or a live owner refreshing its heartbeat) leaves exactly
-    one actor. Stale `PENDING` jobs are re-enqueued. Stale `RUNNING` backup/restore jobs stay
+    one actor. `PENDING` jobs are never stale: they wait for their cluster lane and are started
+    only by `dispatch_pending_jobs`. Stale `RUNNING` backup/restore jobs stay
     `RUNNING` only while StarRocks still shows their operation in progress; in every other case
     they are failed - never promoted to `SUCCESS`, because the references (or remaining restore
     steps) lived only in the dead process. Any other stale `RUNNING` job is failed.
@@ -144,7 +204,6 @@ def reconcile_stale_jobs(now: datetime.datetime | None = None) -> Reconciliation
                 cluster_id=j.cluster_id,
                 job_type=j.job_type,
                 status=j.status,
-                backend=j.backend,
                 label=j.label,
                 params=_load_params(j.params_json),
                 group_id=j.group_id,
@@ -161,12 +220,7 @@ def reconcile_stale_jobs(now: datetime.datetime | None = None) -> Reconciliation
             continue
 
         try:
-            if job.status == JobStatus.PENDING.value:
-                get_registry().get(job.backend).enqueue(job.id)
-                summary.requeued.append(job.id)
-                logger.info(f"Re-enqueued stale PENDING job {job.id}")
-            else:
-                _reconcile_running_job(job, summary)
+            _reconcile_running_job(job, summary)
         except Exception as e:
             logger.error(f"Failed to reconcile job {job.id}: {e}")
             summary.skipped.append(job.id)

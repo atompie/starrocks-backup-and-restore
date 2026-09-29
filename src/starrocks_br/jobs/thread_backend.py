@@ -14,6 +14,7 @@ from concurrent.futures import ThreadPoolExecutor
 from .. import logger
 from ..dal.metadata import jobs as jobs_dal
 from ..runtime_config import get_job_heartbeat_seconds
+from ..store.models import JobStatus
 from ..store.session import session_scope
 from .handlers import JOB_HANDLERS
 
@@ -46,12 +47,13 @@ def _heartbeat_loop(job_id: int, stop: threading.Event, interval: float) -> None
 def _run_job(job_id: int) -> None:
     with session_scope() as session:
         job = jobs_dal.get(session, job_id)
-        if job is None:
+        # The dispatcher already admitted the job (`PENDING` -> `RUNNING`); anything else was
+        # not handed to this worker.
+        if job is None or job.status != JobStatus.RUNNING.value:
             return
         cluster = job.cluster
         job_type = job.job_type
         params = json.loads(job.params_json or "{}")
-        jobs_dal.mark_running(session, job_id)
         session.expunge(cluster)
         session.expunge(job)
 

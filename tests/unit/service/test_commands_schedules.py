@@ -3,7 +3,12 @@ import datetime
 import pytest
 
 from starrocks_br import exceptions
-from starrocks_br.commands.schedules import _validate_schedule_shape, compute_next_run_at, run_due_schedules
+from starrocks_br.commands.jobs import DispatchSummary
+from starrocks_br.commands.schedules import (
+    _validate_schedule_shape,
+    compute_next_run_at,
+    run_due_schedules,
+)
 from starrocks_br.store.models import Base, Cluster, InventoryGroup, Job, Schedule
 from starrocks_br.store.session import get_engine, session_scope
 
@@ -222,6 +227,72 @@ def test_run_due_schedules_is_idempotent_when_already_advanced(sqlite_store, moc
         submit_job.assert_not_called()
 
 
+def _add_due_schedule(session, cluster, group):
+    schedule = Schedule(
+        cluster_id=cluster.id,
+        job_type="backup_full",
+        inventory_group_id=group.id,
+        repository="repo",
+        cadence="* * * * *",
+        backend="thread",
+        enabled=True,
+        next_run_at=_utcnow() - datetime.timedelta(minutes=1),
+    )
+    session.add(schedule)
+    session.flush()
+    return schedule
+
+
+def _add_job_for(session, cluster, schedule, job_type, status):
+    job = Job(
+        cluster_id=cluster.id,
+        job_type=job_type,
+        backend="thread",
+        params_json="{}",
+        status=status,
+        schedule_id=schedule.id,
+    )
+    session.add(job)
+    session.flush()
+    return job
+
+
+@pytest.mark.parametrize("status", ["PENDING", "RUNNING"])
+def test_run_due_schedules_does_not_stack_a_job_behind_an_open_one(sqlite_store, mocker, status):
+    submit_job = mocker.patch("starrocks_br.commands.schedules.submit_job")
+
+    with session_scope() as session:
+        cluster = _make_cluster(session)
+        group = _make_group(session, cluster)
+        schedule = _add_due_schedule(session, cluster, group)
+        _add_job_for(session, cluster, schedule, "backup_full", status)
+        previously_due_at = schedule.next_run_at
+        now = _utcnow()
+
+        triggered_job_ids, triggered_count = run_due_schedules(session, now)
+        session.refresh(schedule)
+
+        assert (triggered_job_ids, triggered_count) == ([], 0)
+        submit_job.assert_not_called()
+        assert schedule.next_run_at.replace(tzinfo=None) > previously_due_at.replace(tzinfo=None)
+
+
+def test_run_due_schedules_submits_when_the_only_open_job_is_another_type(sqlite_store, mocker):
+    job = None
+    with session_scope() as session:
+        cluster = _make_cluster(session)
+        group = _make_group(session, cluster)
+        schedule = _add_due_schedule(session, cluster, group)
+        _add_job_for(session, cluster, schedule, "retention", "PENDING")
+        job = _make_job(session, cluster)
+        submit_job = mocker.patch("starrocks_br.commands.schedules.submit_job", return_value=job)
+
+        triggered_job_ids, _ = run_due_schedules(session, _utcnow())
+
+        assert triggered_job_ids == [job.id]
+        submit_job.assert_called_once()
+
+
 class TestSchedulerLock:
     def test_free_lock_is_acquired(self, sqlite_store):
         from starrocks_br.commands import schedules as commands
@@ -297,19 +368,52 @@ class TestExecuteSchedulerTick:
         mocker.patch.object(
             commands, "expire_due_schedules", side_effect=lambda s, n: calls.append("expire") or [9]
         )
+        mocker.patch.object(
+            commands,
+            "dispatch_pending_jobs",
+            side_effect=lambda now: calls.append("dispatch") or DispatchSummary(admitted=[7]),
+        )
         return calls
 
-    def test_runs_reconcile_then_due_then_expiry_and_records_the_tick(self, sqlite_store, steps):
+    def test_runs_reconcile_then_due_then_expiry_then_dispatch_and_records_the_tick(
+        self, sqlite_store, steps
+    ):
         from starrocks_br.commands import schedules as commands
 
         result = commands.execute_scheduler_tick("host:1")
 
-        assert steps == ["reconcile", "run_due", "expire"]
+        assert steps == ["reconcile", "run_due", "expire", "dispatch"]
         assert result.acquired is True
         assert result.triggered_job_ids == [7]
         assert result.cleanup_job_ids == [9]
+        assert result.dispatch.admitted == [7]
         with session_scope() as session:
             assert commands.get_scheduler_last_tick_at(session) is not None
+
+    def test_a_job_submitted_by_the_tick_is_started_in_the_same_tick(self, sqlite_store, mocker):
+        from unittest.mock import MagicMock
+
+        from starrocks_br.commands import jobs as jobs_commands
+        from starrocks_br.commands import schedules as commands
+
+        backend = MagicMock()
+        registry = MagicMock()
+        registry.resolve.return_value = "thread"
+        registry.get.return_value = backend
+        mocker.patch.object(jobs_commands, "get_registry", return_value=registry)
+        mocker.patch.object(commands, "reconcile_stale_jobs", return_value="summary")
+        with session_scope() as session:
+            cluster = _make_cluster(session)
+            group = _make_group(session, cluster)
+            _add_due_schedule(session, cluster, group)
+
+        result = commands.execute_scheduler_tick("host:1")
+
+        assert len(result.triggered_job_ids) == 1
+        assert result.dispatch.admitted == result.triggered_job_ids
+        backend.enqueue.assert_called_once_with(result.triggered_job_ids[0])
+        with session_scope() as session:
+            assert session.get(Job, result.triggered_job_ids[0]).status == "RUNNING"
 
     def test_releases_the_lock_after_a_successful_tick(self, sqlite_store, steps):
         from starrocks_br.commands import schedules as commands

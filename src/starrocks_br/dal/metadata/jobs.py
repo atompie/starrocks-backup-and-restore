@@ -1,7 +1,7 @@
 import datetime
 import json
 
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import case, func, select, update
 from sqlalchemy.orm import Session
 
 from ...store.models import BackupHistory, BackupReference, Cluster, Job, JobStatus, RestoreHistory
@@ -115,6 +115,84 @@ def mark_running(db: Session, job_id: int) -> Job | None:
     return job
 
 
+# Admission priority within one cluster's lane: restore first, then backups, then everything else
+# (schedule cleanup, retention, ...).
+_ADMISSION_PRIORITY = case(
+    (Job.job_type == "restore", 0),
+    (Job.job_type.in_(["backup_full", "backup_incremental"]), 1),
+    else_=2,
+)
+
+
+def clusters_with_pending_jobs(db: Session) -> list[int]:
+    """Ids of clusters that have at least one `PENDING` job, lowest id first."""
+    return list(
+        db.scalars(
+            select(Job.cluster_id)
+            .where(Job.status == JobStatus.PENDING.value)
+            .distinct()
+            .order_by(Job.cluster_id)
+        ).all()
+    )
+
+
+def cluster_has_running_job(db: Session, cluster_id: int) -> bool:
+    return (
+        db.scalar(
+            select(Job.id)
+            .where(Job.cluster_id == cluster_id, Job.status == JobStatus.RUNNING.value)
+            .limit(1)
+        )
+        is not None
+    )
+
+
+def next_pending_job(db: Session, cluster_id: int) -> Job | None:
+    """The `PENDING` job to admit next on a cluster: highest priority, then oldest (lowest id)."""
+    return db.scalars(
+        select(Job)
+        .where(Job.cluster_id == cluster_id, Job.status == JobStatus.PENDING.value)
+        .order_by(_ADMISSION_PRIORITY, Job.id)
+        .limit(1)
+    ).first()
+
+
+def schedule_has_open_job(db: Session, schedule_id: int, job_type: str) -> bool:
+    """Whether the schedule already has a `PENDING` or `RUNNING` job of `job_type`.
+
+    Scoped to the schedule's own job type so other work tied to the schedule (retention,
+    cleanup) never blocks its next backup.
+    """
+    return (
+        db.scalar(
+            select(Job.id)
+            .where(
+                Job.schedule_id == schedule_id,
+                Job.job_type == job_type,
+                Job.status.in_([JobStatus.PENDING.value, JobStatus.RUNNING.value]),
+            )
+            .limit(1)
+        )
+        is not None
+    )
+
+
+def claim_pending_job(db: Session, job_id: int, now: datetime.datetime | None = None) -> bool:
+    """Atomically admit a `PENDING` job: `PENDING` -> `RUNNING`, stamping `started_at`/`heartbeat_at`.
+
+    Returns `True` only for the caller whose conditional update matched the row, so two
+    dispatchers considering the same job cannot both enqueue it.
+    """
+    now = now or _utcnow()
+    result = db.execute(
+        update(Job)
+        .where(Job.id == job_id, Job.status == JobStatus.PENDING.value)
+        .values(status=JobStatus.RUNNING.value, started_at=now, heartbeat_at=now)
+    )
+    db.flush()
+    return result.rowcount == 1
+
+
 def touch_heartbeat(db: Session, job_id: int, now: datetime.datetime | None = None) -> None:
     """Record that `job_id`'s owner is still alive. Only touches a job that is still `RUNNING`."""
     db.execute(
@@ -124,23 +202,20 @@ def touch_heartbeat(db: Session, job_id: int, now: datetime.datetime | None = No
     )
 
 
-# A job's liveness: its last heartbeat, else when it started, else when it was created (a
-# `PENDING` job has only the last).
+# A `RUNNING` job's liveness: its last heartbeat, else when it started, else when it was created.
 _liveness = func.coalesce(Job.heartbeat_at, Job.started_at, Job.created_at)
 
 
 def list_stale_jobs(db: Session, cutoff: datetime.datetime) -> list[Job]:
-    """`PENDING`/`RUNNING` jobs whose liveness is older than `cutoff`, oldest first."""
+    """`RUNNING` jobs whose liveness is older than `cutoff`, oldest first.
+
+    A `PENDING` job is waiting for its cluster lane to free up, so its age is queue time, not
+    staleness: it is never returned here.
+    """
     return list(
         db.scalars(
             select(Job)
-            .where(
-                or_(
-                    Job.status == JobStatus.PENDING.value,
-                    Job.status == JobStatus.RUNNING.value,
-                ),
-                _liveness < cutoff,
-            )
+            .where(Job.status == JobStatus.RUNNING.value, _liveness < cutoff)
             .order_by(Job.id)
         ).all()
     )

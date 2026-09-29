@@ -1,3 +1,4 @@
+import datetime
 import threading
 import time
 
@@ -29,8 +30,17 @@ def fast_heartbeat(monkeypatch):
 
 
 def _submit(cluster_id: int) -> int:
+    """Insert a job as the dispatcher would have admitted it (`RUNNING`)."""
     with session_module.session_scope() as session:
-        job = Job(cluster_id=cluster_id, job_type="backup_full", backend="thread", params_json="{}")
+        job = Job(
+            cluster_id=cluster_id,
+            job_type="backup_full",
+            backend="thread",
+            params_json="{}",
+            status=JobStatus.RUNNING.value,
+            started_at=datetime.datetime.now(datetime.timezone.utc),
+            heartbeat_at=datetime.datetime.now(datetime.timezone.utc),
+        )
         session.add(job)
         session.flush()
         return job.id

@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- **BREAKING: jobs start only from a scheduler tick, one at a time per cluster.** Submitting a job
+  (restore, one-shot schedule, due recurring schedule, schedule deletion) now only queues it as
+  `PENDING`; `starrocks-br-scheduler tick` admits at most one queued job per cluster (restore, then
+  backup, then other work; oldest first) while different clusters run in parallel. A job waiting for its
+  cluster stays `PENDING` instead of failing with a concurrency conflict. Reconciliation no longer
+  re-enqueues stale `PENDING` jobs, and a recurring schedule with an unfinished job skips its next
+  occurrence. `POST /backup/schedules/run` only queues jobs; run a tick to start them.
 - **BREAKING: Ops bookkeeping moved off StarRocks, into this tool's own SQLite metastore.**
   `table_inventory`, `backup_history`, `restore_history`, `run_status`, and
   `backup_partitions` no longer live in a per-cluster StarRocks database

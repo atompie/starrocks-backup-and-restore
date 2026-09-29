@@ -40,8 +40,15 @@ def _create_group(api_client, cluster_id, name="g1") -> int:
 
 
 def _wait_for_terminal(api_client, job_id, timeout=2.0) -> dict:
+    """Poll until the job is terminal, running a scheduler dispatch pass on every iteration.
+
+    Jobs only start when a tick admits them, so this stands in for repeated ticks.
+    """
+    from starrocks_br.commands.jobs import dispatch_pending_jobs
+
     deadline = time.time() + timeout
     while time.time() < deadline:
+        dispatch_pending_jobs()
         body = api_client.get(f"/job/{job_id}").json()
         if body["status"] in ("SUCCESS", "FAILED"):
             return body
@@ -749,3 +756,32 @@ def test_updating_job_type_to_incremental_while_retention_set_is_rejected(api_cl
     assert response.status_code == 422
     unchanged = api_client.get(f"/backup/schedules/cluster/{cluster_id}/schedule_id/{created['id']}").json()
     assert unchanged["job_type"] == "backup_full"
+
+
+def test_run_due_only_queues_the_job_until_a_tick_starts_it(api_client, monkeypatch):
+    _mock_repository_check(monkeypatch)
+    cluster_id = _create_cluster(api_client)
+    group_id = _create_group(api_client, cluster_id)
+    created = api_client.post(
+        f"/backup/schedules/cluster/{cluster_id}",
+        json={
+            "job_type": "backup_full",
+            "retention": 3,
+            "inventory_group_id": group_id,
+            "repository": "s3_repo",
+            "cadence": "* * * * *",
+        },
+    ).json()
+    from starrocks_br.store.models import Schedule
+    from starrocks_br.store.session import session_scope
+
+    with session_scope() as session:
+        session.get(Schedule, created["id"]).next_run_at = datetime.datetime(
+            2000, 1, 1, tzinfo=datetime.timezone.utc
+        )
+
+    response = api_client.post("/backup/schedules/run")
+
+    job_id = response.json()["triggered_job_ids"][0]
+    time.sleep(0.2)
+    assert api_client.get(f"/job/{job_id}").json()["status"] == "PENDING"

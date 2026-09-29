@@ -105,30 +105,22 @@ def test_live_running_job_is_left_completely_alone(make_job, add_slot, starrocks
 
     summary = jobs_commands.reconcile_stale_jobs()
 
-    assert summary.failed == summary.left_running == summary.requeued == []
+    assert summary.failed == summary.left_running == []
     assert _job(job_id).status == JobStatus.RUNNING.value
     assert _slot_state() == "ACTIVE"
     starrocks.lookup.assert_not_called()
 
 
-def test_fresh_pending_job_is_not_reenqueued(make_job, registry):
-    make_job(JobStatus.PENDING.value, created_at=FRESH)
+def test_pending_job_is_never_touched_by_reconciliation_whatever_its_age(make_job, registry):
+    old_pending = make_job(JobStatus.PENDING.value, created_at=STALE)
+    fresh_pending = make_job(JobStatus.PENDING.value, created_at=FRESH)
 
     summary = jobs_commands.reconcile_stale_jobs()
 
-    assert summary.requeued == []
+    assert summary.failed == summary.left_running == summary.skipped == []
+    assert _job(old_pending).status == JobStatus.PENDING.value
+    assert _job(fresh_pending).status == JobStatus.PENDING.value
     registry.enqueue.assert_not_called()
-
-
-def test_stale_pending_job_is_claimed_and_reenqueued_once(make_job, registry):
-    job_id = make_job(JobStatus.PENDING.value, created_at=STALE)
-
-    first = jobs_commands.reconcile_stale_jobs()
-    second = jobs_commands.reconcile_stale_jobs()
-
-    assert first.requeued == [job_id]
-    assert second.requeued == []
-    registry.enqueue.assert_called_once_with(job_id)
 
 
 def test_finished_stale_backup_is_failed_not_promoted(make_job, add_slot, starrocks):

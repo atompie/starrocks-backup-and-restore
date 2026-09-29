@@ -55,8 +55,15 @@ def _create_one_shot_backup_full(api_client, cluster_id, group_id=None) -> dict:
 
 
 def _wait_for_terminal(api_client, job_id, timeout=2.0):
+    """Poll until the job is terminal, running a scheduler dispatch pass on every iteration.
+
+    Jobs only start when a tick admits them, so this stands in for repeated ticks.
+    """
+    from starrocks_br.commands.jobs import dispatch_pending_jobs
+
     deadline = time.time() + timeout
     while time.time() < deadline:
+        dispatch_pending_jobs()
         body = api_client.get(f"/job/{job_id}").json()
         if body["status"] in ("SUCCESS", "FAILED"):
             return body
@@ -132,9 +139,12 @@ def test_poll_reports_progress_mid_run_then_terminal(api_client, monkeypatch):
     ).json()
     submitted = {"id": schedule["last_run_job_id"]}
 
+    from starrocks_br.commands.jobs import dispatch_pending_jobs
+
     deadline = time.time() + 2
     seen_progress = None
     while time.time() < deadline:
+        dispatch_pending_jobs()
         body = api_client.get(f"/job/{submitted['id']}").json()
         if body["progress_pct"] is not None:
             seen_progress = body
@@ -172,9 +182,12 @@ def test_no_progress_phase_reports_running_without_percentage(api_client, monkey
     ).json()
     submitted = {"id": schedule["last_run_job_id"]}
 
+    from starrocks_br.commands.jobs import dispatch_pending_jobs
+
     deadline = time.time() + 2
     seen_running = None
     while time.time() < deadline:
+        dispatch_pending_jobs()
         body = api_client.get(f"/job/{submitted['id']}").json()
         if body["status"] == "RUNNING":
             seen_running = body

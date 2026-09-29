@@ -114,17 +114,17 @@ curl -s -H "Authorization: Bearer $STARROCKS_BR_API_KEY" -H "Content-Type: appli
 
 **Run the background scheduler (one tick):**
 
-Recurring and one-shot schedules only advance when something calls the run-due endpoint. Trigger a
-single tick — it checks what's due, submits jobs for it, and returns immediately regardless of how
-long those jobs take to finish:
+Jobs only start when a scheduler tick starts them: submitting a job (a due schedule, a one-shot
+schedule, a restore) queues it, and the tick runs at most one job per cluster at a time while different
+clusters run in parallel. Run a tick from cron, a systemd timer or a Kubernetes CronJob on a short, fixed
+interval (e.g. every minute):
 ```bash
-curl -s -H "Authorization: Bearer $STARROCKS_BR_API_KEY" \
-  -X POST http://localhost:8000/backup/schedules/run
+starrocks-br-scheduler tick
 ```
 
-Point a cron entry or Kubernetes CronJob at this endpoint on a short, fixed interval (e.g. every
-minute) to keep schedules running unattended. See [Scheduling & Monitoring](docs/scheduling.md)
-for the full cron/CronJob setup.
+If no tick runs, nothing runs; `GET /health` reports when the last tick completed. `POST
+/backup/schedules/run` only queues due schedules and does not start jobs. See
+[Scheduling & Monitoring](docs/scheduling.md) for the full cron/CronJob setup.
 
 See [API Server](docs/api.md) for the full reference and [Configuration Reference](docs/configuration.md) for TLS and advanced options.
 

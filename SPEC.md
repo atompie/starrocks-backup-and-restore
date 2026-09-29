@@ -16,7 +16,7 @@ The system provides the ability to:
   * when to perform the backup,
   * how many successful copies to retain,
 * automatically execute backups,
-* manually trigger a backup immediately,
+* queue a backup immediately (a one-shot Schedule),
 * track every backup execution through a Backup Job,
 * maintain a detailed execution log for every Job,
 * automatically enforce retention,
@@ -166,17 +166,15 @@ This allows one Cluster to have different backup storage locations, while differ
 
 A Repository is not tracked as a separate entity in the system's own metadata; StarRocks itself
 is the source of truth for what repositories exist. Wherever the system needs to point at one —
-a Schedule, a Backup Reference, a restore target — it does so by `(cluster, repository name)`,
-validated live against that cluster's repositories. StarRocks enforces the name's uniqueness
-within a cluster, so no separate uniqueness constraint is needed.
+a Schedule, a Backup Reference — it does so by `(cluster, repository name)`, validated live against
+that cluster's repositories. StarRocks enforces the name's uniqueness within a cluster, so no
+separate uniqueness constraint is needed.
 
 The `(cluster_id, name)` pair is the reference pattern for a Repository everywhere it is used:
 the same name on two different clusters identifies two different repositories, and a reference
-is validated only against the repositories of the one cluster it names. Today the only entity
-that holds such a reference is the Schedule, whose `repository` is validated live against its own
-Cluster on both creation and update. A Backup Reference and a restore target will hold the same
-kind of `(cluster_id, name)` reference once implemented (§14-15, §27); this is forward-looking
-intent for those not-yet-built entities, not a description of code that exists today.
+is validated only against the repositories of the one cluster it names. A Schedule's `repository`
+is validated live against its own Cluster on both creation and update; a Backup Reference records
+the repository its data was written to (§14-15).
 
 ---
 
@@ -280,7 +278,7 @@ Schedule
 * `Inventory` — what to back up,
 * `Repository` — where to store the backup,
 * `Cadence` — when to perform the backup,
-* `Retention` — how many successful backups to retain.
+* `Retention` — how many successful full backups to retain (recurring full-backup Schedules only, §10).
 
 The Inventory and Repository must belong to the same Cluster as the Schedule.
 
@@ -318,9 +316,10 @@ The exact cadence format is an implementation detail.
 
 `cadence = null` has a special meaning:
 
-> **execute the backup now.**
+> **queue a backup now.**
 
-This represents a one-shot / manual backup Schedule.
+This represents a one-shot / manual backup Schedule. It must be a full backup, and it has no
+retention: retention applies only to recurring full-backup Schedules (§10).
 
 Example:
 
@@ -329,13 +328,12 @@ Schedule
 inventory  = production
 repository = repo-1
 cadence    = null
-retention  = 5
 
 ```
 
 means:
 
-> Create a backup job and execute it now.
+> Create a full Backup Job now; it starts like any other job (§19).
 
 ---
 
@@ -366,7 +364,7 @@ cadence = null
 
 ```
 
-which means immediate execution.
+which means the Backup Job is created immediately.
 
 ---
 
@@ -411,7 +409,8 @@ changed since a specific full backup, its baseline. An incremental backup cannot
 its own; it is always applied on top of its baseline full backup.
 
 `Retention` defines the **number of copies**, not the retention period, and it applies only to
-full backups.
+the full backups of a recurring full-backup Schedule. It is required for such a Schedule and not
+allowed on any other (recurring incremental, or one-shot).
 
 Example:
 
@@ -425,9 +424,7 @@ means:
 > Keep the 5 most recent successfully completed full backups of this Schedule.
 
 Incremental backups are not subject to retention: they are never counted towards `retention` and
-are never deleted by it. A full backup that currently serves as the baseline for an existing
-incremental backup is also not subject to retention, regardless of how old it is or how many
-newer full backups exist — see §21.
+are never deleted by it. Some older full backups are also protected from it — see §21.
 
 Retention is a property of the Schedule.
 
@@ -452,9 +449,9 @@ retention: 7
 
 ```
 
-Schedule A retains its 5 most recent successful backups.
+Schedule A retains its 5 most recent successful full backups.
 
-Schedule B retains its 7 most recent successful backups.
+Schedule B retains its 7 most recent successful full backups.
 
 Backups are not counted together simply because they:
 
@@ -492,7 +489,7 @@ The Job should store the information required to restore the backup later.
 
 # 13. Job Exists Independently of the Result
 
-A Backup Job is created whenever the system starts a backup execution.
+A Backup Job is created whenever the system queues a backup execution.
 
 It can finish with:
 
@@ -669,38 +666,74 @@ Status does not replace History.
 
 ---
 
-# 19. Internal System Process
+# 19. Jobs: Lifecycle, Scheduling, and Relationships
 
-The system has an internal process responsible for handling Schedules.
+Every operation the system runs against a Cluster is a Job with an id, a status, and an
+append-only execution log (its History):
 
-Its responsibilities are to check:
+| Job | Created when | Operates on | Depends on |
+|---|---|---|---|
+| Backup Job (full or incremental) | a recurring Schedule is due (scheduler tick); a one-shot Schedule is created | the Schedule's Inventory, into its Repository | incremental: its baseline full Backup Job |
+| Retention Job | a recurring full-backup Schedule has droppable backups (scheduler tick) | that Schedule's successful full Backup Jobs and their snapshots | those Backup Jobs, which it never modifies |
+| Restore Job | an operator requests it | the data of one successful Backup Job (and its baseline), into the target Cluster | its source Backup Job |
+| Schedule cleanup | a Schedule is deleted or its expiry elapses (§24) | the Schedule's Backup Jobs and snapshots | — |
 
-1. whether a Schedule is due to run,
-2. whether a Backup Job should be started,
-3. whether the execution completed successfully,
-4. whether retention should be applied after completion.
-
-Logically:
+### Lifecycle
 
 ```text
-for each active Schedule:
-
-    if backup_is_due(schedule):
-
-        job = create_backup_job(schedule)
-
-        execute_backup(job)
-
-        if job.success:
-            apply_retention(schedule)
-
+created ──> PENDING ──(admitted by a scheduler tick)──> RUNNING ──> SUCCESS
+                                                           └─────> FAILED
 ```
+
+* Creating a Job only queues it as `PENDING`. Only a scheduler tick starts jobs; if no tick runs,
+  nothing runs.
+* Each tick, in order: reconciles Jobs whose worker died (a `RUNNING` Job with no live heartbeat is
+  failed, never promoted to `SUCCESS`; a `PENDING` Job is never stale), creates the Backup Jobs of
+  due Schedules, creates the cleanup Jobs of expired one-shot Schedules (§8), creates the Retention Jobs
+  that are needed (§21), then admits queued Jobs.
+* **One Job runs at a time per Cluster, of any kind.** The next Job is chosen restore first, then
+  backup, then everything else (retention, schedule cleanup), oldest first within a kind. Jobs on
+  different Clusters run in parallel. A queued Job waits its turn; it does not fail because its
+  Cluster is busy.
+* A Job ends `SUCCESS` or `FAILED`. A `FAILED` Job always has a `FAILED` History entry carrying the
+  error. One Job's failure never changes the status of another Job.
+* A Job is never deleted, except by §24 (and a Restore Job together with its source, §27).
+
+### Backup Job
+
+* Created `PENDING` with the Schedule's Inventory, Repository, and type (full or incremental). A
+  due recurring Schedule that still has a `PENDING` or `RUNNING` Backup Job gets no additional one;
+  it moves to its next occurrence.
+* Runs one StarRocks backup per database of the Inventory. Its Backup References are recorded once
+  the StarRocks operation for a database reaches `FINISHED`.
+* An incremental backup's baseline, per database, is the most recent successful full backup on the
+  Cluster covering that database (from any Schedule) whose data has not been deleted.
+* `SUCCESS` makes it a recoverable backup; `FAILED` does not (§16).
+
+### Retention Job
+
+* Created by the tick for a recurring full-backup Schedule when it has droppable backups (§21) and
+  no `PENDING` or `RUNNING` Retention Job. It is not tied to any particular Backup Job finishing.
+* Operates only on that Schedule's own backups (§11). It drops each droppable backup's snapshots
+  and marks that backup's References deleted, one backup at a time.
+* It stops starting new drops once its configured time limit has passed, and ends normally; the
+  next tick creates another Retention Job for what remains.
+* If it fails, the backups not yet dropped are simply retried by a later Retention Job. It never
+  changes the status of any Backup Job.
+
+### Restore Job
+
+* Created `PENDING` by an operator's request, naming a source Backup Job and a target Cluster
+  (§26-27). A request whose source Schedule is pending deletion is rejected.
+* A source backup that a `PENDING` or `RUNNING` Restore Job uses is protected from retention (§21).
+* Restore does not modify the source Backup Job (§29).
 
 ---
 
 # 20. Checking Whether a Backup Is Due
 
-For a recurring Schedule, the system determines whether it is time for the next execution according to the `cadence`.
+For a recurring Schedule, the tick determines whether the next execution is due according to the
+`cadence`, and creates the Backup Job (§19).
 
 Example:
 
@@ -715,59 +748,37 @@ current time    = 11:00
 
 → the backup is due.
 
-For:
-
-```text
-cadence = null
-
-```
-
-the Schedule is an immediate request and should be executed as a one-shot operation.
+A `cadence = null` Schedule creates its one Backup Job when it is created (§7-8).
 
 ---
 
-# 21. Retention After Backup Execution
+# 21. Retention: What Is Kept and What Is Dropped
 
-After a full backup completes successfully, the system checks the Schedule's retention policy.
-This process runs as its own Retention Job (see §23); it does not change the status of the
-Backup Job that triggered it, or of any Backup Job whose data it deletes (see §13-14).
+Retention works on one recurring full-backup Schedule's pool (§11), evaluated by a Retention Job
+(§23):
 
-Example:
+1. The pool is the Schedule's successful full Backup Jobs whose data has not yet been deleted.
+   Failed Jobs are ignored (§22).
+2. Sort the pool from newest to oldest. The newest `retention` are kept.
+3. The rest are droppable, except those that are protected:
+   * a full backup that is the baseline of any incremental backup on the Cluster that is
+     `PENDING`, `RUNNING`, or `SUCCESS` (for this Schedule or any other) — it becomes droppable
+     once no incremental depends on it;
+   * a backup used as the source (or as the baseline of the source) of a Restore Job that is
+     `PENDING` or `RUNNING`.
+4. A Retention Job is needed for a Schedule exactly when at least one droppable backup exists.
+   Protected backups alone never require one.
 
-```text
-Schedule
-retention = 5
-
-```
-
-The system finds all:
-
-```text
-SUCCESSFUL full Backup Jobs
-
-```
-
-belonging to that Schedule.
-
-It then sorts them from newest to oldest.
-
-The newest 5 are retained.
-
-Before deleting an older full backup, the system checks whether it is still the baseline of any
-existing incremental backup, for this Schedule or any other. If it is, that backup is skipped
-and kept, even though it falls outside the newest 5; it becomes eligible for deletion once no
-incremental backup depends on it any longer. This same check applies when a Schedule or Cluster
-is deleted (see §24).
-
-Older backups (that are not a still-needed baseline) are deleted from the Repository.
+Dropping a backup deletes its snapshots from the Repository (a snapshot that is already gone counts
+as dropped) and marks its Backup References deleted. The Backup Job and its History remain (§13-14).
+A backup whose data is deleted can no longer be a baseline or a Restore source. This same
+protection applies when a Schedule or Cluster is deleted (§24).
 
 ---
 
-# 22. Failed Jobs and Retention
+# 22. Example: Failed Jobs and Retention
 
-Failed Jobs are completely ignored when calculating retention.
-
-Example:
+Failed Jobs are ignored when calculating retention.
 
 ```text
 Job 1 → SUCCESS
@@ -781,75 +792,31 @@ Job 8 → SUCCESS
 
 ```
 
-With:
+With `retention = 5` the relevant Jobs, newest first, are 8, 7, 6, 4, 2, 1; Jobs 3 and 5 are not
+considered. The newest five (8, 7, 6, 4, 2) are kept and Job 1, the sixth, is dropped.
 
-```text
-retention = 5
-
-```
-
-the relevant jobs are:
-
-```text
-Job 8
-Job 7
-Job 6
-Job 4
-Job 2
-Job 1
-
-```
-
-Job 3 and Job 5 are not considered.
-
-The backup to delete is:
-
-```text
-Job 1
-
-```
-
-because it is the sixth most recent successful backup.
-
-## Baseline exception
-
-Suppose Job 1 is still the baseline of an incremental backup, Job 9, that has not yet been
-superseded by a newer full backup. Even though Job 1 is the sixth most recent successful full
-backup and would normally be deleted, retention skips it and keeps it, because deleting it would
-make Job 9 unrestorable. Job 1 becomes eligible for deletion again only once Job 9 (or any
-incremental depending on it) no longer exists.
+Baseline variation: if Job 1 is the baseline of an incremental backup, Job 9, Job 1 is protected
+and nothing is dropped; Job 1 becomes droppable again once Job 9 (and any other incremental
+depending on it) no longer exists.
 
 ---
 
 # 23. Retention Job
 
-`Retention Job` represents one execution of the retention process for a Schedule.
-
-It is a job in the same sense as a Backup Job or a Restore Job: it has an id, a status, and its
-own execution log.
+`Retention Job` is one execution of retention for a Schedule (rules in §21, lifecycle in §19). It
+has an id, a status, and its own execution log, `Retention History`, whose entries record that it
+started, each snapshot it dropped, and how it ended (finished, or the error).
 
 ```text
 Schedule
-   │
-   └── Backup Job (SUCCESS, full)
-              │
-              ▼
-        Retention Job
-              │
-              ├── Retention History
-              │
-              └── drops old Backup References (and their snapshots)
-
+   └── Retention Job
+          ├── Retention History
+          └── drops old Backup Jobs' snapshots (and marks their References deleted)
 ```
 
-A Retention Job is created after a recurring Schedule's full-backup Backup Job completes
-successfully. It selects that Schedule's successful full Backup Jobs, keeps the newest
-`retention` of them (skipping any that are still a baseline for an existing incremental backup —
-see §21), and deletes the rest from the Repository.
-
-A Retention Job's own execution does not change the status of the Backup Job that triggered it,
-or of any Backup Job whose data it deletes: deleting a Backup Job's data does not delete the
-Backup Job itself, which remains a historical record (see §13-14).
+A Retention Job references the Backup Jobs whose data it deletes without owning them. It does not
+change their status, and deleting their data does not delete the Backup Jobs, which remain
+historical records (§13-14).
 
 ---
 
@@ -863,11 +830,12 @@ operation, not the removal of a single row.
 Because it involves removing data from the Repository, deleting a Schedule is not instantaneous:
 
 1. the request is checked immediately — it is rejected if the Schedule has a Backup Job still in
-   progress, or if one of its full backups is currently the baseline of an incremental backup
-   belonging to a different Schedule (see §21);
+   progress, or a Restore Job using one of its backups still in progress, or if one of its full
+   backups is currently the baseline of an incremental backup belonging to a different Schedule
+   (see §21);
 2. once accepted, the removal itself — dropping snapshots from the Repository and deleting the
-   Schedule's Jobs, History, and References — runs as its own tracked operation, the same way a
-   backup or restore does.
+   Schedule's Jobs, History, and References — runs as its own tracked Job, queued and run like any
+   other (§19).
 
 A Restore Job that used one of the deleted Backup Jobs as its source is deleted along with it
 (see §27); it exists only as a record of that specific restore, and has no meaning once its
@@ -882,21 +850,10 @@ so deleting a Cluster does not attempt to unregister or drop it.
 
 ---
 
-# 25. Restore Job
+# 25. Restore Job and Its Source
 
-Restore is a separate operation with its own lifecycle.
-
-A Restore always refers to a specific successful Backup Job.
-
-```text
-Backup Job
-    │
-    ▼
-Restore Job
-
-```
-
-One Backup Job can be used for multiple Restores:
+A Restore Job always refers to one specific successful Backup Job (§26). One Backup Job can be the
+source of multiple Restore Jobs:
 
 ```text
 Backup Job 123
@@ -911,46 +868,21 @@ Backup Job 123
 
 # 26. Restore Can Use Any Successful Backup Job
 
-The user can select any available, successfully completed Backup Job.
-
-It does not have to be:
-
-* the latest backup,
-* the backup created by the most recent Schedule execution,
-* the newest backup.
-
-The requirement is that the required data is still available in the Repository and that the Job completed successfully.
+The user can select any successfully completed Backup Job whose data is still available: its
+References have not been deleted by retention (§21), and its Schedule is not pending deletion. It
+does not have to be the latest or newest backup. An incremental backup is restored together with
+its baseline.
 
 ---
 
-# 27. Restore Job
+# 27. What a Restore Job Records
 
-A Restore Job represents one specific execution of a data recovery operation.
+A Restore Job records its `source_backup_job` and `target_cluster`, its status, and its own
+Restore History (§28); its lifecycle is in §19.
 
-It should reference:
-
-```text
-source_backup_job
-target_cluster
-
-```
-
-as well as any other information required to perform the restore.
-
-Its lifecycle is analogous to the Backup Job:
-
-```text
-Restore Job
-    │
-    ├── status
-    └── Restore History
-
-```
-
-Unlike a Backup Job, a Restore Job's only purpose is to record that specific restore attempt. A
-Restore Job is deleted if its source Backup Job is deleted (see §24), or if either the source or
-target Cluster is deleted: once its source backup or either Cluster is gone, keeping the record
-serves no purpose.
+Unlike a Backup Job, a Restore Job's only purpose is to record that specific restore attempt. It
+is deleted if its source Backup Job is deleted (§24), or if either the source or target Cluster is
+deleted: once its source backup or either Cluster is gone, keeping the record serves no purpose.
 
 ---
 
@@ -1019,44 +951,28 @@ Backup Job #100
 
 # 30. Full Lifecycle
 
-For a recurring backup:
-
 ```text
 Cluster
-   │
    ├── Inventory
-   │
    ├── Repository
-   │
    └── Schedule
-          │
-          │ cadence
+          │ cadence (scheduler tick)
           ▼
-      Backup Job
+      Backup Job ── PENDING ──(tick admits, one job per Cluster)──> RUNNING ──> SUCCESS / FAILED
           │
           ├── Backup History
-          │
-          └── Backup References
+          └── Backup References ──> Repository
                     │
+                    │ more successful full backups than `retention` (tick)
                     ▼
-                Repository
+              Retention Job ──> drops old snapshots, marks References deleted
                     │
-                    │ retention
-                    ▼
-              old backup deleted
+                    └── Retention History
 
-```
-
-For restore:
-
-```text
-Successful Backup Job
-        │
+Successful Backup Job (data not deleted)
+        │ restore request
         ▼
-   Restore Job
-        │
-        └── Restore History
-
+   Restore Job ── Restore History
 ```
 
 ---
@@ -1090,13 +1006,20 @@ Successful Backup Job
 * A Schedule points to exactly one Repository.
 * The Inventory and Repository must belong to the same Cluster.
 * A Schedule defines the cadence.
-* A Schedule defines the retention.
+* A recurring full-backup Schedule defines the retention; no other Schedule has one.
 * Retention is a number of copies.
 * Retention is independent for each Schedule.
-* `cadence = null` means immediate execution.
+* `cadence = null` means the Backup Job is created immediately; it must be a full backup.
 * A one-shot Schedule is immutable after creation.
 * A one-shot Schedule can be deleted.
 * A recurring Schedule generates multiple Backup Jobs.
+
+### Jobs
+
+* Creating a Job only queues it (`PENDING`); only a scheduler tick starts Jobs.
+* One Job runs at a time per Cluster; the next is restore, then backup, then other Jobs, oldest first.
+* Jobs on different Clusters run in parallel; a queued Job never fails because its Cluster is busy.
+* A Job ends `SUCCESS` or `FAILED`; a Job's failure never changes another Job's status.
 
 ### Backup Job
 
@@ -1117,17 +1040,17 @@ Successful Backup Job
 
 ### Retention
 
-* Retention is defined by the Schedule.
-* Only successfully completed Backup Jobs are counted.
-* Retention is independent for each Schedule.
-* The newest N successful backups are retained.
-* Older successful backups are deleted from the Repository.
-* Failed Jobs do not affect retention.
+* Retention is defined by a recurring full-backup Schedule and applies only to its full backups.
+* Only successfully completed full Backup Jobs whose data is not yet deleted are counted; Failed Jobs are ignored.
+* The newest N are kept; older ones are dropped by a Retention Job, except backups that are the
+  baseline of an active or successful incremental, or the source of a `PENDING`/`RUNNING` Restore Job.
+* Dropping deletes the snapshots and marks the References deleted; the Backup Job and its History remain.
+* A Retention Job never changes the status of any Backup Job.
 
 ### Restore
 
 * Restore is a separate Job.
-* A Restore references a specific Backup Job.
+* A Restore references a specific successful Backup Job whose data is not deleted.
 * One Backup Job can be the source of multiple Restore Jobs.
 * Restore has its own History.
 * Restore does not modify the history of the source Backup Job.
@@ -1159,6 +1082,12 @@ BACKUP HISTORY
 
 BACKUP REFERENCE
     Where the data created by the Job is located.
+
+RETENTION JOB
+    A specific execution of retention for a Schedule.
+
+RETENTION HISTORY
+    What exactly happened during the Retention Job.
 
 RESTORE JOB
     A specific attempt to restore data from a Backup Job.

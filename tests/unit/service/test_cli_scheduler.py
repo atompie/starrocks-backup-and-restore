@@ -37,10 +37,13 @@ def env(tmp_path, monkeypatch):
 
 @pytest.fixture
 def tick_steps(mocker):
-    """Stub the three things a tick does so the CLI can be tested in isolation."""
+    """Stub the four things a tick does so the CLI can be tested in isolation."""
     mocker.patch.object(schedules_commands, "reconcile_stale_jobs", return_value=jobs_commands.ReconciliationSummary())
     mocker.patch.object(schedules_commands, "run_due_schedules", return_value=([1, 2], 2))
     mocker.patch.object(schedules_commands, "expire_due_schedules", return_value=[3])
+    mocker.patch.object(
+        schedules_commands, "dispatch_pending_jobs", return_value=jobs_commands.DispatchSummary(admitted=[4])
+    )
 
 
 def test_tick_exits_zero_and_records_the_tick(env, tick_steps):
@@ -179,3 +182,11 @@ def test_python_dash_m_invocation_runs_a_tick(tmp_path):
     )
 
     assert proc.returncode == 0, proc.stderr
+
+
+def test_tick_logs_how_many_jobs_it_started(env, tick_steps, mocker):
+    info = mocker.patch.object(cli.logger, "info")
+
+    assert cli.main(["tick"]) == 0
+
+    assert any("1 job(s) started" in call.args[0] for call in info.call_args_list)

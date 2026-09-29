@@ -71,10 +71,11 @@ def test_list_stale_jobs_uses_heartbeat_then_started_then_created(sqlite_session
 
     stale_ids = {j.id for j in jobs_dal.list_stale_jobs(sqlite_session, CUTOFF)}
 
-    assert stale_ids == {stale_running.id, no_heartbeat_old_start.id, stale_pending.id}
+    assert stale_ids == {stale_running.id, no_heartbeat_old_start.id}
     assert live_running.id not in stale_ids
     assert no_heartbeat_fresh_start.id not in stale_ids
     assert fresh_pending.id not in stale_ids
+    assert stale_pending.id not in stale_ids  # a queued job's age is queue time, never staleness
 
 
 def test_list_stale_jobs_ignores_terminal_jobs(sqlite_session, make_job):

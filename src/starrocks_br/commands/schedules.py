@@ -22,6 +22,7 @@ from sqlalchemy.orm import Session
 
 from .. import logger, prune
 from ..dal.metadata import clusters as clusters_dal
+from ..dal.metadata import jobs as jobs_dal
 from ..dal.metadata import schedule_cleanup as schedule_cleanup_dal
 from ..dal.metadata import scheduler_lock as scheduler_lock_dal
 from ..dal.metadata import schedules as schedules_dal
@@ -38,7 +39,13 @@ from ..runtime_config import get_scheduler_lock_timeout_seconds
 from ..store.models import Cluster, Job, JobType, Schedule
 from ..store.session import session_scope
 from ._shared import connect, ensure_ready
-from .jobs import ReconciliationSummary, reconcile_stale_jobs, submit_job
+from .jobs import (
+    DispatchSummary,
+    ReconciliationSummary,
+    dispatch_pending_jobs,
+    reconcile_stale_jobs,
+    submit_job,
+)
 
 OnProgress = Callable[[dict], None] | None
 
@@ -245,6 +252,15 @@ def run_due_schedules(session: Session, now: datetime.datetime) -> tuple[list[in
             # past this due occurrence - skip to stay idempotent.
             continue
 
+        # `next_run_at` is already advanced; a schedule whose previous job is still queued or
+        # running skips this occurrence rather than stacking another job behind it.
+        if jobs_dal.schedule_has_open_job(session, schedule.id, schedule.job_type):
+            logger.info(
+                f"Schedule {schedule.id} is due but its previous {schedule.job_type} job is still open; "
+                "skipping this occurrence"
+            )
+            continue
+
         cluster = clusters_dal.get(session, schedule.cluster_id)
         job = submit_job(
             session,
@@ -348,16 +364,21 @@ class TickResult:
     reconciliation: ReconciliationSummary | None = None
     triggered_job_ids: list[int] = field(default_factory=list)
     cleanup_job_ids: list[int] = field(default_factory=list)
+    dispatch: DispatchSummary | None = None
 
 
 def execute_scheduler_tick(holder: str | None = None) -> TickResult:
-    """Run one scheduler tick: lock, reconcile stale jobs, run due schedules, expire one-shots.
+    """Run one scheduler tick: lock, reconcile stale jobs, run due schedules, expire one-shots, dispatch.
+
+    The dispatch step is the only thing that starts jobs: it admits at most one queued job per
+    cluster (and none for a cluster that already has a `RUNNING` job), so jobs created earlier in
+    this tick can start in it.
 
     If the lock is held by a live tick this returns `acquired=False` immediately without
     touching jobs or schedules. Otherwise the lock is always released in `finally`, and
     `last_tick_at` is recorded only when every step succeeded. The lock guards the tick itself,
-    not the backup jobs it dispatches - those run under `reserve_job_slot`'s per-cluster scope
-    and keep running after the lock is released.
+    not the jobs it dispatches - those keep running after the lock is released, and the
+    dispatch step keeps them to one per cluster (`reserve_job_slot` remains a backstop for backups).
     """
     holder = holder or scheduler_holder_id()
     lock = try_acquire_scheduler_lock(holder)
@@ -372,6 +393,8 @@ def execute_scheduler_tick(holder: str | None = None) -> TickResult:
         with session_scope() as session:
             result.triggered_job_ids, _ = run_due_schedules(session, now)
             result.cleanup_job_ids = expire_due_schedules(session, now)
+
+        result.dispatch = dispatch_pending_jobs(_utcnow())
 
         with session_scope() as session:
             scheduler_lock_dal.record_last_tick(session, _utcnow())

@@ -20,47 +20,47 @@ curl -s -H "Authorization: Bearer $STARROCKS_BR_API_KEY" -H "Content-Type: appli
   -d '{"job_type": "backup_incremental", "inventory_group_id": 1, "repository": "s3_repo", "cadence": "0 1 * * 1-6"}'    # Mon-Sat at 1 AM
 ```
 
-Then point a single cron entry (or Kubernetes CronJob) at the schedule-runner endpoint, on a
-short, fixed interval — it checks what's due and triggers it, doing nothing otherwise:
+Jobs never start on their own: submitting one (a schedule becoming due, a one-shot schedule, a
+restore, a schedule deletion) only queues it as `PENDING`. A scheduler **tick** starts queued jobs, so
+something must run a tick on a short, fixed interval. Each tick reconciles jobs whose worker died, queues
+the schedules that are due, and then starts queued jobs: at most one job per cluster at a time (restore
+first, then backups, then other work), while different clusters run in parallel. A job waiting for its
+cluster simply stays `PENDING`; it does not fail.
 
 ```bash
-# crontab: check every minute for due schedules
-* * * * * curl -s -H "Authorization: Bearer $STARROCKS_BR_API_KEY" -X POST https://api.internal/backup/schedules/run
+# crontab: run a tick every minute
+* * * * * STARROCKS_BR_DATABASE_URL=... STARROCKS_BR_DB_ENCRYPTION_KEY=... starrocks-br-scheduler tick
 ```
 
 ```yaml
-# Kubernetes CronJob, same idea
+# Kubernetes CronJob, same idea (use the image that contains starrocks-br)
 apiVersion: batch/v1
 kind: CronJob
 metadata:
-  name: starrocks-br-schedule-runner
+  name: starrocks-br-scheduler
 spec:
   schedule: "* * * * *"
+  concurrencyPolicy: Allow
   jobTemplate:
     spec:
       template:
         spec:
           containers:
-          - name: run-due
-            image: curlimages/curl
-            command:
-            - sh
-            - -c
-            - "curl -sf -H \"Authorization: Bearer $STARROCKS_BR_API_KEY\" -X POST $STARROCKS_BR_API_URL/backup/schedules/run"
-            env:
-            - name: STARROCKS_BR_API_URL
-              value: "https://api.internal"
-            - name: STARROCKS_BR_API_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: starrocks-br-api-credentials
-                  key: api-key
+          - name: tick
+            image: starrocks-br
+            command: ["starrocks-br-scheduler", "tick"]
+            envFrom:
+            - secretRef:
+                name: starrocks-br-config
           restartPolicy: OnFailure
 ```
 
-The actual backup work runs inside the long-lived API server process (via its configured job
-execution backend), not inside this short-lived `run-due` invocation, so the cron job itself
-finishes immediately regardless of how long the triggered backup takes.
+The tick process runs the jobs it starts and stays alive until they finish (a long backup keeps that one
+process running), so the next tick, which only takes the scheduler lock briefly, can start jobs on other
+clusters. A tick that finds the lock held exits with code 75. `POST /backup/schedules/run` only queues due
+schedules; it does not start jobs, so a tick is still needed.
+
+If no tick runs, nothing runs, restores included. `GET /health` reports when the last tick completed.
 
 ## Monitoring Backups
 
