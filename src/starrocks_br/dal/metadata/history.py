@@ -2,16 +2,17 @@ import json
 
 from sqlalchemy.orm import Session, sessionmaker
 
-from ...store.models import BackupHistory, RestoreHistory
+from ...store.models import BackupHistory, RestoreHistory, RetentionHistory
 
 # Terminal rows are always appended, bypassing the unchanged-state dedup
 # check - StarRocks itself never reports these two values, so they can never
 # collide with a StarRocks-native state already recorded for the job.
-TERMINAL_STATUSES = {"SUCCESS", "FAILED"}
+# `SNAPSHOT_DROPPED` is a retention event, one per dropped backup, never a repeated state.
+TERMINAL_STATUSES = {"SUCCESS", "FAILED", "SNAPSHOT_DROPPED"}
 
 
 def _append_event(
-    model: type[BackupHistory] | type[RestoreHistory],
+    model: type[BackupHistory] | type[RestoreHistory] | type[RetentionHistory],
     session_factory: sessionmaker[Session],
     job_id: int,
     status: str,
@@ -69,3 +70,18 @@ def append_restore_event(
     Mirrors `append_backup_event` for `restore_history`.
     """
     _append_event(RestoreHistory, session_factory, job_id, status, message, details)
+
+
+def append_retention_event(
+    session_factory: sessionmaker[Session],
+    job_id: int,
+    status: str,
+    message: str | None = None,
+    details: dict | None = None,
+) -> None:
+    """Append an event to a retention job's history.
+
+    Mirrors `append_backup_event` for `retention_history`. `SNAPSHOT_DROPPED` is always appended,
+    as each one records a different backup.
+    """
+    _append_event(RetentionHistory, session_factory, job_id, status, message, details)

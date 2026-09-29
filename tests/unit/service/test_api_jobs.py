@@ -316,32 +316,47 @@ def test_submit_restore_neither_group_nor_table_succeeds(api_client, monkeypatch
     assert response.status_code == 202
 
 
-def test_submit_prune_no_strategy_is_422(api_client):
+def test_submit_restore_from_a_backup_dropped_by_retention_is_409(api_client):
+    import datetime
+
+    from starrocks_br.store.models import BackupReference, Job
+    from starrocks_br.store.session import session_scope
+
     cluster_id = _create_cluster(api_client)
+    now = datetime.datetime.now(datetime.timezone.utc)
+    with session_scope() as session:
+        job = Job(
+            cluster_id=cluster_id, job_type="backup_full", backend="thread", params_json="{}",
+            status="SUCCESS", label="dropped_label", repository="repo", finished_at=now,
+        )
+        session.add(job)
+        session.flush()
+        session.add(
+            BackupReference(
+                job_id=job.id, repository="repo", snapshot_label="dropped_label", snapshot_timestamp=now,
+                database_name="db", table_name="t", partition_name="p", deleted_at=now,
+            )
+        )
 
-    response = api_client.post(f"/backup/manual/prune/cluster/{cluster_id}", json={})
+    response = api_client.post(
+        f"/backup/manual/restore/cluster/{cluster_id}", json={"target_label": "dropped_label"}
+    )
 
-    assert response.status_code == 422
+    assert response.status_code == 409
+    with session_scope() as session:
+        assert session.query(Job).filter_by(job_type="restore").count() == 0
 
 
-def test_submit_prune_two_strategies_is_422(api_client):
+def test_manual_prune_route_is_retired(api_client):
     cluster_id = _create_cluster(api_client)
 
     response = api_client.post(
-        f"/backup/manual/prune/cluster/{cluster_id}", json={"keep_last": 3, "older_than": "7d"}
+        f"/backup/manual/prune/cluster/{cluster_id}", json={"group_id": 1, "keep_last": 3}
     )
 
-    assert response.status_code == 422
-
-
-def test_submit_prune_extra_field_is_422(api_client):
-    cluster_id = _create_cluster(api_client)
-
-    response = api_client.post(
-        f"/backup/manual/prune/cluster/{cluster_id}", json={"snapshot": "x", "table": "t"}
-    )
-
-    assert response.status_code == 422
+    assert response.status_code == 404
+    listing = api_client.get(f"/backup/history/cluster/{cluster_id}", params={"job_type": "prune"})
+    assert listing.json() == []
 
 
 def _submit_backup_full(api_client, monkeypatch, cluster_id, group_id=None):
@@ -357,18 +372,21 @@ def _submit_backup_full(api_client, monkeypatch, cluster_id, group_id=None):
     return job
 
 
-def _submit_prune(api_client, monkeypatch, cluster_id, group_id=1):
-    from starrocks_br.jobs import handlers
+def _add_retention_job(cluster_id, group_id=None, events=()):
+    """Insert a finished retention job (the tick, not an API call, creates these) and return it as a dict."""
+    from starrocks_br.store.models import Job, RetentionHistory
+    from starrocks_br.store.session import session_scope
 
-    _mock_group_check(monkeypatch)
-    monkeypatch.setitem(
-        handlers.JOB_HANDLERS, "prune", lambda cluster, params, job_id, on_progress=None: {}
-    )
-    submitted = api_client.post(
-        f"/backup/manual/prune/cluster/{cluster_id}",
-        json={"group_id": group_id, "keep_last": 3},
-    ).json()
-    return _wait_for_terminal(api_client, submitted["id"])
+    with session_scope() as session:
+        job = Job(
+            cluster_id=cluster_id, job_type="retention", backend="thread", params_json="{}",
+            status="SUCCESS", group_id=group_id,
+        )
+        session.add(job)
+        session.flush()
+        for status in events:
+            session.add(RetentionHistory(job_id=job.id, status=status))
+        return {"id": job.id}
 
 
 def test_backup_history_empty_for_cluster_with_no_jobs(api_client):
@@ -389,7 +407,7 @@ def test_backup_history_unknown_cluster_is_404(api_client):
 def test_backup_history_defaults_to_backup_job_types(api_client, monkeypatch):
     cluster_id = _create_cluster(api_client)
     backup_job = _submit_backup_full(api_client, monkeypatch, cluster_id)
-    _submit_prune(api_client, monkeypatch, cluster_id)
+    _add_retention_job(cluster_id)
 
     response = api_client.get(f"/backup/history/cluster/{cluster_id}")
 
@@ -401,13 +419,13 @@ def test_backup_history_defaults_to_backup_job_types(api_client, monkeypatch):
 def test_backup_history_filters_by_job_type(api_client, monkeypatch):
     cluster_id = _create_cluster(api_client)
     _submit_backup_full(api_client, monkeypatch, cluster_id)
-    prune_job = _submit_prune(api_client, monkeypatch, cluster_id)
+    retention_job = _add_retention_job(cluster_id)
 
-    response = api_client.get(f"/backup/history/cluster/{cluster_id}", params={"job_type": "prune"})
+    response = api_client.get(f"/backup/history/cluster/{cluster_id}", params={"job_type": "retention"})
 
     assert response.status_code == 200
     body = response.json()
-    assert [job["id"] for job in body] == [prune_job["id"]]
+    assert [job["id"] for job in body] == [retention_job["id"]]
 
 
 def test_backup_history_filters_by_status(api_client, monkeypatch):
@@ -511,7 +529,7 @@ def test_backup_history_filters_by_group_id_and_job_type_combined(api_client, mo
     cluster_id = _create_cluster(api_client)
     group_id = _create_group(api_client, cluster_id)
     backup_job = _submit_backup_full(api_client, monkeypatch, cluster_id, group_id=group_id)
-    _submit_prune(api_client, monkeypatch, cluster_id, group_id=group_id)
+    _add_retention_job(cluster_id, group_id=group_id)
 
     response = api_client.get(
         f"/backup/history/cluster/{cluster_id}",
@@ -692,23 +710,32 @@ def test_get_restore_job_history_uses_restore_history_table(api_client, monkeypa
     assert [entry["status"] for entry in body] == ["DOWNLOADING"]
 
 
-def test_get_prune_job_history_is_empty_no_log_table(api_client, monkeypatch):
-    """Retention/prune jobs have no log table; history is an empty 200, not 404."""
-    from starrocks_br.jobs import handlers
-
-    _mock_group_check(monkeypatch)
-    monkeypatch.setitem(
-        handlers.JOB_HANDLERS, "prune", lambda cluster, params, job_id, on_progress=None: {}
+def test_get_retention_job_history_uses_retention_history_table(api_client):
+    cluster_id = _create_cluster(api_client)
+    job = _add_retention_job(
+        cluster_id, events=("RETENTION_STARTED", "SNAPSHOT_DROPPED", "RETENTION_FINISHED")
     )
 
+    response = api_client.get(f"/job/{job['id']}/history")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert [entry["status"] for entry in body] == ["RETENTION_STARTED", "SNAPSHOT_DROPPED", "RETENTION_FINISHED"]
+    assert all(entry["job_id"] == job["id"] for entry in body)
+
+
+def test_get_legacy_prune_job_history_is_empty_no_log_table(api_client):
+    from starrocks_br.store.models import Job
+    from starrocks_br.store.session import session_scope
+
     cluster_id = _create_cluster(api_client)
-    submitted = api_client.post(
-        f"/backup/manual/prune/cluster/{cluster_id}", json={"group_id": 1, "keep_last": 1}
-    ).json()
+    with session_scope() as session:
+        job = Job(cluster_id=cluster_id, job_type="prune", backend="thread", params_json="{}", status="SUCCESS")
+        session.add(job)
+        session.flush()
+        job_id = job.id
 
-    _wait_for_terminal(api_client, submitted["id"])
-
-    response = api_client.get(f"/job/{submitted['id']}/history")
+    response = api_client.get(f"/job/{job_id}/history")
 
     assert response.status_code == 200
     assert response.json() == []

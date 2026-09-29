@@ -10,8 +10,8 @@ from collections.abc import Callable
 from typing import Any
 
 from ..commands.backup import run_backup_full, run_backup_incremental
-from ..commands.prune import run_prune
 from ..commands.restore import run_restore
+from ..commands.retention import run_retention
 from ..commands.schedules import run_schedule_cleanup
 from ..store.models import Cluster
 
@@ -21,6 +21,6 @@ JOB_HANDLERS: dict[str, Callable[[Cluster, dict[str, Any], int, OnProgress], dic
     "backup_full": run_backup_full,
     "backup_incremental": run_backup_incremental,
     "restore": run_restore,
-    "prune": run_prune,
     "schedule_cleanup": run_schedule_cleanup,
+    "retention": run_retention,
 }

@@ -310,7 +310,7 @@ def _baseline_of(session: Session, job_id: int) -> int | None:
 def _fail_job(
     job: _StaleJob, message: str, summary: ReconciliationSummary, final_state: str = "FAILED"
 ) -> None:
-    """Fail a stale job: status, history row (backup/restore only), and the backup's cluster slot."""
+    """Fail a stale job: status, history row (backup/restore/retention), and the backup's cluster slot."""
     with session_scope() as session:
         jobs_dal.mark_failed(session, job.id, message)
 
@@ -319,6 +319,8 @@ def _fail_job(
             history.append_backup_event(get_session_factory(), job.id, "FAILED", message=message)
         elif job.job_type == "restore":
             history.append_restore_event(get_session_factory(), job.id, "FAILED", message=message)
+        elif job.job_type == "retention":
+            history.append_retention_event(get_session_factory(), job.id, "FAILED", message=message)
     except Exception:
         logger.error(f"Failed to append reconciliation history for job {job.id}")
 

@@ -1,7 +1,7 @@
 # API Server
 
 `starrocks-br` runs as a FastAPI service: register multiple StarRocks clusters, trigger and
-monitor backup/restore/prune jobs over HTTP, and manage recurring backup schedules centrally. It
+monitor backup/restore/retention jobs over HTTP, and manage recurring backup schedules centrally. It
 is the only interface this tool provides — there is no CLI.
 
 ## Table of Contents
@@ -205,15 +205,18 @@ containing `ops_database` is silently ignored, not rejected.
 | POST | `/backup/manual/full/cluster/{id}` | Submit a full backup. |
 | POST | `/backup/manual/incremental/cluster/{id}` | Submit an incremental backup. |
 | POST | `/backup/manual/restore/cluster/{id}` | Submit a restore. |
-| POST | `/backup/manual/prune/cluster/{id}` | Submit a prune. |
 | GET | `/job/{id}` | Get a job's status/progress (any job type, not manual-backup-specific). |
+
+The former `POST /backup/manual/prune/cluster/{id}` route is retired (`404`): retention is enforced
+automatically from a recurring full-backup schedule's `retention` count by `retention` jobs the scheduler
+tick queues. A restore from a backup that retention has dropped is rejected with `409`.
 
 Every submit endpoint returns `202 Accepted` immediately with the created job (`status: PENDING`);
 the work runs asynchronously. Request body fields (send only what applies to that job type):
 
 | Field | Used by | Required | Meaning |
 |-------|---------|----------|---------|
-| `group_id` | backups, prune | Yes | Inventory group id (from `GET /inventories/cluster/{id}`). |
+| `group_id` | backups | Yes | Inventory group id (from `GET /inventories/cluster/{id}`). |
 | `repository` | backups | Yes | Destination repository name; must currently exist on the cluster. |
 | `name` | backups | No | Custom backup label. |
 | `baseline_backup` | incremental backup | No | Baseline backup label to diff against. |
@@ -221,8 +224,6 @@ the work runs asynchronously. Request body fields (send only what applies to tha
 | `group_id` | restore | No | Restore every table in this group instead of a single table (mutually exclusive with `table`). |
 | `table` / `database` | restore | No | Restore a single table instead of a group; `database` is required alongside `table`. |
 | `rename_suffix` | restore | No | Temp-table suffix (default `_restored`). |
-| `keep_last`, `older_than`, `snapshot`, `snapshots` | prune | Exactly one | Pruning strategy. |
-| `dry_run` | prune | No | Report what would be pruned without deleting anything. |
 | `backend` | all | No | Override the execution backend for this one job. |
 
 `GET /job/{id}` response:
@@ -329,8 +330,8 @@ repository doesn't exist, or `204` on successful deletion.
 
 ### Inventory Groups
 
-Inventory groups are named sets of database/table memberships that scope backup, restore, and
-prune operations, persisted in this tool's own SQLite metastore. Collection-level operations use
+Inventory groups are named sets of database/table memberships that scope backup and restore
+operations, persisted in this tool's own SQLite metastore. Collection-level operations use
 the plural `/inventories/...` domain; operations on one group (and its table memberships) use the
 singular `/inventory/...` domain.
 
@@ -399,7 +400,7 @@ in `STARROCKS_BR_ENABLED_BACKENDS`).
 Wait for the job to finish (or investigate it) and/or disable or delete the schedule first.
 
 **`409` deleting a repository.** StarRocks reports it still holds at least one snapshot
-(`SHOW SNAPSHOT ON <repo>`) — prune or restore-and-confirm the backup data first, or leave the
+(`SHOW SNAPSHOT ON <repo>`) — remove or restore-and-confirm the backup data first, or leave the
 repository in place. Note this checks StarRocks' live state, not this tool's own backup history.
 
 **`503` on repository endpoints.** The target cluster couldn't be reached (as opposed to it having

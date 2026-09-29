@@ -369,26 +369,89 @@ class TestExecuteSchedulerTick:
             commands, "expire_due_schedules", side_effect=lambda s, n: calls.append("expire") or [9]
         )
         mocker.patch.object(
+            commands, "submit_due_retention_jobs", side_effect=lambda s: calls.append("retention") or [11]
+        )
+        mocker.patch.object(
             commands,
             "dispatch_pending_jobs",
             side_effect=lambda now: calls.append("dispatch") or DispatchSummary(admitted=[7]),
         )
         return calls
 
-    def test_runs_reconcile_then_due_then_expiry_then_dispatch_and_records_the_tick(
+    def test_runs_reconcile_then_due_then_expiry_then_retention_then_dispatch_and_records_the_tick(
         self, sqlite_store, steps
     ):
         from starrocks_br.commands import schedules as commands
 
         result = commands.execute_scheduler_tick("host:1")
 
-        assert steps == ["reconcile", "run_due", "expire", "dispatch"]
+        assert steps == ["reconcile", "run_due", "expire", "retention", "dispatch"]
         assert result.acquired is True
         assert result.triggered_job_ids == [7]
         assert result.cleanup_job_ids == [9]
+        assert result.retention_job_ids == [11]
         assert result.dispatch.admitted == [7]
         with session_scope() as session:
             assert commands.get_scheduler_last_tick_at(session) is not None
+
+    def test_a_retention_job_submitted_by_the_tick_is_admitted_on_an_idle_cluster(self, sqlite_store, mocker):
+        import datetime as dt
+        from unittest.mock import MagicMock
+
+        from starrocks_br.commands import jobs as jobs_commands
+        from starrocks_br.commands import schedules as commands
+        from starrocks_br.store.models import BackupReference, Job
+
+        backend = MagicMock()
+        registry = MagicMock()
+        registry.resolve.return_value = "thread"
+        registry.get.return_value = backend
+        mocker.patch.object(jobs_commands, "get_registry", return_value=registry)
+        mocker.patch.object(commands, "reconcile_stale_jobs", return_value="summary")
+        with session_scope() as session:
+            cluster = _make_cluster(session)
+            group = _make_group(session, cluster)
+            schedule = Schedule(
+                cluster_id=cluster.id,
+                job_type="backup_full",
+                inventory_group_id=group.id,
+                repository="repo",
+                cadence="0 0 1 1 *",
+                backend="thread",
+                retention=1,
+                next_run_at=_utcnow() + datetime.timedelta(days=30),
+            )
+            session.add(schedule)
+            session.flush()
+            for minute in (1, 2):
+                job = Job(
+                    cluster_id=cluster.id,
+                    job_type="backup_full",
+                    backend="thread",
+                    params_json="{}",
+                    status="SUCCESS",
+                    schedule_id=schedule.id,
+                    finished_at=dt.datetime(2026, 1, 1, 0, minute, tzinfo=dt.timezone.utc),
+                )
+                session.add(job)
+                session.flush()
+                session.add(
+                    BackupReference(
+                        job_id=job.id,
+                        repository="repo",
+                        snapshot_label=f"s{minute}",
+                        snapshot_timestamp=dt.datetime(2026, 1, 1, tzinfo=dt.timezone.utc),
+                        database_name="db",
+                        table_name="t",
+                        partition_name="p",
+                    )
+                )
+
+        result = commands.execute_scheduler_tick("host:1")
+
+        assert len(result.retention_job_ids) == 1
+        assert result.dispatch.admitted == result.retention_job_ids
+        backend.enqueue.assert_called_once_with(result.retention_job_ids[0])
 
     def test_a_job_submitted_by_the_tick_is_started_in_the_same_tick(self, sqlite_store, mocker):
         from unittest.mock import MagicMock

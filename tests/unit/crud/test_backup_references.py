@@ -119,3 +119,25 @@ def test_record_references_no_op_when_empty(sqlite_session, make_cluster, make_j
     backup_catalog.record_references(sqlite_session, job.id, "repo1", "backup1", dt.datetime(2024, 1, 1), [])
 
     assert sqlite_session.query(BackupReference).count() == 0
+
+
+def test_find_latest_full_backup_job_ignores_backups_deleted_by_retention(sqlite_session, make_cluster, make_job):
+    cluster = make_cluster()
+    kept = make_job(
+        cluster.id, job_type="backup_full", label="a", status=JobStatus.SUCCESS.value,
+        finished_at=dt.datetime(2024, 1, 1),
+    )
+    _add_reference(sqlite_session, kept, "sales_db")
+    dropped = make_job(
+        cluster.id, job_type="backup_full", label="b", status=JobStatus.SUCCESS.value,
+        finished_at=dt.datetime(2024, 1, 5),
+    )
+    _add_reference(sqlite_session, dropped, "sales_db")
+    sqlite_session.query(BackupReference).filter_by(job_id=dropped.id).update(
+        {"deleted_at": dt.datetime(2024, 1, 6)}
+    )
+    sqlite_session.commit()
+
+    found = backup_catalog.find_latest_full_backup_job(sqlite_session, cluster.id, "sales_db")
+
+    assert found.id == kept.id

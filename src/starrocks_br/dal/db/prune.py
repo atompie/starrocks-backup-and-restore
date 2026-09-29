@@ -47,3 +47,13 @@ def execute_drop_snapshot(db, repository: str, snapshot_name: str) -> None:
     except Exception as e:
         logger.error(f"Failed to delete snapshot '{snapshot_name}': {e}")
         raise
+
+
+def snapshot_present(db, repository: str, snapshot_name: str) -> bool:
+    """Whether `snapshot_name` is listed in `repository`.
+
+    Unlike `verify_snapshot_exists`, a failing query is not read as "absent": it propagates, so
+    a transient StarRocks error can never be mistaken for an already-dropped snapshot.
+    """
+    sql = f"SHOW SNAPSHOT ON {utils.quote_identifier(repository)} WHERE SNAPSHOT = {utils.quote_value(snapshot_name)}"
+    return bool(db.query(sql))

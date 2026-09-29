@@ -13,7 +13,8 @@
 # limitations under the License.
 
 from starrocks_br.dal.metadata import history
-from starrocks_br.store.models import BackupHistory, Job, RestoreHistory
+from starrocks_br.dal.metadata import jobs as jobs_dal
+from starrocks_br.store.models import BackupHistory, Job, RestoreHistory, RetentionHistory
 
 
 def test_should_write_backup_history_success(sqlite_session, make_cluster, make_job, history_session_factory):
@@ -138,3 +139,25 @@ def test_history_rows_are_never_updated_or_deleted(
     source = inspect.getsource(history)
     assert ".delete(" not in source
     assert ".update(" not in source
+
+
+def test_retention_events_are_appended_and_listed_via_the_job_history(
+    sqlite_session, make_cluster, make_job, history_session_factory
+):
+    cluster = make_cluster()
+    job = make_job(cluster.id, job_type="retention")
+
+    history.append_retention_event(history_session_factory, job.id, "RETENTION_STARTED")
+    history.append_retention_event(history_session_factory, job.id, "RETENTION_STARTED")
+    history.append_retention_event(history_session_factory, job.id, "SNAPSHOT_DROPPED", details={"job_id": 1})
+    history.append_retention_event(history_session_factory, job.id, "SNAPSHOT_DROPPED", details={"job_id": 2})
+    history.append_retention_event(history_session_factory, job.id, "RETENTION_FINISHED")
+
+    assert sqlite_session.query(RetentionHistory).filter_by(job_id=job.id).count() == 4
+    rows = jobs_dal.list_history_for_job(sqlite_session, "retention", job.id)
+    assert [row.status for row in rows] == [
+        "RETENTION_STARTED",
+        "SNAPSHOT_DROPPED",
+        "SNAPSHOT_DROPPED",
+        "RETENTION_FINISHED",
+    ]

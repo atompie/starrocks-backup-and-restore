@@ -56,6 +56,8 @@ Under the domain specification (`SPEC.md` §2, §10, §11, §21-23), retention m
 5. Append `SNAPSHOT_DROPPED` to `retention_history`.
 6. In a short session set `BackupReference.deleted_at = now` for that backup.
 
+If a `DROP SNAPSHOT` fails, the handler appends `FAILED` and stops without attempting the remaining backups (an outage typically fails every drop); already-committed backups stay deleted and a later sweep retries the rest.
+
 At the end it appends `RETENTION_FINISHED` (details include dropped ids and whether the deadline was reached). A deadline stop is a normal `SUCCESS`; the next sweep sees the remaining droppable backups and submits a new job.
 
 *Rationale*: committing `deleted_at` per backup keeps metadata equal to physical reality if a later drop fails, and idempotent drops make retries safe. The deadline bounds how long the lowest-priority job can hold a cluster's lane against later backups.
@@ -67,6 +69,14 @@ At the end it appends `RETENTION_FINISHED` (details include dropped ids and whet
 ### 5. Lineage lookup filtering on `deleted_at IS NULL`
 
 Add `BackupReference.deleted_at.is_(None)` to `find_latest_full_backup_job` (`backup_catalog.py`), `find_latest_full_backup_before` and `list_partitions_for_label` (`restore_catalog.py`), so deleted backups cannot be resolved as baselines or restore targets (`SPEC.md` §14, §26).
+
+### 5b. Restore submission rejects dropped sources
+
+Restore submission resolves the source backup job and rejects it with HTTP 409 (before creating a Restore Job) when all of its references have `deleted_at` set (`SPEC.md` §21, §26), alongside the existing pending-deletion check.
+
+### 5c. Schedule cleanup covers retention jobs
+
+`schedule_cleanup` deletes the schedule's `retention` jobs and their `retention_history` (`SPEC.md` §24). The dispatcher's one-job-per-cluster rule keeps cleanup from running alongside an open retention job.
 
 ### 6. Retirement of the manual prune route
 

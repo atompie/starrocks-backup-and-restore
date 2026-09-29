@@ -15,6 +15,7 @@ from starrocks_br.store.models import (
     Job,
     JobStatus,
     RestoreHistory,
+    RetentionHistory,
     RunStatus,
 )
 
@@ -230,6 +231,18 @@ def test_stale_restore_is_failed_with_restore_history(make_job, starrocks):
     with session_module.session_scope() as session:
         events = session.scalars(select(RestoreHistory).where(RestoreHistory.job_id == job_id)).all()
     assert [e.status for e in events] == ["FAILED"]
+
+
+def test_stale_retention_is_failed_with_retention_history(make_job, starrocks):
+    job_id = make_job(job_type="retention", label=None, params_json='{"schedule_id": 1}')
+
+    jobs_commands.reconcile_stale_jobs()
+
+    assert _job(job_id).status == JobStatus.FAILED.value
+    with session_module.session_scope() as session:
+        events = session.scalars(select(RetentionHistory).where(RetentionHistory.job_id == job_id)).all()
+    assert [e.status for e in events] == ["FAILED"]
+    starrocks.lookup.assert_not_called()
 
 
 def test_job_claimed_by_someone_else_is_skipped(make_job, starrocks, mocker):

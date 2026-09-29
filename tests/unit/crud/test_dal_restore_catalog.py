@@ -157,3 +157,50 @@ def test_list_partition_names(sqlite_session, make_cluster, make_job):
     result = restore_catalog.list_partition_names(sqlite_session, cluster.id, "backup1", "sales_db", "orders")
 
     assert result == ["p1", "p2"]
+
+
+def _delete_references(session, job):
+    session.query(BackupReference).filter_by(job_id=job.id).update({"deleted_at": dt.datetime(2024, 2, 1)})
+    session.commit()
+
+
+def test_find_latest_full_backup_before_ignores_backups_deleted_by_retention(sqlite_session, make_cluster, make_job):
+    cluster = make_cluster()
+    kept = make_job(cluster.id, job_type="backup_full", label="a", status=JobStatus.SUCCESS.value,
+                    finished_at=dt.datetime(2024, 1, 1))
+    _add_reference(sqlite_session, kept, "sales_db")
+    dropped = make_job(cluster.id, job_type="backup_full", label="b", status=JobStatus.SUCCESS.value,
+                       finished_at=dt.datetime(2024, 1, 5))
+    _add_reference(sqlite_session, dropped, "sales_db")
+    _delete_references(sqlite_session, dropped)
+
+    found = restore_catalog.find_latest_full_backup_before(
+        sqlite_session, cluster.id, "sales_db", dt.datetime(2024, 1, 10)
+    )
+
+    assert found.id == kept.id
+
+
+def test_list_partitions_for_label_is_empty_once_retention_deleted_the_data(sqlite_session, make_cluster, make_job):
+    cluster = make_cluster()
+    job = make_job(cluster.id, label="a", status=JobStatus.SUCCESS.value, finished_at=dt.datetime(2024, 1, 1))
+    _add_reference(sqlite_session, job, "sales_db")
+    assert restore_catalog.list_partitions_for_label(sqlite_session, cluster.id, "a") == [("sales_db", "orders")]
+
+    _delete_references(sqlite_session, job)
+
+    assert restore_catalog.list_partitions_for_label(sqlite_session, cluster.id, "a") == []
+
+
+def test_source_data_deleted_only_when_every_reference_is_deleted(sqlite_session, make_cluster, make_job):
+    cluster = make_cluster()
+    never_referenced = make_job(cluster.id, label="a", status=JobStatus.SUCCESS.value)
+    live = make_job(cluster.id, label="b", status=JobStatus.SUCCESS.value, finished_at=dt.datetime(2024, 1, 1))
+    _add_reference(sqlite_session, live, "sales_db")
+    dropped = make_job(cluster.id, label="c", status=JobStatus.SUCCESS.value, finished_at=dt.datetime(2024, 1, 1))
+    _add_reference(sqlite_session, dropped, "sales_db")
+    _delete_references(sqlite_session, dropped)
+
+    assert restore_catalog.source_data_deleted(sqlite_session, never_referenced.id) is False
+    assert restore_catalog.source_data_deleted(sqlite_session, live.id) is False
+    assert restore_catalog.source_data_deleted(sqlite_session, dropped.id) is True

@@ -30,9 +30,18 @@ incremental backup submission routes or a manual prune submission route.
 - **THEN** the system creates a `schedule_cleanup` job that can be polled through the standard job
   endpoint and reports SUCCESS or FAILED when cleanup completes
 
+#### Scenario: Schedule cleanup removes the schedule's retention jobs
+- **WHEN** schedule cleanup deletes a schedule
+- **THEN** that schedule's retention jobs and their retention history are deleted with it
+
 #### Scenario: Deleting a backup removes restore jobs that used it
 - **WHEN** schedule cleanup deletes a backup job used as the source of one or more restore jobs
 - **THEN** those restore job records and their histories are deleted with the backup job
+
+#### Scenario: Restore from a backup whose data was dropped by retention
+- **WHEN** an authenticated client requests a restore whose source backup job has all of its backup
+  references deleted by retention
+- **THEN** the system responds with HTTP 409 and creates no Restore Job
 
 #### Scenario: A submitted job waits for a scheduler tick
 - **WHEN** an authenticated client submits a restore and no scheduler tick has run since
@@ -123,8 +132,8 @@ dropping each backup. A retention job SHALL never change the status of any backu
 
 #### Scenario: Drop failure leaves backups untouched
 - **WHEN** `DROP SNAPSHOT` fails for a backup
-- **THEN** the retention job ends `FAILED` with a `FAILED` history entry, that backup keeps `deleted_at`
-  unset, every backup job stays `SUCCESS`, and a later tick retries it
+- **THEN** the retention job stops without attempting further backups and ends `FAILED` with a `FAILED`
+  history entry, that backup keeps `deleted_at` unset, every backup job stays `SUCCESS`, and a later tick retries it
 
 ### Requirement: Retention runs within a time limit
 The system SHALL stop a retention job from starting new snapshot drops once

@@ -1,4 +1,4 @@
-"""Cluster-connection helpers shared by the backup/restore/prune commands.
+"""Cluster-connection helpers shared by the backup/restore/retention commands.
 
 Private to the `commands` package (leading underscore) - not part of the
 command layer's public surface, just factored out to avoid re-implementing

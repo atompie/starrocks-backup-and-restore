@@ -251,6 +251,37 @@ class TestRestoreSubmissionCoordination:
             assert job.source_backup_job_id == backup_job.id
 
 
+    def test_restore_submission_rejected_when_retention_dropped_the_source_data(self, sqlite_store):
+        from starrocks_br.jobs.backend import BackendRegistry, reset_registry, set_registry
+
+        with session_scope() as session:
+            cluster = _make_cluster(session)
+            group = _make_group(session, cluster)
+            schedule = _make_schedule(session, cluster, group)
+            backup_job = _make_backup_job(session, cluster, schedule)
+            session.add(
+                BackupReference(
+                    job_id=backup_job.id,
+                    repository="repo",
+                    snapshot_label=backup_job.label,
+                    snapshot_timestamp=_utcnow(),
+                    database_name="db",
+                    table_name="t",
+                    partition_name="p",
+                    deleted_at=_utcnow(),
+                )
+            )
+            session.flush()
+
+            set_registry(BackendRegistry({"thread": _StubBackend()}, "thread"))
+            try:
+                with pytest.raises(exceptions.RestoreSourceDataDeletedError):
+                    submit_restore_job(session, cluster, {"target_label": backup_job.label}, "thread")
+            finally:
+                reset_registry()
+            assert session.query(Job).filter_by(job_type="restore").count() == 0
+
+
 class TestRunScheduleCleanup:
     def test_cleanup_with_no_references_deletes_backup_jobs_and_schedule(self, sqlite_store):
         with session_scope() as session:
@@ -270,6 +301,29 @@ class TestRunScheduleCleanup:
         with session_scope() as session:
             assert session.get(Schedule, schedule_id) is None
             assert session.get(Job, failed_job.id) is None
+
+    def test_cleanup_deletes_the_schedules_retention_jobs_and_their_history(self, sqlite_store):
+        from starrocks_br.store.models import RetentionHistory
+
+        with session_scope() as session:
+            cluster = _make_cluster(session)
+            group = _make_group(session, cluster)
+            schedule = _make_schedule(session, cluster, group)
+            other = _make_schedule(session, cluster, group, cadence="0 2 * * *")
+            retention_job = _make_backup_job(session, cluster, schedule, job_type="retention", label=None)
+            other_retention_job = _make_backup_job(session, cluster, other, job_type="retention", label=None)
+            session.add(RetentionHistory(job_id=retention_job.id, status="RETENTION_STARTED"))
+            schedule.deletion_requested_at = _utcnow()
+            session.flush()
+            schedule_id, retention_job_id, other_id = schedule.id, retention_job.id, other_retention_job.id
+            cluster_obj = cluster
+
+        run_schedule_cleanup(cluster_obj, {"schedule_id": schedule_id}, job_id=1)
+
+        with session_scope() as session:
+            assert session.get(Job, retention_job_id) is None
+            assert session.query(RetentionHistory).filter_by(job_id=retention_job_id).count() == 0
+            assert session.get(Job, other_id) is not None
 
     def test_cleanup_drops_each_distinct_snapshot_once(self, sqlite_store, mocker):
         with session_scope() as session:

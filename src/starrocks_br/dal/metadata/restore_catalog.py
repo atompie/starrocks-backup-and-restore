@@ -43,6 +43,17 @@ def source_schedule_pending_deletion(session: Session, source_backup_job_id: int
     return deletion_requested_at is not None
 
 
+def source_data_deleted(session: Session, source_backup_job_id: int) -> bool:
+    """Whether retention has deleted all of `source_backup_job_id`'s data (SPEC.md §21, §26).
+
+    A backup with no references at all was never dropped by retention, so it does not count.
+    """
+    references = select(BackupReference.id).where(BackupReference.job_id == source_backup_job_id)
+    has_deleted = references.where(BackupReference.deleted_at.is_not(None)).exists()
+    has_live = references.where(BackupReference.deleted_at.is_(None)).exists()
+    return bool(session.scalar(select(has_deleted & ~has_live)))
+
+
 def find_latest_full_backup_before(
     session: Session, cluster_id: int, database_name: str, before: datetime.datetime
 ) -> Job | None:
@@ -60,6 +71,7 @@ def find_latest_full_backup_before(
             Job.job_type == "backup_full",
             Job.status == JobStatus.SUCCESS.value,
             BackupReference.database_name == database_name,
+            BackupReference.deleted_at.is_(None),
             Job.finished_at < before,
         )
         .order_by(Job.finished_at.desc())
@@ -75,7 +87,7 @@ def list_partitions_for_label(session: Session, cluster_id: int, label: str) -> 
     rows = session.execute(
         select(BackupReference.database_name, BackupReference.table_name)
         .distinct()
-        .where(BackupReference.job_id == job.id)
+        .where(BackupReference.job_id == job.id, BackupReference.deleted_at.is_(None))
         .order_by(BackupReference.database_name, BackupReference.table_name)
     ).all()
     return [(row[0], row[1]) for row in rows]

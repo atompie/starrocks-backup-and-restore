@@ -37,7 +37,7 @@ This tool adds **incremental backup capabilities** to StarRocks by leveraging na
 - ✅ **Complete operation tracking** - Every backup and restore is logged with status, timestamps, and error details
 - ✅ **Intelligent restore** - Automatically resolves backup chains (full + incremental) for you
 - ✅ **Inventory groups** - Organize tables into groups with different backup strategies
-- ✅ **Backup lifecycle management** - Prune old backups with flexible retention policies (keep-last, older-than, specific snapshots)
+- ✅ **Backup lifecycle management** - Automatic per-schedule retention keeps the newest N full backups of each recurring schedule
 - ✅ **Job concurrency control** - Prevents conflicting operations
 - ✅ **Safe restores** - Atomic rename mechanism prevents data loss during restore
 - ✅ **Metadata management** - Dedicated `ops` database tracks all backup metadata and partition manifests
@@ -99,18 +99,14 @@ curl -s -H "Authorization: Bearer $STARROCKS_BR_API_KEY" -H "Content-Type: appli
   -d '{"target_label": "mydb_20251118_full"}'
 ```
 
-**Prune old backups:**
-```bash
-# Keep only last 5 backups
-curl -s -H "Authorization: Bearer $STARROCKS_BR_API_KEY" -H "Content-Type: application/json" \
-  -X POST http://localhost:8000/backup/manual/prune/cluster/1 \
-  -d '{"group_id": 1, "keep_last": 5}'
+**Retention:**
 
-# Delete backups older than a date
-curl -s -H "Authorization: Bearer $STARROCKS_BR_API_KEY" -H "Content-Type: application/json" \
-  -X POST http://localhost:8000/backup/manual/prune/cluster/1 \
-  -d '{"group_id": 1, "older_than": "2024-01-01 00:00:00"}'
-```
+Retention is automatic and per schedule. Give a recurring full-backup schedule a `retention` count and each
+scheduler tick queues a `retention` job that drops that schedule's older full backups beyond it (backups that
+an incremental backup or a queued restore still depends on are kept). It is lowest priority, so it waits for
+backups and restores on the same cluster. Follow it with `GET /job/{id}/history`. The
+`STARROCKS_BR_RETENTION_MAX_SECONDS` environment variable (default 1800) bounds how long one retention job keeps
+starting new drops; the next tick continues the rest.
 
 **Run the background scheduler (one tick):**
 

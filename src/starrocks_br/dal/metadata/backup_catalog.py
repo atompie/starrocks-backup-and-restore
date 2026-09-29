@@ -31,7 +31,8 @@ def find_latest_full_backup_job(session: Session, cluster_id: int, database: str
     covering multiple databases (a multi-database inventory group, SPEC.md §5) has only one
     `Job.label`, so label-prefix matching can't tell which of its databases a label belongs to.
     Joining through the job-scoped reference rows works regardless of how many databases a Job
-    covers (see backup-references/design.md).
+    covers (see backup-references/design.md). References retention has deleted are ignored, so a
+    dropped backup can never be chosen as a baseline (SPEC.md §21).
     """
     return session.scalars(
         select(Job)
@@ -41,6 +42,7 @@ def find_latest_full_backup_job(session: Session, cluster_id: int, database: str
             Job.job_type == "backup_full",
             Job.status == JobStatus.SUCCESS.value,
             BackupReference.database_name == database,
+            BackupReference.deleted_at.is_(None),
         )
         .order_by(Job.finished_at.desc())
         .limit(1)

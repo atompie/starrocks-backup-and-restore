@@ -31,6 +31,7 @@ class JobType(str, enum.Enum):
     RESTORE = "restore"
     PRUNE = "prune"
     SCHEDULE_CLEANUP = "schedule_cleanup"
+    RETENTION = "retention"
 
 
 class JobStatus(str, enum.Enum):
@@ -188,6 +189,22 @@ class RestoreHistory(Base):
     """
 
     __tablename__ = "restore_history"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    job_id: Mapped[int] = mapped_column(ForeignKey("jobs.id", ondelete="CASCADE"), nullable=False, index=True)
+    ts: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    details_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class RetentionHistory(Base):
+    """Append-only log of a retention job's progress (see `history.append_retention_event`).
+
+    Never updated or deleted after being written, except by cascade with its job.
+    """
+
+    __tablename__ = "retention_history"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     job_id: Mapped[int] = mapped_column(ForeignKey("jobs.id", ondelete="CASCADE"), nullable=False, index=True)

@@ -8,10 +8,12 @@ import os
 HEARTBEAT_ENV_VAR = "STARROCKS_BR_JOB_HEARTBEAT_SECONDS"
 STALE_ENV_VAR = "STARROCKS_BR_JOB_STALE_SECONDS"
 LOCK_TIMEOUT_ENV_VAR = "STARROCKS_BR_SCHEDULER_LOCK_TIMEOUT_SECONDS"
+RETENTION_MAX_ENV_VAR = "STARROCKS_BR_RETENTION_MAX_SECONDS"
 
 DEFAULT_HEARTBEAT_SECONDS = 30
 DEFAULT_STALE_SECONDS = 180
 DEFAULT_LOCK_TIMEOUT_SECONDS = 300
+DEFAULT_RETENTION_MAX_SECONDS = 1800
 
 # A job is only judged stale after this many heartbeat intervals have passed without a write,
 # so a couple of failed or delayed heartbeat writes never look like a dead owner.
@@ -61,3 +63,8 @@ def get_job_stale_seconds() -> int:
 
 def get_scheduler_lock_timeout_seconds() -> int:
     return _positive_int(LOCK_TIMEOUT_ENV_VAR, DEFAULT_LOCK_TIMEOUT_SECONDS)
+
+
+def get_retention_max_seconds() -> int:
+    """How long a retention job may keep starting new snapshot drops."""
+    return _positive_int(RETENTION_MAX_ENV_VAR, DEFAULT_RETENTION_MAX_SECONDS)

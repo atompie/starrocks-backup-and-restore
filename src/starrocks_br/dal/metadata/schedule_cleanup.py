@@ -84,12 +84,15 @@ def distinct_references_for_schedule(session: Session, schedule_id: int) -> list
 
 
 def delete_schedule_backup_jobs(session: Session, schedule_id: int) -> None:
-    """Delete this schedule's backup Jobs, cascading their histories, references, and any
-    dependent Restore Jobs (via `source_backup_job_id` ON DELETE CASCADE). The schedule's own
-    `schedule_cleanup` job is never a backup job, so it is never matched here.
+    """Delete this schedule's backup and retention Jobs, cascading their histories, references,
+    and any dependent Restore Jobs (via `source_backup_job_id` ON DELETE CASCADE). The schedule's
+    own `schedule_cleanup` job is never matched here.
     """
     session.execute(
-        delete(Job).where(Job.schedule_id == schedule_id, Job.job_type.in_(_BACKUP_JOB_TYPES))
+        delete(Job).where(
+            Job.schedule_id == schedule_id,
+            Job.job_type.in_([*_BACKUP_JOB_TYPES, JobType.RETENTION.value]),
+        )
     )
     session.flush()
 

@@ -84,6 +84,7 @@ def _run_tick() -> int:
     logger.info(
         f"Scheduler tick complete: {len(result.triggered_job_ids)} schedule(s) triggered, "
         f"{len(result.cleanup_job_ids)} expiry cleanup(s) submitted, "
+        f"{len(result.retention_job_ids)} retention job(s) submitted, "
         f"{len(dispatch.admitted)} job(s) started, {len(dispatch.failed)} job(s) failed to start, "
         f"{len(recon.failed)} stale job(s) failed"
     )

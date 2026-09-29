@@ -215,6 +215,12 @@ class SchedulePendingDeletionError(StarRocksBRError):
         super().__init__(f"Schedule {schedule_id} is pending deletion and cannot be modified")
 
 
+class RestoreSourceDataDeletedError(StarRocksBRError):
+    def __init__(self, target_label: str):
+        self.target_label = target_label
+        super().__init__(f"Backup '{target_label}' was dropped by retention; its data is no longer available")
+
+
 class RestoreSourcePendingDeletionError(StarRocksBRError):
     def __init__(self, target_label: str):
         self.target_label = target_label

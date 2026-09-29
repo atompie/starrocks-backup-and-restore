@@ -4,7 +4,15 @@ import json
 from sqlalchemy import case, func, select, update
 from sqlalchemy.orm import Session
 
-from ...store.models import BackupHistory, BackupReference, Cluster, Job, JobStatus, RestoreHistory
+from ...store.models import (
+    BackupHistory,
+    BackupReference,
+    Cluster,
+    Job,
+    JobStatus,
+    RestoreHistory,
+    RetentionHistory,
+)
 
 
 def _utcnow() -> datetime.datetime:
@@ -267,10 +275,11 @@ _HISTORY_MODEL_BY_JOB_TYPE = {
     "backup_full": BackupHistory,
     "backup_incremental": BackupHistory,
     "restore": RestoreHistory,
+    "retention": RetentionHistory,
 }
 
 
-def list_history_for_job(db: Session, job_type: str, job_id: int) -> list[BackupHistory | RestoreHistory]:
+def list_history_for_job(db: Session, job_type: str, job_id: int) -> list[BackupHistory | RestoreHistory | RetentionHistory]:
     """Return a job's append-only execution history, oldest first.
 
     A job type with no history table (e.g. `prune`) returns an empty list.

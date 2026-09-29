@@ -13,6 +13,7 @@ from ..dal.metadata import restore_catalog
 from ..exceptions import (
     NoTablesFoundError,
     RestoreExecutionError,
+    RestoreSourceDataDeletedError,
     RestoreSourcePendingDeletionError,
 )
 from ..store.models import Cluster, Job
@@ -27,7 +28,7 @@ def submit_restore_job(
     db: Session, cluster: Cluster, params: dict, requested_backend: str | None
 ) -> Job:
     """Resolve the restore's source backup and record it as `source_backup_job_id`, rejecting
-    submission if that backup's schedule is pending deletion (design.md "Use a durable
+    submission if that backup's schedule is pending deletion or retention has dropped its data (design.md "Use a durable
     restore-to-backup relationship" / specs/api-job-execution "Restore submission cannot race
     with source backup cleanup"). A `target_label` with no resolvable successful backup Job is
     left with no source link - submission still proceeds and fails during execution exactly as
@@ -41,6 +42,9 @@ def submit_restore_job(
         db, source_backup_job_id
     ):
         raise RestoreSourcePendingDeletionError(target_label)
+
+    if source_backup_job_id is not None and restore_catalog.source_data_deleted(db, source_backup_job_id):
+        raise RestoreSourceDataDeletedError(target_label)
 
     return submit_job(
         db, cluster, "restore", params, requested_backend, source_backup_job_id=source_backup_job_id

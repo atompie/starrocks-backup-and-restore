@@ -75,28 +75,6 @@ class RestoreRequest(BaseModel):
         return self
 
 
-class PruneRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    group_id: int
-    keep_last: int | None = Field(default=None, gt=0)
-    older_than: str | None = None
-    snapshot: str | None = None
-    snapshots: str | None = None
-    dry_run: bool = False
-    backend: Backend | None = None
-
-    @model_validator(mode="after")
-    def _check_exactly_one_strategy(self) -> "PruneRequest":
-        specified = [v for v in (self.keep_last, self.older_than, self.snapshot, self.snapshots)
-                     if v is not None]
-        if len(specified) != 1:
-            raise ValueError(
-                "Exactly one of 'keep_last', 'older_than', 'snapshot', 'snapshots' must be provided"
-            )
-        return self
-
-
 class JobRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

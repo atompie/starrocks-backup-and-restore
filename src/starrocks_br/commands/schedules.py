@@ -46,6 +46,7 @@ from .jobs import (
     reconcile_stale_jobs,
     submit_job,
 )
+from .retention import submit_due_retention_jobs
 
 OnProgress = Callable[[dict], None] | None
 
@@ -364,11 +365,13 @@ class TickResult:
     reconciliation: ReconciliationSummary | None = None
     triggered_job_ids: list[int] = field(default_factory=list)
     cleanup_job_ids: list[int] = field(default_factory=list)
+    retention_job_ids: list[int] = field(default_factory=list)
     dispatch: DispatchSummary | None = None
 
 
 def execute_scheduler_tick(holder: str | None = None) -> TickResult:
-    """Run one scheduler tick: lock, reconcile stale jobs, run due schedules, expire one-shots, dispatch.
+    """Run one scheduler tick: lock, reconcile stale jobs, run due schedules, expire one-shots,
+    queue retention jobs, dispatch.
 
     The dispatch step is the only thing that starts jobs: it admits at most one queued job per
     cluster (and none for a cluster that already has a `RUNNING` job), so jobs created earlier in
@@ -393,6 +396,7 @@ def execute_scheduler_tick(holder: str | None = None) -> TickResult:
         with session_scope() as session:
             result.triggered_job_ids, _ = run_due_schedules(session, now)
             result.cleanup_job_ids = expire_due_schedules(session, now)
+            result.retention_job_ids = submit_due_retention_jobs(session)
 
         result.dispatch = dispatch_pending_jobs(_utcnow())
 

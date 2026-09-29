@@ -101,8 +101,8 @@ Note the returned `id` — every other call below is scoped to this cluster.
 
 ## Define Your Backup Groups
 
-Inventory groups are named sets of database/table memberships that scope backup, restore, and
-prune operations. Create one for the tables you want to back up:
+Inventory groups are named sets of database/table memberships that scope backup and restore
+operations. Create one for the tables you want to back up:
 
 ```bash
 curl -s -H "Authorization: Bearer $STARROCKS_BR_API_KEY" -H "Content-Type: application/json" \
