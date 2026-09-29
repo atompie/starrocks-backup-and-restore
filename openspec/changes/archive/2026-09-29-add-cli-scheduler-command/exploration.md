@@ -100,7 +100,7 @@ When `ThreadBackend` (in-process `ThreadPoolExecutor`) is used, should the proce
 Time   CLI Tick Process (Main Thread)               Worker Thread(s)             Scheduler Lock State
 ----   ------------------------------               ----------------             --------------------
 T0     Acquire `scheduler_lock`                                                  HELD (holder=host:pid)
-T1     Reconcile orphaned jobs
+T1     Reconcile stale jobs (heartbeat-expired only)
 T2     `run_due_schedules` (advances next_run_at)  --> Enqueue job(s)
 T3     `expire_due_schedules`
 T4     Record `last_tick_at`
@@ -235,7 +235,7 @@ Ensures that a process whose lock timed out and was stolen cannot clear the lock
   |      \-- is_stale == True --> logger.warning("Recovered stale lock from %s", prev_holder)
   |
   +-- 2. try:
-  |      |-- commands.jobs.reconcile_orphaned_jobs()
+  |      |-- commands.jobs.reconcile_stale_jobs()
   |      |   |-- PENDING: re-enqueue to backend
   |      |   \-- RUNNING: check SHOW BACKUP/RESTORE (skip unreachable clusters with warning)
   |      |

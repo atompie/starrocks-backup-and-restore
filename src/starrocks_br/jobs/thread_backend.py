@@ -8,9 +8,12 @@ see design.md Decision 3.
 """
 
 import json
+import threading
 from concurrent.futures import ThreadPoolExecutor
 
+from .. import logger
 from ..dal.metadata import jobs as jobs_dal
+from ..runtime_config import get_job_heartbeat_seconds
 from ..store.session import session_scope
 from .handlers import JOB_HANDLERS
 
@@ -21,6 +24,23 @@ def _make_progress_callback(job_id: int):
             jobs_dal.mark_progress(session, job_id, update.get("state"), update.get("progress_pct"))
 
     return _on_progress
+
+
+def _heartbeat_loop(job_id: int, stop: threading.Event, interval: float) -> None:
+    """Refresh `Job.heartbeat_at` every `interval` seconds until `stop` is set.
+
+    Independent of the handler's progress callbacks (non-polling handlers such as
+    `schedule_cleanup` never call them), and uses its own short session per write so no
+    transaction is held open between beats. A failed write is logged and retried on the next
+    beat: `STARROCKS_BR_JOB_STALE_SECONDS` is at least 3x the interval precisely so an isolated
+    failure never makes a live job look dead.
+    """
+    while not stop.wait(interval):
+        try:
+            with session_scope() as session:
+                jobs_dal.touch_heartbeat(session, job_id)
+        except Exception as e:
+            logger.error(f"Failed to write heartbeat for job {job_id}: {e}")
 
 
 def _run_job(job_id: int) -> None:
@@ -38,15 +58,30 @@ def _run_job(job_id: int) -> None:
     handler = JOB_HANDLERS[job_type]
     on_progress = _make_progress_callback(job_id)
 
+    stop_heartbeat = threading.Event()
+    heartbeat = threading.Thread(
+        target=_heartbeat_loop,
+        args=(job_id, stop_heartbeat, get_job_heartbeat_seconds()),
+        name=f"starrocks-br-heartbeat-{job_id}",
+        daemon=True,
+    )
+    heartbeat.start()
+
+    failure: Exception | None = None
+    result: dict = {}
     try:
         result = handler(cluster, params, job_id, on_progress)
     except Exception as e:
-        with session_scope() as session:
-            jobs_dal.mark_failed(session, job_id, str(e))
-        return
+        failure = e
+    finally:
+        stop_heartbeat.set()
+        heartbeat.join()
 
     with session_scope() as session:
-        jobs_dal.mark_success(session, job_id, json.dumps(result, default=str))
+        if failure is not None:
+            jobs_dal.mark_failed(session, job_id, str(failure))
+        else:
+            jobs_dal.mark_success(session, job_id, json.dumps(result, default=str))
 
 
 class ThreadBackend:

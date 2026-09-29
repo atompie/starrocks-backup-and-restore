@@ -1,7 +1,7 @@
 import datetime
 import json
 
-from sqlalchemy import select
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.orm import Session
 
 from ...store.models import BackupHistory, BackupReference, Cluster, Job, JobStatus, RestoreHistory
@@ -107,10 +107,60 @@ def set_baseline_job_id(db: Session, job_id: int, baseline_job_id: int | None) -
 def mark_running(db: Session, job_id: int) -> Job | None:
     job = db.get(Job, job_id)
     if job is not None:
+        now = _utcnow()
         job.status = JobStatus.RUNNING.value
-        job.started_at = _utcnow()
+        job.started_at = now
+        job.heartbeat_at = now
         db.flush()
     return job
+
+
+def touch_heartbeat(db: Session, job_id: int, now: datetime.datetime | None = None) -> None:
+    """Record that `job_id`'s owner is still alive. Only touches a job that is still `RUNNING`."""
+    db.execute(
+        update(Job)
+        .where(Job.id == job_id, Job.status == JobStatus.RUNNING.value)
+        .values(heartbeat_at=now or _utcnow())
+    )
+
+
+# A job's liveness: its last heartbeat, else when it started, else when it was created (a
+# `PENDING` job has only the last).
+_liveness = func.coalesce(Job.heartbeat_at, Job.started_at, Job.created_at)
+
+
+def list_stale_jobs(db: Session, cutoff: datetime.datetime) -> list[Job]:
+    """`PENDING`/`RUNNING` jobs whose liveness is older than `cutoff`, oldest first."""
+    return list(
+        db.scalars(
+            select(Job)
+            .where(
+                or_(
+                    Job.status == JobStatus.PENDING.value,
+                    Job.status == JobStatus.RUNNING.value,
+                ),
+                _liveness < cutoff,
+            )
+            .order_by(Job.id)
+        ).all()
+    )
+
+
+def claim_stale_job(
+    db: Session, job_id: int, expected_status: str, cutoff: datetime.datetime, now: datetime.datetime
+) -> bool:
+    """Atomically claim a job that is still stale and still in `expected_status`.
+
+    Claiming stamps `heartbeat_at = now`, which makes the job fresh to every other claimant, so
+    exactly one of several concurrent callers gets `True`.
+    """
+    result = db.execute(
+        update(Job)
+        .where(Job.id == job_id, Job.status == expected_status, _liveness < cutoff)
+        .values(heartbeat_at=now)
+    )
+    db.flush()
+    return result.rowcount == 1
 
 
 def mark_progress(db: Session, job_id: int, state_detail: str | None, progress_pct: int | None) -> None:

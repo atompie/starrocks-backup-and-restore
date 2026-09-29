@@ -10,9 +10,8 @@ from collections.abc import Callable
 from typing import Any
 
 from .. import concurrency, executor, logger, planner
-from ..dal.metadata import history
+from ..dal.metadata import history, labels
 from ..dal.metadata import jobs as jobs_dal
-from ..dal.metadata import labels
 from ..exceptions import BackupExecutionError, SnapshotAlreadyExistsError
 from ..store.models import Cluster
 from ..store.session import get_session_factory, session_scope

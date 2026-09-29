@@ -43,7 +43,7 @@ def test_health_endpoint_requires_no_token(api_client):
     response = api_client.get("/health")
 
     assert response.status_code == 200
-    assert response.json() == {"status": "ok"}
+    assert response.json()["status"] == "ok"
 
 
 def test_server_fails_to_start_without_api_key(api_env, monkeypatch):

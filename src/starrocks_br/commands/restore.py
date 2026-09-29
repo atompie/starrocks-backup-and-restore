@@ -10,7 +10,11 @@ from sqlalchemy.orm import Session
 
 from .. import restore
 from ..dal.metadata import restore_catalog
-from ..exceptions import NoTablesFoundError, RestoreExecutionError, RestoreSourcePendingDeletionError
+from ..exceptions import (
+    NoTablesFoundError,
+    RestoreExecutionError,
+    RestoreSourcePendingDeletionError,
+)
 from ..store.models import Cluster, Job
 from ..store.session import session_scope
 from ._shared import connect, ensure_ready

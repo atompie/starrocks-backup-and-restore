@@ -9,16 +9,10 @@ starrocks_br.api.app:create_app --factory` and test fixtures call into.
 from fastapi import FastAPI
 
 from ..jobs.backend import BackendRegistry, set_registry
-from ..jobs.thread_backend import ThreadBackend
+from ..jobs.bootstrap import UnimplementedBackendError, build_backend_registry
 from ..store.crypto import ENCRYPTION_KEY_ENV_VAR
-from .config import API_KEY_ENV_VAR, get_api_key, get_default_backend, get_enabled_backends
+from .config import API_KEY_ENV_VAR, get_api_key
 from .routes import clusters, health, inventory_groups, jobs, repositories, schedules
-
-_KNOWN_BACKEND_FACTORIES = {
-    "thread": ThreadBackend,
-    # Future backends (e.g. "kafka", "redis") register their JobBackend
-    # implementation here - no other code in this module changes.
-}
 
 
 class StartupConfigError(RuntimeError):
@@ -45,15 +39,10 @@ def _check_required_env() -> None:
 
 
 def _build_backend_registry() -> BackendRegistry:
-    enabled = get_enabled_backends()
-    unknown = [name for name in enabled if name not in _KNOWN_BACKEND_FACTORIES]
-    if unknown:
-        raise StartupConfigError(
-            f"STARROCKS_BR_ENABLED_BACKENDS lists unimplemented backend(s): {', '.join(unknown)}. "
-            f"Available: {', '.join(_KNOWN_BACKEND_FACTORIES)}"
-        )
-    backends = {name: _KNOWN_BACKEND_FACTORIES[name]() for name in enabled}
-    return BackendRegistry(backends, get_default_backend())
+    try:
+        return build_backend_registry()
+    except UnimplementedBackendError as e:
+        raise StartupConfigError(str(e)) from e
 
 
 def create_app(*, check_env: bool = True) -> FastAPI:

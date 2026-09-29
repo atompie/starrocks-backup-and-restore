@@ -21,6 +21,9 @@ dependencies = [
     "boto3>=1.34.0,<2",
 ]
 
+[project.scripts]
+starrocks-br-scheduler = "starrocks_br.cli.scheduler:main"
+
 [project.optional-dependencies]
 dev = [
     "pytest>=8.3.2,<9",

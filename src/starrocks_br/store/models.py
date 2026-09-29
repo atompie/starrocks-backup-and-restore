@@ -89,6 +89,7 @@ class Job(Base):
     created_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     started_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     finished_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    heartbeat_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     cluster: Mapped["Cluster"] = relationship(back_populates="jobs")
 
@@ -225,3 +226,20 @@ class BackupReference(Base):
     partition_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     deleted_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+class SchedulerLock(Base):
+    """Singleton row (`id = 1`) guarding the scheduler tick and recording its last success.
+
+    Acquired with one atomic conditional UPDATE (`dal/metadata/scheduler_lock.py`), so it
+    needs no database-specific advisory-lock API and behaves the same on SQLite, Postgres and
+    MySQL.
+    """
+
+    __tablename__ = "scheduler_lock"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    holder: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    acquired_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    expires_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_tick_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

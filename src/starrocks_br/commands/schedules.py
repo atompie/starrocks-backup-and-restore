@@ -11,8 +11,10 @@ decides what a 0-row match means (skip).
 """
 
 import datetime
-
+import os
+import socket
 from collections.abc import Callable
+from dataclasses import dataclass, field
 from typing import Any
 
 from croniter import CroniterBadCronError, croniter
@@ -21,6 +23,7 @@ from sqlalchemy.orm import Session
 from .. import logger, prune
 from ..dal.metadata import clusters as clusters_dal
 from ..dal.metadata import schedule_cleanup as schedule_cleanup_dal
+from ..dal.metadata import scheduler_lock as scheduler_lock_dal
 from ..dal.metadata import schedules as schedules_dal
 from ..exceptions import (
     InvalidCadenceError,
@@ -31,10 +34,11 @@ from ..exceptions import (
     ScheduleImmutableError,
     SchedulePendingDeletionError,
 )
+from ..runtime_config import get_scheduler_lock_timeout_seconds
 from ..store.models import Cluster, Job, JobType, Schedule
 from ..store.session import session_scope
 from ._shared import connect, ensure_ready
-from .jobs import submit_job
+from .jobs import ReconciliationSummary, reconcile_stale_jobs, submit_job
 
 OnProgress = Callable[[dict], None] | None
 
@@ -293,6 +297,99 @@ def _snapshot_already_absent(database, repository: str, snapshot_label: str) -> 
         return False
     except Exception:
         return True
+
+
+@dataclass(frozen=True)
+class SchedulerLockResult:
+    """Outcome of a lock attempt: whether it was taken, and whether an expired lease was reclaimed."""
+
+    acquired: bool
+    recovered_stale: bool = False
+
+
+def scheduler_holder_id() -> str:
+    """Identity recorded on the scheduler lock: `hostname:pid`."""
+    return f"{socket.gethostname()}:{os.getpid()}"
+
+
+def try_acquire_scheduler_lock(holder: str | None = None) -> SchedulerLockResult:
+    """Try to take the cluster-wide scheduler lock for one tick.
+
+    A separate mechanism from `concurrency.reserve_job_slot`: that serializes StarRocks backup
+    work per cluster, this serializes tick invocations. Commits immediately in its own short
+    session so a concurrent invocation sees the result. A lock whose lease expired (its holder
+    died without releasing it) is reclaimed, and a warning is logged saying so.
+    """
+    holder = holder or scheduler_holder_id()
+    now = _utcnow()
+    expires_at = now + datetime.timedelta(seconds=get_scheduler_lock_timeout_seconds())
+
+    with session_scope() as session:
+        acquired, recovered_stale = scheduler_lock_dal.try_acquire(session, holder, now, expires_at)
+
+    if recovered_stale:
+        logger.warning(f"Recovered stale scheduler lock; acquired by {holder}")
+    return SchedulerLockResult(acquired=acquired, recovered_stale=recovered_stale)
+
+
+def release_scheduler_lock(holder: str | None = None) -> bool:
+    """Release the lock, but only if `holder` still owns it (a reclaimed lock is not cleared)."""
+    holder = holder or scheduler_holder_id()
+    with session_scope() as session:
+        return scheduler_lock_dal.release(session, holder)
+
+
+@dataclass
+class TickResult:
+    """What one scheduler tick did. `acquired=False` means it lost the lock and did nothing."""
+
+    acquired: bool
+    recovered_stale_lock: bool = False
+    reconciliation: ReconciliationSummary | None = None
+    triggered_job_ids: list[int] = field(default_factory=list)
+    cleanup_job_ids: list[int] = field(default_factory=list)
+
+
+def execute_scheduler_tick(holder: str | None = None) -> TickResult:
+    """Run one scheduler tick: lock, reconcile stale jobs, run due schedules, expire one-shots.
+
+    If the lock is held by a live tick this returns `acquired=False` immediately without
+    touching jobs or schedules. Otherwise the lock is always released in `finally`, and
+    `last_tick_at` is recorded only when every step succeeded. The lock guards the tick itself,
+    not the backup jobs it dispatches - those run under `reserve_job_slot`'s per-cluster scope
+    and keep running after the lock is released.
+    """
+    holder = holder or scheduler_holder_id()
+    lock = try_acquire_scheduler_lock(holder)
+    if not lock.acquired:
+        return TickResult(acquired=False)
+
+    result = TickResult(acquired=True, recovered_stale_lock=lock.recovered_stale)
+    try:
+        result.reconciliation = reconcile_stale_jobs()
+
+        now = _utcnow()
+        with session_scope() as session:
+            result.triggered_job_ids, _ = run_due_schedules(session, now)
+            result.cleanup_job_ids = expire_due_schedules(session, now)
+
+        with session_scope() as session:
+            scheduler_lock_dal.record_last_tick(session, _utcnow())
+    finally:
+        release_scheduler_lock(holder)
+
+    return result
+
+
+def get_scheduler_last_tick_at(db: Session) -> datetime.datetime | None:
+    """When the last scheduler tick completed successfully, or None if none ever has.
+
+    Returned as a UTC-aware datetime (SQLite hands timestamps back naive; they were stored as UTC).
+    """
+    last_tick_at = scheduler_lock_dal.get_last_tick_at(db)
+    if last_tick_at is not None and last_tick_at.tzinfo is None:
+        last_tick_at = last_tick_at.replace(tzinfo=datetime.timezone.utc)
+    return last_tick_at
 
 
 def run_schedule_cleanup(
