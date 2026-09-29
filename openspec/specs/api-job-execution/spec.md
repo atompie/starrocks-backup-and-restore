@@ -2,24 +2,30 @@
 
 ## Purpose
 
-Lets clients start restore and prune operations against a registered cluster as asynchronous jobs, observe job progress without blocking on the HTTP request, and lets operators choose (per job or by default) which execution backend runs the work. Backup jobs are created through recurring or one-shot schedules as specified by `api-scheduling`; the manual full and incremental backup submission routes are retired.
+Lets clients start restore operations against a registered cluster as asynchronous jobs, observe job progress without blocking on the HTTP request, and lets operators choose (per job or by default) which execution backend runs the work. Backup jobs are created through recurring or one-shot schedules as specified by `api-scheduling`; the manual full and incremental backup submission routes are retired.
 
 ## Requirements
 
 ### Requirement: Submitting an operation returns immediately with a job
-The system SHALL accept requests to start a restore or prune operation against a registered
+The system SHALL accept requests to start a restore operation against a registered
 cluster, SHALL create a job record in PENDING state, SHALL return
 an HTTP 202 response containing the job id and status without waiting for the operation to
 complete, and SHALL leave the job PENDING until a scheduler tick starts it. Backup Jobs created by
-schedule submission SHALL use the same queued lifecycle and SHALL record references for every
-database/table covered once each database's StarRocks operation reaches `FINISHED`. The system
-SHALL NOT expose manual full or incremental backup submission routes.
+schedule submission and Retention Jobs created by the scheduler tick SHALL use the same queued
+lifecycle, and Backup Jobs SHALL record references for every database/table covered once each
+database's StarRocks operation reaches `FINISHED`. The system SHALL NOT expose manual full or
+incremental backup submission routes or a manual prune submission route.
 
 #### Scenario: Manual backup submission routes are retired
 - **WHEN** an authenticated client submits a request to `/backup/manual/full/cluster/{cluster_id}`
   or `/backup/manual/incremental/cluster/{cluster_id}`
 - **THEN** the system responds with HTTP 404 and creates no job; clients create a one-shot schedule
   for an immediate full backup or a recurring schedule for an incremental backup
+
+#### Scenario: Manual prune submission route is retired
+- **WHEN** an authenticated client submits a request to `/backup/manual/prune/cluster/{cluster_id}`
+- **THEN** the request is rejected with HTTP 404 and creates no job; retention is enforced
+  automatically for recurring full-backup schedules
 
 #### Scenario: Submission against an unknown cluster
 - **WHEN** an authenticated client submits any job against a cluster id that is not registered
@@ -30,9 +36,18 @@ SHALL NOT expose manual full or incremental backup submission routes.
 - **THEN** the system creates a `schedule_cleanup` job that can be polled through the standard job
   endpoint and reports SUCCESS or FAILED when cleanup completes
 
+#### Scenario: Schedule cleanup removes the schedule's retention jobs
+- **WHEN** schedule cleanup deletes a schedule
+- **THEN** that schedule's retention jobs and their retention history are deleted with it
+
 #### Scenario: Deleting a backup removes restore jobs that used it
 - **WHEN** schedule cleanup deletes a backup job used as the source of one or more restore jobs
 - **THEN** those restore job records and their histories are deleted with the backup job
+
+#### Scenario: Restore from a backup whose data was dropped by retention
+- **WHEN** an authenticated client requests a restore whose source backup job has all of its backup
+  references deleted by retention
+- **THEN** the system responds with HTTP 409 and creates no Restore Job
 
 #### Scenario: A submitted job waits for a scheduler tick
 - **WHEN** an authenticated client submits a restore and no scheduler tick has run since
@@ -86,8 +101,8 @@ The system SHALL reject a job-submission request that includes a field not used 
 endpoint with HTTP 422, rather than silently accepting and ignoring it.
 
 #### Scenario: Foreign field rejected
-- **WHEN** an authenticated client submits a restore request that includes a field only used
-  by another job type (e.g. `keep_last`, which only prune uses)
+- **WHEN** an authenticated client submits a restore request that includes a field not used
+  by the restore endpoint (e.g. `retention` or `expire_after_days`)
 - **THEN** the system responds with HTTP 422 and does not create a job
 
 ### Requirement: Restore requests accept at most one of group or table
@@ -122,40 +137,6 @@ client-supplied field.
   `database`
 - **THEN** the system responds with HTTP 202 and creates a job that restores that table from the
   specified database
-
-### Requirement: Prune requests specify exactly one pruning strategy
-The system SHALL reject a prune request that specifies zero, or more than one, of `keep_last`,
-`older_than`, `snapshot`, `snapshots` with HTTP 422 before any job is created. Every prune request
-SHALL specify `group_id`; the system SHALL reject a prune request missing `group_id` (or supplying
-a value that cannot be parsed as an inventory group id) with HTTP 422 before any job is created,
-so that pruning is always scoped to one inventory group's backups and can never target every
-backup in a repository at once. The system SHALL synchronously verify that an inventory group with
-that id exists on the target cluster before creating the job, responding with HTTP 404 without
-creating a job if it does not. The system SHALL determine which repository each candidate snapshot
-belongs to from that snapshot's own recorded backup history rather than from any client-supplied
-field.
-
-#### Scenario: No strategy specified
-- **WHEN** an authenticated client submits a prune request specifying none of `keep_last`,
-  `older_than`, `snapshot`, `snapshots`
-- **THEN** the system responds with HTTP 422 and does not create a job
-
-#### Scenario: Multiple strategies specified
-- **WHEN** an authenticated client submits a prune request specifying more than one of
-  `keep_last`, `older_than`, `snapshot`, `snapshots`
-- **THEN** the system responds with HTTP 422 and does not create a job
-
-#### Scenario: No group specified
-- **WHEN** an authenticated client submits a prune request with no inventory group id specified,
-  or one that cannot be parsed as an id
-- **THEN** the system responds with HTTP 422 before any job is created, rather than accepting the
-  request and failing asynchronously
-
-#### Scenario: Prune submitted with an unknown group
-- **WHEN** an authenticated client submits a prune request naming an inventory group id that does
-  not exist on the target cluster
-- **THEN** the system responds with HTTP 404, does not create a job, and no asynchronous failure
-  is produced
 
 ### Requirement: Job status and progress can be polled
 The system SHALL expose an endpoint to retrieve a job's current status (PENDING, RUNNING, SUCCESS,
@@ -276,13 +257,13 @@ registered.
   result, since they have no recorded schedule id
 
 ### Requirement: A job's execution history can be retrieved
-The system SHALL expose an endpoint to retrieve the append-only execution history of a backup or
-restore job, returned as an ordered list from oldest to newest, each entry carrying the status
-recorded at that point in time, a timestamp, and an optional message and detail payload. History
+The system SHALL expose an endpoint to retrieve the append-only execution history of a backup,
+restore, or retention job, returned as an ordered list from oldest to newest, each entry carrying the
+status recorded at that point in time, a timestamp, and an optional message and detail payload. History
 entries are never modified or removed once recorded; the endpoint always reflects every entry
-recorded so far for that job. A backup job that ends in status `FAILED` SHALL always have at least
+recorded so far for that job. A backup or retention job that ends in status `FAILED` SHALL always have at least
 one `FAILED` history entry, carrying the error message that caused the failure, regardless of
-whether the failure occurred while a StarRocks backup operation was submitted or polled, or at any
+whether the failure occurred while a StarRocks operation was submitted or polled, or at any
 other point in the job's execution.
 
 #### Scenario: Retrieving history for a completed backup job
@@ -315,6 +296,11 @@ other point in the job's execution.
   example, because a snapshot with that name already exists)
 - **THEN** the job ends with status `FAILED` and its history contains a `FAILED` entry carrying
   the error message that caused the submission failure, rather than an empty history
+
+#### Scenario: Retrieving history for a retention job
+- **WHEN** an authenticated client requests the history of a retention job
+- **THEN** the system responds with HTTP 200 and a time-ordered list of that job's recorded
+  status entries (`RETENTION_STARTED`, `SNAPSHOT_DROPPED`, `RETENTION_FINISHED`, or `ERROR`/`FAILED`)
 
 ### Requirement: A job's backup references can be retrieved
 The system SHALL expose an endpoint to retrieve the backup references recorded for a job, returned
@@ -380,3 +366,44 @@ given backup/restore/prune operation regardless of which execution backend runs 
 - **THEN** the resulting snapshot label, the backup job's own recorded label/repository and
   execution history, and the repository snapshot are equivalent for the same inputs, regardless
   of which backend executed the operation
+### Requirement: Retention drops only backups that are not protected
+The system SHALL run retention for a recurring full-backup schedule over that schedule's own successful
+full backups only, keeping the newest `retention` of them, and SHALL drop older ones by dropping their
+StarRocks snapshots and setting each backup's references `deleted_at`, never deleting its `Job` or
+history rows. It SHALL NOT drop a full backup that is the baseline of an incremental backup in status
+`PENDING`, `RUNNING` or `SUCCESS` on the cluster, or that is the source (or the baseline of the source) of
+a restore job in status `PENDING` or `RUNNING`. It SHALL re-check these protections immediately before
+dropping each backup. A retention job SHALL never change the status of any backup job.
+
+#### Scenario: Oldest non-baseline backup is dropped
+- **WHEN** a schedule with `retention` 5 has 6 successful full backups and none is protected
+- **THEN** the retention job drops the oldest one's snapshots, sets its references `deleted_at`, and
+  leaves its `Job` and history intact
+
+#### Scenario: Baseline of an incremental is spared
+- **WHEN** the oldest successful full backup is the baseline of an active or successful incremental backup
+- **THEN** it is not dropped even though it is outside the newest `retention`
+
+#### Scenario: Source of a queued restore is spared
+- **WHEN** a `PENDING` restore job's source backup is a droppable candidate
+- **THEN** the retention job does not drop it
+
+#### Scenario: Schedules keep independent pools
+- **WHEN** two schedules target the same inventory group and cluster
+- **THEN** retention for one never drops the other's backups
+
+#### Scenario: Drop failure leaves backups untouched
+- **WHEN** `DROP SNAPSHOT` fails for a backup
+- **THEN** the retention job stops without attempting further backups and ends `FAILED` with a `FAILED`
+  history entry, that backup keeps `deleted_at` unset, every backup job stays `SUCCESS`, and a later tick retries it
+
+### Requirement: Retention runs within a time limit
+The system SHALL stop a retention job from starting new snapshot drops once
+`STARROCKS_BR_RETENTION_MAX_SECONDS` has elapsed since it started. It SHALL end such a job normally with a
+`RETENTION_FINISHED` history entry that records the deadline was reached, and the remaining droppable
+backups SHALL be handled by a retention job submitted by a later tick.
+
+#### Scenario: Deadline reached mid-run
+- **WHEN** the deadline elapses while a retention job still has droppable backups
+- **THEN** it drops no further backups, ends `SUCCESS` with a history entry noting the deadline, and a later
+  tick submits a new retention job for the rest
