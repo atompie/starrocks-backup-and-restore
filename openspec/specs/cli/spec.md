@@ -5,11 +5,11 @@ Provides an out-of-process command-line interface for executing single scheduler
 ## Requirements
 
 ### Requirement: Scheduler tick CLI invocation and lifecycle
-The system SHALL provide a CLI command (`starrocks-br-scheduler tick`, also executable via `python -m starrocks_br.cli.scheduler tick`) that executes exactly one scheduler tick per invocation and exits without entering a resident background loop. On each invocation, the command SHALL attempt to acquire the singleton scheduler lock before performing any schedule evaluation or job reconciliation. If lock acquisition succeeds, the command SHALL execute stale job reconciliation, evaluate due recurring schedules, evaluate one-shot schedule expiry, and record the tick completion timestamp. The command SHALL release the scheduler lock in a finally block regardless of success or failure of the tick's operations, and SHALL wait for any in-process worker threads dispatched during the tick to complete before exiting. On successful execution, the command SHALL exit with status code 0.
+The system SHALL provide a CLI command (`starrocks-br-scheduler tick`, also executable via `python -m starrocks_br.cli.scheduler tick`) that executes exactly one scheduler tick per invocation and exits without entering a resident background loop. On each invocation, the command SHALL attempt to acquire the singleton scheduler lock before performing any schedule evaluation or job reconciliation. If lock acquisition succeeds, the command SHALL execute stale job reconciliation, evaluate due recurring schedules, evaluate one-shot schedule expiry, admit queued jobs (the dispatch step, at most one job per cluster and only for clusters with no `RUNNING` job), and record the tick completion timestamp. The command SHALL release the scheduler lock in a finally block regardless of success or failure of the tick's operations, and SHALL wait for any in-process worker threads dispatched during the tick to complete before exiting. On successful execution, the command SHALL exit with status code 0.
 
 #### Scenario: Successful scheduler tick execution
 - **WHEN** the operator or cron invokes `starrocks-br-scheduler tick` and the lock is free
-- **THEN** the command reconciles stale jobs, triggers due schedules, expires eligible one-shot schedules, updates the last tick timestamp, releases the lock, and exits with code 0
+- **THEN** the command reconciles stale jobs, triggers due schedules, expires eligible one-shot schedules, admits queued jobs, updates the last tick timestamp, releases the lock, and exits with code 0
 
 #### Scenario: Worker threads complete before process exit
 - **WHEN** a scheduler tick triggers a due schedule using an in-process thread execution backend
@@ -18,6 +18,10 @@ The system SHALL provide a CLI command (`starrocks-br-scheduler tick`, also exec
 #### Scenario: Lock released on unhandled error
 - **WHEN** an unhandled exception occurs during schedule evaluation or reconciliation
 - **THEN** the command releases the scheduler lock in a finally block and exits with a non-zero error code
+
+#### Scenario: Jobs created in the tick can start in the same tick
+- **WHEN** a tick submits a due schedule's job on a cluster with no `RUNNING` job
+- **THEN** the same tick's dispatch step admits that job and the command waits for its worker before exiting
 
 ### Requirement: Singleton scheduler lock and contention handling
 The system SHALL ensure that at most one scheduler tick executes at any time across the entire system by coordinating through a singleton `scheduler_lock` row in the metadata store. Lock acquisition SHALL be performed using an atomic conditional update that succeeds only when no active lock exists or the existing lock lease has expired. If the lock is currently held by an active process whose lease has not expired, the command SHALL log an alert to stderr stating that the scheduler is already running, SHALL exit immediately with status code 75 (`EX_TEMPFAIL`), and SHALL NOT evaluate due schedules, expire schedules, or modify any job state. If the existing lock has expired beyond `STARROCKS_BR_SCHEDULER_LOCK_TIMEOUT_SECONDS`, the command SHALL reclaim the lock, log a warning indicating that a stale lock was recovered, and proceed with the tick.
@@ -34,20 +38,20 @@ The system SHALL ensure that at most one scheduler tick executes at any time acr
 - **WHEN** a scheduler tick process completes its evaluation
 - **THEN** it releases the lock only if the current lock holder matches its own identity, preventing accidental clearance of a reclaimed lock
 
-### Requirement: Stale job reconciliation on tick startup
-Upon successfully acquiring the scheduler lock, the command SHALL reconcile stale jobs before evaluating due schedules or expiry. A job is stale when its liveness timestamp is older than `STARROCKS_BR_JOB_STALE_SECONDS`: `heartbeat_at` for a `RUNNING` job (falling back to `started_at` when null), `created_at` for a `PENDING` job. The system SHALL NOT modify a job that is not stale, regardless of which process owns it. Each job SHALL be claimed with an atomic conditional update so that concurrent claimants cannot both act on it. A stale `PENDING` job SHALL be re-enqueued onto its configured backend. For a stale `RUNNING` backup or restore job, the system SHALL query StarRocks `SHOW BACKUP` or `SHOW RESTORE` for the job's operation: if it is still in progress the job SHALL be left `RUNNING`; in every other case (`FINISHED`, `CANCELLED`, lost/not found, or no recorded label) the job SHALL be transitioned to `FAILED` with a `FAILED` history event, and a backup's cluster concurrency slot SHALL be released. The system SHALL NOT promote a stale backup or restore job to `SUCCESS`, even when StarRocks reports `FINISHED`, because its backup references (or remaining restore steps) were held only by the terminated process; the failure message SHALL name the unregistered snapshot when StarRocks reports a backup `FINISHED`. A stale `RUNNING` job of any other type SHALL be transitioned to `FAILED` with the reason in its error message. If the target cluster is unreachable, the system SHALL log a warning and skip that job without failing the tick.
+### Requirement: Stale RUNNING job reconciliation on tick startup
+Upon successfully acquiring the scheduler lock, the command SHALL reconcile stale jobs before evaluating due schedules or expiry. A job is stale when its liveness timestamp is older than `STARROCKS_BR_JOB_STALE_SECONDS`: `heartbeat_at` for a `RUNNING` job (falling back to `started_at` when null). The system SHALL NOT modify a job that is not stale, regardless of which process owns it. Each job SHALL be claimed with an atomic conditional update so that concurrent claimants cannot both act on it. A `PENDING` job is a job waiting for its turn and SHALL NOT be treated as stale or re-enqueued by reconciliation, regardless of its age. For a stale `RUNNING` backup or restore job, the system SHALL query StarRocks `SHOW BACKUP` or `SHOW RESTORE` for the job's operation: if it is still in progress the job SHALL be left `RUNNING`; in every other case (`FINISHED`, `CANCELLED`, lost/not found, or no recorded label) the job SHALL be transitioned to `FAILED` with a `FAILED` history event, and a backup's cluster concurrency slot SHALL be released. The system SHALL NOT promote a stale backup or restore job to `SUCCESS`, even when StarRocks reports `FINISHED`, because its backup references (or remaining restore steps) were held only by the terminated process; the failure message SHALL name the unregistered snapshot when StarRocks reports a backup `FINISHED`. A stale `RUNNING` job of any other type SHALL be transitioned to `FAILED` with the reason in its error message. If the target cluster is unreachable, the system SHALL log a warning and skip that job without failing the tick.
 
 #### Scenario: Live running job is left alone
 - **WHEN** a scheduler tick finds a `RUNNING` job whose `heartbeat_at` is within the stale threshold (for example one executing in the API server's thread pool)
 - **THEN** the system does not query StarRocks for it, does not change its status and does not release its concurrency slot
 
-#### Scenario: Fresh pending job is not re-enqueued
-- **WHEN** a scheduler tick finds a `PENDING` job created within the stale threshold
-- **THEN** the system leaves it untouched
+#### Scenario: Pending job is never re-enqueued by reconciliation
+- **WHEN** a scheduler tick finds a `PENDING` job of any age
+- **THEN** the system leaves it untouched; only the dispatch step starts it
 
-#### Scenario: Re-enqueue stale pending job
-- **WHEN** a scheduler tick finds a `PENDING` job older than the stale threshold
-- **THEN** the system claims it and re-enqueues it onto its designated backend
+#### Scenario: Admitted job whose worker never started is failed
+- **WHEN** a job was admitted (`RUNNING`, heartbeat set at admission) but its worker died before writing any heartbeat and the stale threshold has passed
+- **THEN** a later tick treats it as a stale `RUNNING` job and fails it under the rules above
 
 #### Scenario: Finished stale backup is failed, not promoted
 - **WHEN** a scheduler tick finds a stale `RUNNING` backup job whose StarRocks `SHOW BACKUP` reports `FINISHED`
