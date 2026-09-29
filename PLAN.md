@@ -122,14 +122,18 @@ builds only on earlier ones.
 - [ ] 11.5 Routes: `POST /restore/manual/cluster/{cluster_id}`, `GET /restore/history/cluster/{cluster_id}` (filters `source_job_id`, `status`), `GET /backup/job/{job_id}/restores`; retire `/backup/manual/restore/...`
 - [ ] 11.6 Tests: failed or deleted source rejected; restore writes nothing to the source job, events or references (§27); restore of a non-latest job; incremental chain resolution; cross-cluster repository setup
 
-## 12. Consistency and integrity
+## 12. Restore into differnet database then the source database
+
+- [ ] 12.1 Investigate how can we implement restore into a different database than the source database
+
+## 13. Consistency and integrity
 
 - [ ] 12.1 Add job type `cluster_cleanup`: given a cluster id, delete its inventories, remaining jobs (and their events/references, dropping S3 snapshots), and restore jobs where it is source or target (Q7); finally delete the cluster row. Repositories the system created on that cluster are **not** deleted or unregistered — they remain in StarRocks untouched (0.1, `SPEC.md` §24); cleanup never calls `DROP REPOSITORY`.
 - [ ] 12.2 Cluster delete (`commands/clusters.delete_cluster` / `DELETE /cluster/{id}`): 409 while the cluster has **any** schedule, enabled or disabled (0.8); otherwise submit a `cluster_cleanup` job and respond `202` with the job id (a **BREAKING** change to today's synchronous delete; update `api-cluster-registry`). Enable SQLite `PRAGMA foreign_keys=ON` so per-row cascades inside the cleanup job behave the same on SQLite and Postgres/MySQL, and test it.
 - [ ] 12.3 Move inventory-group routes and pre-validation behind `commands/`, keeping behaviour
 - [ ] 12.4 Add a `/backup/history` `restorable=true` filter; add `last_success_job_id` and last-run info to the schedule read model
 
-## 13. End-to-end tests, specs, docs
+## 14. End-to-end tests, specs, docs
 
 - [ ] 13.1 Finish the open change `add-scheduled-backup-restore-integration-test`, adapted to `source_job_id` restore
 - [ ] 13.2 Integration: recurring schedule → N successes → retention job drops the oldest snapshot from S3; one-shot expiry; schedule delete removes S3 data; restore from a non-latest job; restore into a second cluster
