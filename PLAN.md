@@ -11,292 +11,107 @@ Order rationale: record decisions in the spec first, then schema, then execution
 retention/expiry and restore, then API polish, integrity and end-to-end tests. Each section
 builds only on earlier ones.
 
-## 0. Decisions (answered 2026-09-27)
+## 0. Architectural Decisions
 
-- [x] 0.1 ~~Repository: persist a `repositories` table (cluster-owned); `Schedule.repository_id` is an FK. Repository delete is blocked while schedules reference it.~~ — **reversed 2026-09-27**: StarRocks itself is the single source of truth for repositories. Repository is never persisted in the metadata DB; it is referenced everywhere as `(cluster_id, name)` and validated live against `SHOW REPOSITORIES`, matching the existing pass-through implementation. Uniqueness of `(cluster, name)` is enforced by StarRocks itself (`CREATE REPOSITORY` rejects a duplicate name on that cluster), so no local uniqueness constraint is needed.
-- [x] 0.2 ~~Inventory: one database per inventory~~ — **reversed 2026-09-27**: an inventory may span multiple databases, as `SPEC.md` §5 originally showed. Multi-database backup execution (one `BACKUP DATABASE` per database under one Backup Job, several Backup References) is real implementation work — see section 3.
-- [x] 0.3 Schedule delete: validated synchronously (409 on an active job, or on a dependent-incremental baseline — see Q2/Q5), then accepted and run as an async cleanup job that deletes the schedule's jobs, their events and references, and drops their snapshots from the repository (S3).
-- [x] 0.4 Manual backup = one-shot schedule (`cadence = null`) with an expiry policy defined on the schedule: never, or after N days. When it expires, it is deleted like 0.3.
-- [x] 0.5 Incremental backups have no retention and are never removed by retention. The full backups they depend on must be kept too.
-- [x] 0.6 Retention runs as its own job (`job_type = retention`) with its own event log — a documented domain entity in `SPEC.md` §2 (peer of Backup Job / Restore Job), not just an implementation choice. It shares the `backup` concurrency scope, so it can never run concurrently with a backup on the same cluster.
-- [x] 0.7 Restore into a different cluster is in scope.
-- [x] 0.8 Cluster delete is blocked (409) while the cluster has **any** schedule, enabled or disabled. With none, deletion cascades the same way schedule delete does (0.3): synchronous validation, then an async cleanup job.
-- [x] 0.9 Keep one backup at a time per cluster (current `backup` scope in `concurrency.reserve_job_slot`).
+- [x] **0.1 Repository resolution**: Repositories are not persisted in metadata; StarRocks is the source of truth, referenced as `(cluster_id, name)` and validated live via `SHOW REPOSITORIES`.
+- [x] **0.2 Multi-database inventories**: Inventories can span multiple databases; execution runs one `BACKUP DATABASE` per database under a single Backup Job.
+- [x] **0.3 Schedule deletion**: Validated synchronously (409 on active jobs or baseline dependencies), then executed asynchronously via a `schedule_cleanup` job that drops S3 snapshots and cascades metadata deletions.
+- [x] **0.4 Manual backups as one-shot schedules**: Manual backups use `cadence = null` with optional `expire_after_days`; on expiry, they clean up via the same async cascade.
+- [x] **0.5 Incremental backup protection**: Incrementals have no retention policy; full baselines with dependent incrementals are strictly protected from deletion or retention pruning.
+- [x] **0.6 Retention jobs**: Retention runs as an independent `retention` job sharing the cluster `backup` concurrency scope.
+- [x] **0.7 Cross-cluster restore**: Restoring backups into different clusters is supported.
+- [x] **0.8 Cluster deletion**: Blocked (409) if any schedule exists; otherwise cascades asynchronously via `cluster_cleanup`.
+- [x] **0.9 Concurrency**: Strictly one backup operation per cluster at a time (`backup` scope in `concurrency.reserve_job_slot`).
 
-## 0b. Follow-up decisions (answered 2026-09-27)
+### Follow-up Decisions
 
-- [x] Q1 Retention applies to full backups only. A full backup that is the baseline of any existing incremental is never dropped by retention, even beyond `retention`.
-- [x] Q2 If deleting a schedule or expiring a one-shot would drop a full backup that an existing incremental (any schedule) depends on, it is blocked: delete → 409; expiry → skipped, logged, retried on the next tick.
-- [x] Q3 One-shot schedules are full backups only; a one-shot incremental is rejected (422). Incrementals come only from recurring schedules.
-- [x] Q4 Recurring schedules use count-based retention only.
-- [x] Q5 Schedule delete → 409 while any of its jobs is `PENDING`/`RUNNING`.
-- [x] Q6 Deleting a backup job also deletes the restore jobs that used it (FK `ON DELETE CASCADE`).
-- [x] Q7 Cluster delete (no schedules, enabled or disabled) is allowed and, as part of the same async cleanup job (0.8), deletes its restore jobs, both as source and as target. Restore jobs are only a record of occasional restores.
-- [x] Q8 Schedule delete always drops the S3 snapshots; no confirmation flag.
+- [x] **Q1 Retention scope**: Retention applies only to full backups; baselines of existing incrementals are never dropped.
+- [x] **Q2 Deletion/expiry baseline guard**: Schedule delete (409) and one-shot expiry (retry later) are blocked if dropping a full backup needed by an existing incremental.
+- [x] **Q3 One-shot constraints**: One-shot schedules must be full backups only; one-shot incremental requests are rejected (422).
+- [x] **Q4 Retention model**: Recurring schedules use count-based retention only.
+- [x] **Q5 Schedule delete active job guard**: Returns 409 if any schedule job is `PENDING` or `RUNNING`.
+- [x] **Q6 Restore job cascade**: Deleting a backup job cascades to its dependent restore jobs (`ON DELETE CASCADE`).
+- [x] **Q7 Cluster delete restore cascade**: Cluster deletion cascades to restore jobs where the cluster is source or target.
+- [x] **Q8 Snapshot removal**: Schedule deletion always drops repository/S3 snapshots.
+- [x] **Q9 Retention field validation**: `Schedule.retention` is nullable in DB but validated as required on creation for recurring full schedules.
+- [x] **Q10 Schedule ID nullability**: `Job.schedule_id` is nullable.
+- [x] **Q11 Breaking change**: Requiring `retention` on recurring full schedules is a documented breaking change on `ScheduleCreate`.
+- [x] **Q12 Baseline job resolution**: `Job.baseline_job_id` is resolved and populated during incremental planning and execution.
+- [x] **Q13 Scheduler execution modes**: Periodic runs are supported both via CLI (`starrocks-br-scheduler tick`) and HTTP (`POST /backup/schedules/run`).
 
-## 0c. Follow-up decisions for section 5 (answered 2026-09-28)
+## 1. Baseline Implementation
+- [x] 1.1 Cluster model, CRUD endpoints, credential encryption, live verification, and delete guard (`commands/clusters.py`).
+- [x] 1.2 Live repository management via StarRocks (`CREATE`/`DROP`/`SHOW REPOSITORY`) without metadata persistence.
+- [x] 1.3 Inventory group and table inventory CRUD with whole-database wildcard (`*`) support.
+- [x] 1.4 Recurring schedules with cron expressions, inventory validation, and `POST /backup/schedules/run` execution.
+- [x] 1.5 Job engine supporting core job types, lifecycle states, thread backend, and status queries.
+- [x] 1.6 Core manual full/incremental backup, restore by label, and baseline verification tests.
+- [x] 1.7 Cluster backup history querying with filtering and pagination.
+- [x] 1.8 Alembic baseline migrations with SQLite default and `STARROCKS_BR_DATABASE_URL` configuration.
+- [x] 1.9 API key authentication, health check endpoint, and commands layer coordination.
+- [x] 1.10 Cluster backup concurrency serialization via `concurrency.reserve_job_slot`.
 
-Raised, and settled, while merging former section 8 items 8.1-8.4 into section 5 to make it atomic
-(see that section's intro note).
+## 2. Specification Updates
+- [x] 2.1 Updated `SPEC.md` for Retention Jobs, one-shot expiry, incremental baseline protection, async deletion cascades, and restore job cascades.
+- [x] 2.2 Updated `AGENTS.md` concurrency guidelines for cluster backup serialization and short metadata transaction lifetimes.
 
-- [x] Q9 `Schedule.retention` is nullable at the DB level; "required for a recurring full schedule"
-  is enforced in `ScheduleCreate`/`commands.schedules`, not as a `NOT NULL` column. Avoids a backfill
-  migration for a field with no natural default, and matches how other create-time-required fields
-  (e.g. `inventory_group_id`'s live existence check) are already validated in this codebase.
-- [x] Q10 `Job.schedule_id` is nullable for every job type for now: `/backup/manual/full`,
-  `/backup/manual/incremental`, and `/backup/manual/prune` still submit jobs with no schedule until
-  section 8 retires those routes. Tighten (if ever) once that lands.
-- [x] Q11 Making `retention` effectively required on schedule creation is a **BREAKING** change to
-  `ScheduleCreate`, documented as such in `api-scheduling` — existing clients/tests creating a
-  schedule with no `retention` today will need updating, the same class of change as section 8's
-  delete-cascade items and 12.2.
-- [x] Q12 `Job.baseline_job_id` is resolved by changing `planner.find_recent_partitions`'s return
-  shape to also surface the resolved baseline `Job`'s id (touches its signature and its tests),
-  rather than adding a separate lookup after the fact — the caller already has to distinguish the
-  explicit-baseline path from the resolved-latest path, so it already needs to know which job was
-  used.
+## 3. Repository Reference Hardening
+- [x] 3.1 Enforced live validation of `(cluster_id, repository_name)` against StarRocks `SHOW REPOSITORIES` on schedule create/update.
+- [x] 3.2 Blocked cross-cluster repository references.
+- [x] 3.3 Documented repository reference semantics in `SPEC.md` §4 and verified with tests.
 
-## 0d. Follow-up decision for section 9 (answered 2026-09-28)
+## 4. Job History Log
+- [x] 4.1 Migrated `backup_history` and `restore_history` to append-only event logs keyed by `job_id` (FK `ON DELETE CASCADE`) with `ts`, `status`, `message`, and `details_json`.
+- [x] 4.2 Implemented `append_backup_event` and `append_restore_event` with state-change deduplication and guaranteed terminal event logging in short-lived sessions.
+- [x] 4.3 Wired StarRocks native poll states (`SHOW BACKUP` / `SHOW RESTORE`) and terminal outcomes into the history loggers.
+- [x] 4.4 Added `GET /job/{job_id}/history` endpoint returning chronological event rows.
+- [x] 4.5 Verified append-only behavior, state deduplication, and cascading deletions with unit tests.
 
-- [x] Q13 Section 9 adds a CLI-based scheduler tick as a new, additional way to trigger due-schedule
-  execution. This is not a reversal of `openspec/changes/archive/2026-09-27-remove-cli-layer`: that
-  change removed one specific surface (the YAML-config-driven `cli.py`/`cli_api/` HTTP-client
-  subcommands, for reasons unrelated to scheduling — redundant with the API, unmaintained,
-  PyInstaller/PyPI packaging overhead) and never claimed the project would have no CLI ever again.
-  Likewise `api-scheduling`'s Purpose line describing cron/a Kubernetes CronJob calling
-  `POST /backup/schedules/run` documents one supported trigger path, not an exclusivity constraint —
-  nothing in the spec says that endpoint is the only way to trigger a run. Confirmed intentional
-  (2026-09-28): both mechanisms are kept and documented as valid ways to trigger due-schedule
-  execution — `POST /backup/schedules/run` (HTTP, unchanged) and the new CLI tick (process-local,
-  scoped narrowly to the scheduler command and whatever it needs, e.g. lock status — not a revival
-  of the removed YAML-config CLI surface). An operator picks whichever fits their environment
-  (call the API from cron, or run the CLI from cron/a timer/CronJob directly); see 9.1.
-  Implementation-wise this must be built as new code, not restored from the deleted `cli.py`/
-  `cli_api/`/`config.py`/`error_handler.py`/`entry_point.py` (no `git revert`, no resurrecting the
-  `click` dependency or the old YAML-config format): those files predate `introduce-data-access-layer`,
-  `move-metadata-sql-into-dal`, and every schema/commands-layer change since 2026-09-27, so they no
-  longer match `commands/schedules.py`'s current signatures or the DAL boundary and would not run,
-  let alone belong architecturally, even if restored verbatim.
+## 5. Schedules, Retention/Expiry Fields, and One-Shot Schedules
+- [x] 5.1 Made `Schedule.cadence` and `next_run_at` nullable (`cadence = null` marks one-shot schedules).
+- [x] 5.2 Added `retention` and `expire_after_days` to `Schedule`; rejected one-shot incremental schedules with 422.
+- [x] 5.3 Implemented immediate job submission upon one-shot schedule creation.
+- [x] 5.4 Blocked modification (PATCH → 409) of one-shot schedules and excluded them from `run_due_schedules`.
+- [x] 5.5 Added `Job.schedule_id` and populated `Job.baseline_job_id` during incremental execution.
+- [x] 5.6 Exposed `schedule_id`, `group_id`, `baseline_job_id`, and `result_json` in `JobRead`; added `schedule_id` query filters.
+- [x] 5.7 Verified one-shot execution, immutability, and field validations with unit and service tests.
 
-## 1. Baseline — already done and verified
+## 6. Backup References and Multi-Database Support
+- [x] 6.1 Added `backup_references` table (`job_id` FK `ON DELETE CASCADE`, `repository`, `snapshot_label`, `database`, `table`, `partition`, `snapshot_timestamp`, `deleted_at`).
+- [x] 6.2 Recorded backup references upon successful backup completion (`FINISHED`).
+- [x] 6.3 Added `GET /job/{job_id}/references` endpoint.
+- [x] 6.4 Implemented multi-database inventory backups (executing `BACKUP DATABASE` per database under a single Backup Job).
+- [x] 6.5 Verified multi-database references and restorable reference queries with tests.
 
-- [x] 1.1 Cluster: model, CRUD, verify endpoints, encrypted password, delete guard (`commands/clusters.py`; integration `test_clusters_live.py`)
-- [x] 1.2 Repository: create/list/delete via StarRocks `CREATE/DROP/SHOW REPOSITORY`, S3 verify, delete guard when snapshots exist (integration `test_repositories_live.py`). Not persisted in the metadata DB by design — StarRocks is the source of truth (see §3, 0.1).
-- [x] 1.3 Inventory: `InventoryGroup` + `TableInventory`, `*` = whole database, CRUD routes, delete blocked by referencing schedules (integration `test_inventory_live.py`)
-- [x] 1.4 Recurring Schedule: cron `cadence`, CRUD under `/backup/schedules/cluster/{id}`, inventory checked against the same cluster, `POST /backup/schedules/run` with idempotent conditional `next_run_at` advance (`commands/schedules.py`)
-- [x] 1.5 Job model with types `backup_full/backup_incremental/restore/prune` and status `PENDING/RUNNING/SUCCESS/FAILED`, thread backend, `GET /job/{id}`
-- [x] 1.6 Manual full/incremental backup, restore by label (full, or base full + incremental), prune by group via `/backup/manual/...`. Full backup → drop DB → restore passes live (`test_full_backup_restore_cycle.py`).
-- [x] 1.7 `GET /backup/history/cluster/{id}` with `job_type/status/job_id/group_id/limit/offset` filters
-- [x] 1.8 Single flattened Alembic baseline migration, SQLite default, `STARROCKS_BR_DATABASE_URL`
-- [x] 1.9 API key auth, health endpoint, commands layer for backup/restore/prune/jobs/schedules
-- [x] 1.10 One backup at a time per cluster (`concurrency.reserve_job_slot`, scope `backup`), matching decision 0.9
+## 7. Backup Job Lifecycle Hardening
+- [x] 7.1 Decoupled StarRocks polling from metadata transactions so no database session remains open during polling.
+- [x] 7.2 Guaranteed concurrency slot release in `finally` blocks and recorded explicit `ERROR`/`FAILED` history events on submission failure.
+- [x] 7.3 Replaced silent exception suppression with structured error logging.
+- [x] 7.4 Verified slot release and failure event recording with tests.
 
-## 2. Record the decisions in the spec
+## 8. Manual Route Retirement and Schedule Deletion Cascade
+- [x] 8.1 Retired `/backup/manual/full` and `/backup/manual/incremental` routes in favor of one-shot and recurring schedules.
+- [x] 8.2 Added async `schedule_cleanup` job type to drop StarRocks snapshots via references and cascade-delete metadata.
+- [x] 8.3 Implemented synchronous guards on schedule deletion (409 on active jobs or baseline dependencies), returning `202 Accepted` with cleanup job ID.
+- [x] 8.4 Implemented automatic expiry for one-shot schedules past `expire_after_days` via `schedule_cleanup`.
+- [x] 8.5 Verified 202 deletion cascade, snapshot removal, dependency guards, and expiry execution with tests.
 
-OpenSpec change: `record-lifecycle-decisions-in-domain-spec` (docs-only, `skip_specs: true`).
+## 9. Scheduler CLI Command, Concurrency, and Recovery
+- [x] 9.1 Scoped scheduler execution to single-tick invocations via CLI command (`starrocks-br-scheduler tick`) alongside `POST /backup/schedules/run`.
+- [x] 9.2 Implemented `src/starrocks_br/cli/scheduler.py` calling `commands.schedules.run_due_schedules` and one-shot expiry without in-process sleep loops.
+- [x] 9.3 Added cluster-wide singleton `scheduler_lock` in metadata store with atomic acquisition, host:pid tracking, and timeout expiration.
+- [x] 9.4 Handled lock contention (clean non-zero exit) and stale lock recovery with warning logs.
+- [x] 9.5 Implemented orphan job reconciliation on each tick (`PENDING` re-enqueued, `RUNNING` checked against StarRocks status).
+- [x] 9.6 Recorded `last_tick_at` timestamp and exposed scheduler status via `/health`.
+- [x] 9.7 Verified single-instance lock concurrency, stale lock recovery, due run triggering, and reconciliation with tests.
 
-- [x] 2.1 Update `SPEC.md`: add `Retention Job` to the §2 domain model as a peer of Backup Job/Restore Job (own id, status, append-only History); one-shot expiry (never / N days) in §8; incremental backups and the full backups they depend on are exempt from retention (§10-11, §22); a new section describing schedule delete and cluster delete as synchronously-validated, asynchronously-executed cascades (409 up front on an active job or a dependent-incremental baseline; otherwise a cleanup job drops S3 data and deletes jobs/events/references); a note that a Restore Job is deleted along with its source Backup Job (§27, was §25 before the two new sections shifted later numbering). Multi-database inventories are *not* changed in `SPEC.md` (0.2 reversed — §5's existing example already allows them).
-- [x] 2.2 Update `AGENTS.md`'s "Parallel execution and metadata" paragraph: backup serialization per cluster is the confirmed policy (not a gap); retention shares the `backup` scope; schedule/cluster delete follow the same synchronous-accept-then-async-job pattern as backup submission.
-- [x] 2.3 No `openspec/specs/api-*` changes in this section — those land alongside the endpoint behavior changes in sections 8 and 12.
-
-## 3. Repository reference hardening
-
-Repository is not a persisted entity in this system's metadata store — StarRocks is the single
-source of truth (0.1, reversed 2026-09-27). This section formalizes and hardens the existing
-live-validation pattern rather than adding schema.
-
-- [x] 3.1 Confirm `Schedule.repository` (string) stays as-is; both create and update validate it live against `SHOW REPOSITORIES` on the schedule's cluster (already implemented via `ensure_repository_exists`)
-- [x] 3.2 Add a same-cluster cross-check test: a schedule cannot reference a repository name that only exists on a different cluster
-- [x] 3.3 Document the `(cluster_id, name)` reference pattern in `SPEC.md` §4, and note it applies wherever a repository is referenced (Schedule, Backup Reference, restore target)
-- [x] 3.4 Tests: repository validated live on schedule create/update; cross-cluster repository name rejected
-
-## 4. Job history log (Backup History, Restore History)
-
-Repurposes the existing `BackupHistory`/`RestoreHistory` tables (today: one best-effort summary
-row per run, keyed by `(cluster_id, label)`, not linked to `Job.id`) into genuine append-only
-logs keyed by `job_id`. No log table for Retention Jobs — `Job.status` alone covers them.
-
-- [x] 4.1 Repurpose `backup_history`/`restore_history`: replace the `(cluster_id, label)` keying
-  with `job_id` (FK `ON DELETE CASCADE` to `jobs.id`; cluster is reached via `Job.cluster_id`, no
-  duplicated column), and replace the single summary row's columns with `ts`, `status`, `message`
-  (nullable), `details_json` (nullable). Migration drops the old unique constraint/columns and
-  adds the FK.
-- [x] 4.2 Add a `history.append_backup_event(job_id, status, ...)` / `append_restore_event(...)`
-  helper (one per table) that runs in its own short-lived session and only ever inserts. Each
-  helper skips the insert if `status` is unchanged from that job's last row (dedup on state
-  change, keeps row volume small); a terminal `SUCCESS`/`FAILED` row is always appended
-  regardless of dedup.
-- [x] 4.3 Wire `executor.poll_backup_status`'s existing `on_progress` callback into
-  `append_backup_event`: one row per distinct StarRocks-native `SHOW BACKUP` state
-  (`PENDING`/`SNAPSHOTING`/`UPLOADING`/`SAVE_META`/`UPLOAD_INFO`/...), plus a final `SUCCESS` or
-  `FAILED` row when `execute_backup` completes (`message`/`details_json` carry the StarRocks error
-  detail, `progress_pct`, `unfinished_tasks` on failure). Remove the old best-effort single-row
-  `history.log_backup` write it replaces.
-- [x] 4.4 Same for restore: wire `restore.poll_restore_status`'s `on_progress` into
-  `append_restore_event`, fed by `SHOW RESTORE`'s native states, with a final `SUCCESS`/`FAILED`
-  row. Remove the old best-effort single-row `history.log_restore` write it replaces.
-- [x] 4.5 Add `GET /job/{job_id}/history` that returns the matching table's rows (by the job's
-  `job_type`) in time order
-- [x] 4.6 Unit tests: state-change dedup (repeated identical poll state writes no row), a
-  terminal `SUCCESS`/`FAILED` row is always appended even after several intermediate rows,
-  confirm rows are never updated, cluster-scoped history query via join through `Job.cluster_id`
-
-## 5. Link jobs to schedules; retention/expiry fields; one-shot schedule creation
-
-Merges former section 8 items 8.1-8.4 (and the matching half of 8.9) in here: those items have no
-dependency beyond this section's own schema changes, so splitting them out would have left
-`expire_after_days` and the Q3 rejection unenforceable dead schema until section 8 landed three
-sections later. What stays behind in section 8 (renumbered, see that section's intro) needs Backup
-References (section 6) or the scheduler loop (section 9), neither of which exists yet, or is a
-separable API-surface removal. See §0c for the decisions (Q9-Q12) this merge required.
-
-- [x] 5.1 ~~Move schedule create/update/delete logic from `api/routes/schedules.py` into
-  `commands/schedules.py`~~ — **already done** 2026-09-28: fell out of the
-  `move-metadata-sql-into-dal` DAL migration; routes now delegate to `commands/schedules.py`, which
-  calls `dal/metadata/schedules.py`.
-- [x] 5.2 Make `Schedule.cadence` and `next_run_at` nullable (was 8.1). `cadence = null` marks a
-  one-shot schedule (SPEC.md §7-8).
-- [x] 5.3 Add to `Schedule`: `retention` (int ≥ 1; required for a recurring full schedule, must be
-  null for incremental — SPEC.md §10-11; nullable at the DB level, enforced in
-  `ScheduleCreate`/`commands.schedules` per Q9 — **BREAKING**, per Q11), and `expire_after_days`
-  (one-shot only; null = never — SPEC.md §8). Reject a one-shot incremental schedule with 422 (Q3) —
-  now enforceable end-to-end since 5.2 makes one-shot creation possible. Update model, migration,
-  `ScheduleCreate/Update/Read` and `openspec/specs/api-scheduling`.
-- [x] 5.4 Creating a schedule with `cadence = null` persists it and immediately submits exactly one
-  job through `commands.jobs.submit_job` (was 8.2)
-- [x] 5.5 PATCH on a one-shot schedule → 409; DELETE → allowed, using today's plain (non-cascading)
-  delete — same as a recurring schedule gets today, not a regression, not yet the cascade from
-  section 8 (was 8.3)
-- [x] 5.6 `run_due_schedules` skips `cadence IS NULL` (was 8.4)
-- [x] 5.7 Add `Job.schedule_id` (FK `ON DELETE CASCADE`, nullable for every job type for now per
-  Q10) and set it in both `run_due_schedules` and 5.4's immediate one-shot submission
-- [x] 5.8 Add `Job.baseline_job_id` for incremental jobs (the full job it depends on). Not known at
-  submit time — mirrors how `Job.label` is set post-hoc via `dal.metadata.jobs.set_label` from
-  `commands/backup.py::_set_job_label`: add a `set_baseline_job_id` DAL function and call it from
-  `run_backup_incremental` once the baseline resolves. Per Q12, change
-  `planner.find_recent_partitions`'s return shape to also surface the resolved baseline `Job`'s id
-  (today it returns only `list[dict]` of partitions and discards the baseline `Job` it looked up).
-- [x] 5.9 Expose `schedule_id`, `group_id`, `baseline_job_id` and `result_json` in `JobRead`
-  (`group_id`/`result_json` are already columns, just not yet exposed); add a `schedule_id` filter
-  to `list_jobs` and `/backup/history/cluster/{id}`
-- [x] 5.10 Tests: one-shot immutability, single job submitted on create, one-shot incremental
-  rejected, one-shot skipped by run-due (was part of 8.9); a job created by run-due or by one-shot
-  creation carries `schedule_id`; `retention`/`expire_after_days` field validation per job type and
-  cadence
-
-## 6. Backup References
-
-- [x] 6.1 Add a `backup_references` table (`job_id` FK `ON DELETE CASCADE`, `repository` (string name; cluster resolved via `job.cluster_id` — 0.1), `snapshot_label`, `database`, `table`, `partition` nullable, `snapshot_timestamp`, `deleted_at` nullable). Migrate `backup_partitions` into it or add `job_id` to it.
-- [x] 6.2 Write references when the StarRocks backup reaches `FINISHED`; a failed job's references are never restorable (§16)
-- [x] 6.3 Add `GET /job/{job_id}/references`
-- [x] 6.4 Tests: a successful job has references; a failed job has none that are restorable
-- [x] 6.5 Multi-database inventory backups (0.2 reversed): replace `planner.resolve_group_database`'s `MultipleDatabasesInGroupError` rejection with support for one `BACKUP DATABASE` per database in the group, all recorded under one Backup Job with references per database/table
-- [x] 6.6 Tests: a backup job spanning two databases produces references for both and restores correctly
-
-## 7. Backup job lifecycle hardening
-
-- [x] 7.1 Split StarRocks polling from metadata writes in `commands/backup.py` / `executor.execute_backup` so no session stays open during polling
-- [x] 7.2 Always release the concurrency slot in `finally`; on submit failure, record `ERROR` + `FAILED` with the real message
-- [x] 7.3 Replace `except Exception: pass` in the executor with logged errors
-- [x] 7.4 Tests: slot is released on failure; failure produces `ERROR` then `FAILED`
-
-## 8. Retire manual backup routes; schedule delete/expiry cascade
-
-Former 8.1-8.4 (cadence/next_run_at nullable, one-shot creation, PATCH/DELETE, run-due skip) moved
-into section 5 — see that section's intro. What's left here needs Backup References (section 6) for
-the snapshot-dropping cleanup job, or the scheduler loop (section 9) for automatic expiry — neither
-exists yet — or is a separable API-surface removal (8.1 below).
-
-- [x] 8.1 Retire `/backup/manual/full` and `/backup/manual/incremental` (no compatibility
-  wrappers): clients submit an immediate full backup by creating a one-shot schedule; incremental
-  backups remain available only through recurring schedules (Q3). Update the
-  `api-job-execution` and `api-scheduling` specs (was 8.5)
-- [x] 8.2 Add job type `schedule_cleanup`: given a schedule id, `DROP SNAPSHOT` for every reference
-  (Q8, needs section 6's Backup References), then delete the schedule's jobs; events, references
-  and dependent restore jobs cascade (Q6); finally delete the schedule row (was 8.6)
-- [x] 8.3 Schedule delete (`commands/schedules.delete_schedule` / `DELETE /backup/schedules/.../{id}`):
-  validate synchronously — 409 if any job is `PENDING`/`RUNNING` (Q5); 409 if any of its full jobs is
-  the `baseline_job_id` of an existing incremental in another schedule (Q2) — then submit a
-  `schedule_cleanup` job and respond `202` with the job id (a **BREAKING** change to today's `204`
-  contract; update `api-scheduling`) (was 8.7)
-- [x] 8.4 Expiry: one-shot schedules past `created_at + expire_after_days` go through the same
-  synchronous checks and `schedule_cleanup` job as 8.3, run from the scheduler tick in section 9. If
-  blocked (Q2/Q5), skip, log a warning and retry on the next tick. (was 8.8)
-- [x] 8.5 Tests: delete returns 202 and the cleanup job drops snapshots and rows, delete blocked by
-  active job or dependent incremental, expiry triggers cleanup, blocked expiry retried, never-expiring
-  schedules kept (was the remainder of 8.9)
-
-## 9. Scheduler CLI command, concurrency, and restart recovery
-
-Scheduler execution is an externally-invoked CLI command, not an in-process FastAPI loop: the
-process only runs one tick per invocation and exits, and cron (or systemd timer / Kubernetes
-CronJob) supplies the cadence instead of `STARROCKS_BR_SCHEDULER_INTERVAL_SECONDS`. This keeps the
-API process free of a background thread and its lifespan/`ThreadBackend.shutdown` coordination.
-Because cron-style scheduling can overlap a slow-running tick with the next one, and because
-nothing stops an operator from also running the command by hand, the tick itself must guard
-against two invocations running at once.
-
-- [x] 9.1 OpenSpec change (e.g. `add-cli-scheduler-command`) that adds a new `cli` capability scoped
-  strictly to the scheduler tick command — distinct from, and not a revival of, the removed
-  YAML-config `cli.py`/`cli_api/` surface (`2026-09-27-remove-cli-layer` stands unchanged for that
-  surface). Update `openspec/specs/api-scheduling/spec.md`'s Purpose and its "Running due
-  schedules" requirement to document both supported ways to trigger due-schedule execution:
-  `POST /backup/schedules/run` (HTTP, existing, unchanged) and the new CLI tick (see Q13) — the CLI
-  is additive, not a replacement for the endpoint. Archive this change before starting 9.2.
-- [x] 9.2 Add a **new** CLI command under `src/starrocks_br/cli/` (e.g. `python -m starrocks_br.cli.scheduler tick`,
-  wired as a console-script entry point) that, per invocation, calls `commands.schedules.run_due_schedules`
-  and one-shot expiry once and exits with a non-zero status on failure. Written from scratch against
-  the current codebase — do not restore, `git revert`, or cherry-pick any of the deleted `cli.py`,
-  `cli_api/`, `config.py`, `error_handler.py`, or `entry_point.py`, and do not reintroduce the `click`
-  dependency or the old YAML-config format; that old code predates the DAL layer and every
-  commands/schema change since and is incompatible with them regardless. Per AGENTS.md's
-  architectural boundary, the CLI calls only into the commands layer (same rule the HTTP API
-  follows) — it must not call core operation modules (planner, executor, etc.) directly. No loop, no
-  sleep, no disable switch: cadence and enable/disable are operational concerns of the external
-  scheduler (cron entry present/absent, timer enabled/disabled), not of this process.
-- [x] 9.3 Concurrency: only one scheduler tick may run at a time cluster-wide. This is a separate
-  mechanism from `concurrency.reserve_job_slot`'s per-cluster `backup` scope — that serializes
-  StarRocks backup/retention work, not tick invocations, and stays as-is. Add a singleton
-  `scheduler_lock` row in the metadata store (`store`/`dal/metadata/`) acquired with one atomic
-  conditional `UPDATE ... WHERE expires_at IS NULL OR expires_at < now()` (portable across
-  SQLite/Postgres/MySQL, no DB-specific advisory-lock API), storing `holder` (hostname:pid),
-  `acquired_at`, and `expires_at = acquired_at + STARROCKS_BR_SCHEDULER_LOCK_TIMEOUT_SECONDS`.
-  Expose this as `commands.schedules.try_acquire_scheduler_lock()` /
-  `release_scheduler_lock()` so the CLI stays a thin caller into the commands layer, consistent
-  with 9.2.
-- [x] 9.4 If the lock cannot be acquired (already held and not expired), the CLI logs a clear
-  "scheduler already running" message to stderr, exits immediately with a distinct non-zero exit
-  code, and does not touch due schedules, expiry, or reconciliation. If a previous holder crashed
-  mid-tick, its lock is past `expires_at` and is reclaimed by the next invocation, which logs a
-  warning that it recovered a stale lock. The lock is released in a `finally` at the end of a
-  successful acquisition (success or failure of the tick's own work) so the next cron invocation
-  can proceed.
-- [x] 9.5 Document the catch-up policy: if a tick is missed (cron/timer downtime), the next invocation
-  runs due schedules once and jumps to the next future occurrence — unchanged from the loop-based
-  design, since due-ness is already decided by comparing `next_run_at` to now, not by wall-clock
-  ticking.
-- [x] 9.6 Each CLI invocation that acquires the lock reconciles orphaned jobs before running due
-  schedules/expiry: re-enqueue `PENDING`; for `RUNNING`, check `SHOW BACKUP/RESTORE` by label →
-  `SUCCESS`/`FAILED`, and append a reconciliation event. This runs on every invocation (not once at
-  process startup), since the process no longer stays resident between ticks.
-- [x] 9.7 Record the timestamp of the last successful CLI tick in the metadata store, and report it via
-  `/health` (e.g. `scheduler.last_tick_at`) so a stalled cron/timer is observable from the API even
-  though the API process itself no longer runs the loop. A tick that exits early because the lock was
-  held does not update `last_tick_at`.
-- [x] 9.8 Tests: a CLI tick invocation triggers due schedules and expiry; reconciliation outcomes; the
-  CLI calls only `commands/`, never a core operation module directly; last-tick timestamp is recorded
-  and surfaced via `/health`; a second concurrent invocation fails to acquire the lock, logs the alert,
-  and exits non-zero without running due schedules/expiry/reconciliation; a stale (expired) lock is
-  reclaimed and logged as such.
-
-## 10. Schedule-scoped retention (own job)
-
-- [x] 10.1 Add job type `retention` (now a documented domain entity, `SPEC.md` §2 — a peer of Backup Job/Restore Job, not just an implementation detail). When a recurring full-backup job succeeds, submit a `retention` job for that schedule, reserved under the same `backup` concurrency scope (0.6); it logs its own events (`RETENTION_STARTED`, `SNAPSHOT_DROPPED`, `RETENTION_FINISHED`, `ERROR`, `FAILED`).
-- [x] 10.2 Selection: that schedule's `SUCCESS` full jobs whose data is not deleted, newest first; keep `schedule.retention`; skip any job that is `baseline_job_id` of an existing incremental (Q1); drop the rest
-- [x] 10.3 Deletion = `DROP SNAPSHOT` per reference and set `deleted_at`. The backup Job and its events are kept.
-- [x] 10.4 A retention failure never changes the backup job's status
-- [x] 10.5 Retire the inventory-scoped `prune` job and its route (it conflicts with spec §11), or keep it admin-only; `prune.cleanup_backup_history` must stop deleting history rows
-- [x] 10.6 Tests: the §22 example (only Job 1 dropped), failed jobs ignored, incrementals and their baselines never dropped, two schedules on the same inventory keep independent pools
+## 10. Schedule-Scoped Retention
+- [x] 10.1 Added `retention` job type and `RetentionHistory` append-only event log sharing the `backup` concurrency scope.
+- [x] 10.2 Implemented candidate selection keeping latest N full backups and strictly protecting incremental baselines and active restore sources.
+- [x] 10.3 Dropped snapshots via StarRocks and marked references `deleted_at`.
+- [x] 10.4 Integrated retention sweep into scheduler tick and added retention cleanup to `schedule_cleanup`.
+- [x] 10.5 Retired manual prune route (`/backup/manual/prune/...`).
+- [x] 10.6 Verified candidate selection, baseline protection, and failure isolation with tests.
 
 ## 11. Restore from a Backup Job, into any cluster
 
