@@ -13,9 +13,9 @@ used to validate a direct backup job's repository), SHALL reject creation with H
 full-backup recurring schedule omits `retention`, SHALL reject creation with HTTP 422 if an
 incremental-backup schedule specifies `retention` (incremental backups are never subject to
 retention), and, once accepted, SHALL persist it in the metadata store, computing its next-run
-time from the cadence. When a recurring full-backup job completes with status `SUCCESS`, the system
-SHALL automatically submit an asynchronous `retention` job scoped to that schedule to enforce its
-retention copy limit.
+time from the cadence. On each scheduler tick, the system SHALL submit an asynchronous `retention` job
+scoped to a recurring full-backup schedule when that schedule has droppable successful full backups
+beyond its `retention` count (excluding protected backups) and no `PENDING` or `RUNNING` retention job.
 
 #### Scenario: Successful schedule creation
 - **WHEN** an authenticated client creates a recurring full-backup schedule under a valid cluster
@@ -53,6 +53,16 @@ retention copy limit.
   `retention` value set
 - **THEN** the system rejects the request with HTTP 422 and does not create a schedule
 
-#### Scenario: Retention is enforced after a recurring full backup succeeds
-- **WHEN** a recurring full-backup job completes with status `SUCCESS`
+#### Scenario: Retention is submitted when a pool exceeds its retention count
+- **WHEN** a scheduler tick finds a recurring full-backup schedule with more droppable successful full
+  backups than allowed and no open retention job
 - **THEN** the system submits an asynchronous `retention` job scoped to that schedule
+
+#### Scenario: No retention job when nothing is droppable
+- **WHEN** a schedule's only backups beyond its `retention` count are protected (for example an incremental
+  baseline)
+- **THEN** the tick submits no retention job for it
+
+#### Scenario: No duplicate retention job
+- **WHEN** a schedule already has a `PENDING` or `RUNNING` retention job
+- **THEN** the tick submits no additional one
